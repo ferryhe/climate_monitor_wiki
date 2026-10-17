@@ -204,8 +204,7 @@ def test_reverify_all_creates_a_new_latest_attempt_and_source_changes_recheck(tm
         stale_item = {**checked["fields"], "occurrence_id": checked["occurrence_id"],
             "source_urls": [checked["source_url"]], "name": "Changed meeting"}
         stale_status = latest_checks(connection, "meetings", stale_item)
-    expected_key = (checked["occurrence_id"], checked["source_url"])
-    assert current_verified == binding_only_verified == {expected_key}
+    assert current_verified == binding_only_verified == set()
     assert binding_changed["source_revision_sha256"] == checked["source_revision_sha256"]
     assert stale_status["verification_status"] == "unchecked"
 
@@ -232,29 +231,36 @@ def test_current_verified_native_target_uses_its_core_foreign_key():
     connection.execute("""CREATE TABLE article_check_attempts (
         occurrence_id TEXT, core_article_id TEXT, event_source_id TEXT, source_url TEXT,
         source_revision_sha256 TEXT, checked_at TEXT, verification_status TEXT,
-        packet_json TEXT, packet_sha256 TEXT
+        packet_json TEXT, packet_sha256 TEXT, run_id TEXT
     )""")
+    connection.execute("CREATE TABLE article_check_runs(run_id TEXT,status TEXT,item_count INT,completed_count INT,completed_at TEXT)")
+    connection.execute("INSERT INTO article_check_runs VALUES('completed-run','complete',1,1,'2026-10-14T12:00:00Z')")
     target = {
         "occurrence_id": "core:article-a", "source_url": "https://example.org/a",
         "source_revision_sha256": "a" * 64, "entity_kind": "article", "entity_id": "article-a",
         "source_binding": {"article_id": "article-a", "version_id": "version-a"},
         "fields": {"title": "Approved article"},
     }
-    packet = {"verification_status": "verified", "method": "legacy-checker",
+    packet = {**target, "verification_status": "verified", "method": "source-bound-checker",
         "reviewed_scope": "article", "source_url": target["source_url"]}
-    connection.execute("INSERT INTO article_check_attempts VALUES(?,?,?,?,?,?,?,?,?)",
+    connection.execute("INSERT INTO article_check_attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
         (None, "article-a", None, target["source_url"], target["source_revision_sha256"],
-            "2026-10-14T12:00:00Z", "verified", _json(packet), _sha(packet)))
+            "2026-10-14T12:00:00Z", "verified", _json(packet), _sha(packet), "completed-run"))
     assert _currently_verified_targets(connection, "article", [target]) == {
         (target["occurrence_id"], target["source_url"])
     }
     changed_binding = {**target, "source_binding": {"article_id": "article-a", "version_id": "new"}}
-    assert _currently_verified_targets(connection, "article", [changed_binding]) == {
+    assert _currently_verified_targets(connection, "article", [changed_binding]) == set()
+    connection.execute("UPDATE article_check_runs SET status='running',completed_at=NULL")
+    assert _currently_verified_targets(connection, "article", [target]) == {
         (target["occurrence_id"], target["source_url"])
     }
+    from climate_registry.information_checks import _incremental_targets
+    assert _incremental_targets(connection, "article", [target], now=datetime.now(timezone.utc),
+        retry_after_minutes=60) == [target]  # Scheduled batches still require terminal evidence.
 
 
-def test_manually_reviewed_legacy_attempt_skips_same_meeting_url_despite_new_revision():
+def test_manually_reviewed_legacy_attempt_cannot_skip_changed_meeting_version():
     from climate_registry.information_checks import _currently_verified_targets, _json, _sha
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
@@ -277,9 +283,226 @@ def test_manually_reviewed_legacy_attempt_skips_same_meeting_url_despite_new_rev
     connection.execute("INSERT INTO meeting_check_attempts VALUES(?,?,?,?,?,?,?,?)",
         ("event-source-1", "event-source-1", target["source_url"], "old-revision",
             "2025-01-01T00:00:00Z", "verified", _json(packet), _sha(packet)))
-    assert _currently_verified_targets(connection, "meeting", [target]) == {
-        (target["occurrence_id"], target["source_url"])
-    }
+    assert _currently_verified_targets(connection, "meeting", [target]) == set()
+
+
+def test_incremental_batches_finish_and_only_retry_unchanged_failures_after_backoff(tmp_path, monkeypatch):
+    import climate_registry.information_checks as checks
+    database = _database(tmp_path)
+    now = ["2026-10-17T12:00:00+00:00"]
+    monkeypatch.setattr(checks, "_now", lambda: now[0])
+    calls = []
+    options = dict(database=database, kind="meetings", backup_dir=tmp_path / "backups",
+        fetcher=lambda identity, url: (calls.append(identity), _record(identity, url))[1],
+        verifier=_judgment, incremental=True, limit=1, clock=lambda: datetime.fromisoformat(now[0]))
+    first = run_checks(**options)
+    assert first["status"] == "complete" and first["item_count"] == first["completed_count"] == 1
+    second = run_checks(**options)
+    assert second["status"] == "partial" and second["item_count"] == second["completed_count"] == 1
+    empty = run_checks(**options)
+    assert empty["status"] == "complete" and empty["item_count"] == 0
+    assert calls == ["meeting-1", "meeting-2"]
+    now[0] = "2026-10-17T13:00:00+00:00"
+    retried = run_checks(**options)
+    assert retried["status"] == "partial" and retried["item_count"] == 1
+    assert calls == ["meeting-1", "meeting-2", "meeting-2"]
+    targets = checks.check_targets(database, "meetings")
+    targets[0]["source_binding"] = {**targets[0]["source_binding"], "candidate_version": "changed"}
+    monkeypatch.setattr(checks, "check_targets", lambda *args: targets)
+    changed = run_checks(**options)
+    assert changed["item_count"] == changed["completed_count"] == 1
+    assert calls[-1] == "meeting-1"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM meeting_check_attempts").fetchone()[0] == 4
+
+
+def test_incremental_due_retry_does_not_starve_new_targets(tmp_path, monkeypatch):
+    import climate_registry.information_checks as checks
+    from datetime import timedelta
+    database = _database(tmp_path)
+    now = datetime(2026, 10, 17, 12, tzinfo=timezone.utc)
+    options = dict(database=database, kind="meetings", backup_dir=tmp_path / "backups",
+        fetcher=_record, verifier=_judgment, incremental=True, limit=1)
+    monkeypatch.setattr(checks, "_now", lambda: (now - timedelta(hours=2)).isoformat())
+    run_checks(**options, occurrence_ids={"meeting-2"}, clock=lambda: now - timedelta(hours=2))
+    monkeypatch.setattr(checks, "_now", lambda: now.isoformat())
+    due = run_checks(**options, clock=lambda: now)
+    assert due["status"] == "partial"  # The old failed target gets a fair retry.
+    next_batch = run_checks(**options, clock=lambda: now + timedelta(minutes=5))
+    assert next_batch["status"] == "complete" and next_batch["item_count"] == 1
+
+
+def test_incremental_crash_resumes_only_frozen_remaining_targets_and_database(tmp_path):
+    database = _database(tmp_path)
+    run_id = []
+    calls = []
+    def progress(value):
+        if value.get("status") == "pending":
+            run_id.append(value["run_id"])
+        elif value.get("occurrence_id"):
+            raise RuntimeError("simulated process interruption after durable attempt")
+    options = dict(database=database, kind="meetings", backup_dir=tmp_path / "backups",
+        incremental=True, limit=2, fetcher=lambda identity, url: (calls.append(identity), _record(identity, url))[1],
+        verifier=_judgment)
+    with pytest.raises(RuntimeError, match="simulated"):
+        run_checks(**options, progress=progress)
+    resumed = run_checks(**options, resume_run_id=run_id[0])
+    assert resumed["status"] == "partial" and resumed["completed_count"] == resumed["item_count"] == 2
+    assert calls == ["meeting-1", "meeting-2"]
+    other = tmp_path / "other.sqlite3"; other.write_bytes(database.read_bytes())
+    with pytest.raises(ValueError, match="binding|different|differs"):
+        run_checks(**{**options, "database": other}, resume_run_id=run_id[0])
+
+
+@pytest.mark.parametrize("semantic_status", ["partial", "conflict"])
+def test_incremental_retry_refetches_semantic_failure_after_website_recovers(tmp_path, monkeypatch, semantic_status):
+    import climate_registry.information_checks as checks
+    from datetime import timedelta
+    database = _database(tmp_path)
+    clock = [datetime(2026, 10, 17, 12, tzinfo=timezone.utc)]
+    monkeypatch.setattr(checks, "_now", lambda: clock[0].isoformat())
+    fetches = []
+    def fetch(identity, url, **kwargs):
+        fetches.append(identity)
+        return _record(identity, url, "Please sign in to continue." if len(fetches) == 1 else None)
+    monkeypatch.setattr(checks, "fetch_article_content", fetch)
+    def verify(kind, fields, body):
+        if "Please sign in" in body:
+            return {"comparisons": {"name": {"status": "conflict" if semantic_status == "conflict" else "missing"}}}
+        return _judgment(kind, fields, body)
+    options = dict(database=database, kind="meetings", backup_dir=tmp_path / "backups",
+        occurrence_ids={"meeting-1"}, incremental=True, verifier=verify, clock=lambda: clock[0])
+    assert run_checks(**options)["status"] == "partial"
+    clock[0] += timedelta(minutes=59)
+    assert run_checks(**options)["item_count"] == 0 and fetches == ["meeting-1"]
+    clock[0] += timedelta(minutes=1)
+    assert run_checks(**options)["status"] == "complete"
+    assert fetches == ["meeting-1", "meeting-1"]
+    with sqlite3.connect(database) as db:
+        rows = db.execute("SELECT verification_status,packet_json FROM meeting_check_attempts ORDER BY rowid").fetchall()
+    assert [row[0] for row in rows] == [semantic_status, "verified"]
+    assert json.loads(rows[0][1])["reader"]["content"] == "Please sign in to continue."
+
+
+def test_incremental_retry_reuses_semantically_verified_reader_for_enrichment_repair(tmp_path, monkeypatch):
+    import climate_registry.information_checks as checks
+    from datetime import timedelta
+    database = _database(tmp_path)
+    clock = [datetime(2026, 10, 17, 12, tzinfo=timezone.utc)]
+    monkeypatch.setattr(checks, "_now", lambda: clock[0].isoformat())
+    fetches, enrichments = [], []
+    body = "Climate insurance companies assess physical risk, capital exposure, biodiversity impacts and transition scenarios using scientific research and financial data."
+    def fetch(identity, url, **kwargs):
+        fetches.append(identity)
+        return _record(identity, url, body)
+    monkeypatch.setattr(checks, "fetch_article_content", fetch)
+    original = checks.deterministic_enrichment
+    def enrich(value):
+        enrichments.append(value)
+        if len(enrichments) == 1:
+            raise RuntimeError("temporary enrichment failure")
+        return original(value)
+    monkeypatch.setattr(checks, "deterministic_enrichment", enrich)
+    options = dict(database=database, kind="articles", backup_dir=tmp_path / "backups",
+        occurrence_ids={"article-1"}, incremental=True, verifier=_judgment, clock=lambda: clock[0])
+    first = run_checks(**options)
+    assert first["status"] == "partial" and first["unverified_count"] == 0 and first["enrichment_failed_count"] == 1
+    clock[0] += timedelta(hours=1)
+    assert run_checks(**options)["status"] == "complete"
+    assert fetches == ["article-1"] and enrichments == [body, body]
+    targets = checks.check_targets(database, "articles", {"article-1"})
+    targets[0]["source_binding"] = {**targets[0]["source_binding"], "candidate_version": "changed"}
+    monkeypatch.setattr(checks, "check_targets", lambda *args: targets)
+    assert run_checks(**options)["status"] == "complete"
+    assert fetches == ["article-1", "article-1"]
+
+
+def test_manual_cli_retry_of_limited_run_skips_exact_verified_attempt(tmp_path, monkeypatch):
+    from scripts import check_information as cli
+    import climate_registry.information_checks as checks
+    database = _database(tmp_path)
+    calls = []
+    original = checks.run_checks
+    def fetch(identity, url):
+        calls.append(identity)
+        return _record(identity, url)
+    monkeypatch.setattr(cli, "run_checks", lambda *args, **kwargs:
+        original(*args, **kwargs, fetcher=fetch, verifier=_judgment))
+    receipt = tmp_path / "manual.json"
+    args = ["--kind", "meetings", "--database", str(database), "--backup-dir", str(tmp_path / "backups"),
+        "--result", str(receipt)]
+    assert cli.main([*args, "--limit", "1"]) == 2
+    first = json.loads(receipt.read_text())
+    assert first["status"] == "pending" and first["completed_count"] == 1 and first["item_count"] == 2
+    assert cli.main([*args, "--retry", first["run_id"]]) == 2
+    retried = json.loads(receipt.read_text())
+    assert retried["item_count"] == retried["completed_count"] == 1
+    assert calls == ["meeting-1", "meeting-2"]
+    targets = checks.check_targets(database, "meetings", {"meeting-1"})
+    targets[0]["source_binding"] = {**targets[0]["source_binding"], "candidate_version": "changed"}
+    monkeypatch.setattr(checks, "check_targets", lambda *args: targets)
+    assert cli.main([*args, "--occurrence-id", "meeting-1"]) == 0
+    assert calls == ["meeting-1", "meeting-2", "meeting-1"]
+
+
+def test_scheduled_t1_admits_both_kinds_and_preserves_last_actual_failure(tmp_path, monkeypatch):
+    from scripts import check_information as cli
+    from climate_monitor import schedule
+    from climate_delivery.io import atomic_write_json
+    monkeypatch.setattr(schedule, "pipeline_due", lambda *args: True)
+    calls = []
+    monkeypatch.setattr(cli, "main", lambda args, **kwargs: calls.append(args[args.index("--kind") + 1]) or 0)
+    assert cli.run_daily_checks([], result_dir=tmp_path) == 0
+    assert calls == ["articles", "meetings"]
+    monkeypatch.undo()
+    previous = {"run_id": "failed", "status": "partial", "item_count": 1, "completed_count": 1,
+        "business_status": "failed", "last_actual_outcome": {"status": "partial", "run_id": "failed"}}
+    path = tmp_path / "result.json"; atomic_write_json(path, previous)
+    monkeypatch.setattr(cli, "run_checks", lambda *args, **kwargs:
+        {"run_id": "empty", "status": "complete", "item_count": 0, "completed_count": 0})
+    assert cli.main(["--kind", "articles", "--database", str(tmp_path / "db"),
+        "--backup-dir", str(tmp_path / "backup"), "--result", str(path), "--incremental"]) == 0
+    result = json.loads(path.read_text())
+    assert result["business_status"] == "skipped" and result["last_actual_outcome"]["run_id"] == "failed"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="real transaction and Registry locks require POSIX")
+def test_daily_wrapper_preserves_frozen_run_after_mid_batch_writer_lock(tmp_path, monkeypatch):
+    from scripts import check_information as cli
+    from climate_registry import information_checks as checks
+    from types import SimpleNamespace
+    from datetime import timedelta
+    database = _database(tmp_path)
+    clock = [datetime(2026, 10, 17, 17, 30, tzinfo=timezone.utc)]
+    monkeypatch.setattr(cli, "datetime", SimpleNamespace(now=lambda *_: clock[0]))
+    monkeypatch.setattr(checks, "_now", lambda: clock[0].isoformat())
+    original = checks.run_checks
+    monkeypatch.setattr(cli, "run_checks", lambda *args, **kwargs: original(*args, **kwargs, verifier=_judgment))
+    calls, held = [], []
+    def fetch(identity, url, **kwargs):
+        calls.append(identity)
+        if identity == "meeting-2" and not held:
+            lock = checks._exclusive_database_lock(database); lock.__enter__(); held.append(lock)
+        return _record(identity, url)
+    monkeypatch.setattr(checks, "fetch_article_content", fetch)
+    args = ["--database", str(database), "--backup-dir", str(tmp_path / "backups"), "--limit", "2"]
+    try:
+        assert cli.run_daily_checks(args, result_dir=tmp_path) == 2
+    finally:
+        for lock in held: lock.__exit__(None, None, None)
+    failed = json.loads((tmp_path / "meetings-daily-check.json").read_text())
+    assert failed["business_status"] == "failed" and failed["error"] == "RegistryLockError"
+    assert failed["run_id"] and failed["completed_count"] == 1 and failed["item_count"] == 2
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT status,completed_count FROM meeting_check_runs").fetchone() == ("running", 1)
+    clock[0] += timedelta(minutes=5)
+    assert cli.run_daily_checks(args, result_dir=tmp_path) == 2  # Second meeting remains a real partial result.
+    result = json.loads((tmp_path / "meetings-daily-check.json").read_text())
+    assert result["run_id"] == failed["run_id"] and result["completed_count"] == result["item_count"] == 2
+    assert result["failure_history"][0]["error"] == "RegistryLockError"
+    assert calls.count("meeting-1") == 1 and calls.count("meeting-2") == 2
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT status,item_count,completed_count FROM meeting_check_runs").fetchall() == [("partial", 2, 2)]
 
 
 def test_accessible_homepage_and_conflicting_date_never_promote(tmp_path):

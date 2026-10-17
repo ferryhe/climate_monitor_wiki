@@ -718,6 +718,42 @@ def test_registry_activate_does_not_reuse_a_prior_round_approval(tmp_path,monkey
     assert result["status"]=="pending_review" and result["approved_count"]==result["published_count"]==0
 
 
+def _actual_chat_activation(monkeypatch, database, application, queue, runtime):
+    from agentic_wiki import AgenticWikiResponder
+    from fastapi.testclient import TestClient
+    import api_server
+    wiki, sources = application / "wiki", application / "sources"
+    wiki.mkdir(exist_ok=True); sources.mkdir(exist_ok=True)
+    responder = AgenticWikiResponder(wiki, sources); responder.client = None
+    monkeypatch.setenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", str(queue))
+    monkeypatch.delenv("CLIMATE_INTAKE_QUEUE_DIR", raising=False)
+    for name, value in (("responder", responder), ("WIKI_DIR", wiki), ("SOURCE_DIR", sources),
+            ("PDF_RUNTIME_WIKI_DIR", runtime), ("RELOAD_TOKEN", "activation-fixture")):
+        monkeypatch.setattr(api_server, name, value)
+    client = TestClient(api_server.app)
+    def reload(generation):
+        response = client.post("/api/reload", params={"generation_id": generation},
+            headers={"X-Reload-Token": "activation-fixture"})
+        assert response.status_code == 200, response.text
+    return responder, reload
+
+
+def _assert_queued_chat_stays_activated(writer, responder, database, queue):
+    from climate_registry.publication import public_revision
+    active = (queue / "active.json").read_bytes()
+    revision = responder.kb.public_registry_revision
+    with sqlite3.connect(database) as db:
+        kind, identity = db.execute("SELECT entity_kind,entity_id FROM registry_publication WHERE published_candidate_sha256 IS NOT NULL LIMIT 1").fetchone()
+    set_visibility(database, kind, identity, False)
+    assert public_revision(database) != revision
+    def unavailable(generation): raise OSError("activation fixture reload unavailable")
+    writer.reload_chat = unavailable
+    assert writer.process_next()["stage"] == "failed"
+    responder.answer("Evidence", language="en", answer_mode="brief")
+    assert responder.kb.public_registry_revision == revision
+    assert (queue / "active.json").read_bytes() == active
+
+
 @pytest.mark.skipif(os.name == "nt", reason="governed acquisition fixtures require POSIX fcntl")
 @pytest.mark.parametrize("source_kind",["site","search"])
 def test_new_web_and_search_writer_wait_for_native_approval(tmp_path,monkeypatch,source_kind):
@@ -738,9 +774,7 @@ def test_new_web_and_search_writer_wait_for_native_approval(tmp_path,monkeypatch
     store_acquisition_batch(database,payload)
     frozen=freeze_acquisition_for_report(database,payload["batch_id"],report_date=payload["report_date"])
     enqueue_web_activation(queue,database,payload["batch_id"],frozen_payload_sha256=digest(frozen),repository_root=application)
-    def reload(generation):
-        pending=json.loads((queue/"pending.json").read_text(encoding="utf-8"))
-        atomic_write_json(queue/"active.json",pending)
+    responder, reload = _actual_chat_activation(monkeypatch, database, application, queue, runtime)
     writer=PdfIntakePipeline(queue,database,tmp_path/"backups",runtime,reload,repository_root=application)
     pending=writer.process_next()
     assert pending["stage"] == "pending_review" and not pending["chat_ready"]
@@ -754,6 +788,7 @@ def test_new_web_and_search_writer_wait_for_native_approval(tmp_path,monkeypatch
     assert ready["chat_ready"] is True
     assert _reader(database,tmp_path).articles()["pagination"]["total"] == 1
     assert any("Evidence" in page.read_text(encoding="utf-8") for page in (runtime/"generations"/ready["generation_id"]).glob("article-*.md"))
+    _assert_queued_chat_stays_activated(writer, responder, database, queue)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="governed acquisition fixtures require POSIX fcntl")
@@ -974,6 +1009,109 @@ def test_rag_pages_and_revision_share_one_visibility_snapshot(tmp_path,monkeypat
         assert responder.kb.public_registry_revision==publication.public_revision(database)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="real API activation uses POSIX management locking")
+def test_existing_writer_polls_approved_revision_and_retries_reload_after_restart(tmp_path, monkeypatch):
+    from climate_registry.pdf_pipeline import PdfIntakePipeline, approved_projection_snapshot
+    from climate_registry.publication import public_revision
+    from climate_delivery.io import atomic_write_json
+    from agentic_wiki import AgenticWikiResponder
+    from agentic_wiki.chat_evidence import EvidenceTurn
+    from fastapi.testclient import TestClient
+    import api_server
+    import climate_registry.pdf_pipeline as pipeline_module
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "approved writer fixture"}, status="accepted_legacy")
+    app = tmp_path / "app"; app.mkdir()
+    sources = tmp_path / "sources"; sources.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setenv("CLIMATE_PDF_INTAKE_QUEUE_DIR", str(queue))
+    monkeypatch.delenv("CLIMATE_INTAKE_QUEUE_DIR", raising=False)
+    wiki = app / "wiki"; wiki.mkdir()
+    responder = AgenticWikiResponder(wiki, sources); responder.client = None
+    monkeypatch.setattr(api_server, "responder", responder)
+    monkeypatch.setattr(api_server, "WIKI_DIR", wiki)
+    monkeypatch.setattr(api_server, "SOURCE_DIR", sources)
+    monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", runtime)
+    monkeypatch.setattr(api_server, "RELOAD_TOKEN", "writer-fixture-only")
+    client = TestClient(api_server.app)
+    activated = []
+    def reload(generation):
+        pending = json.loads((queue / "pending.json").read_text())
+        response = client.post("/api/reload", params={"generation_id": generation},
+            headers={"X-Reload-Token": "writer-fixture-only"})
+        assert response.status_code == 200, response.text
+        assert responder.kb.public_registry_revision == pending["public_registry_revision"]
+        activated.append(generation)
+    def writer(callback=reload):
+        return PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, callback, repository_root=app)
+    first = writer().process_next()
+    assert first["chat_ready"] and len(activated) == 1
+    assert "article-a.md" in {doc.file for doc in responder.kb.documents}
+    old_pointer = (queue / "active.json").read_bytes()
+    revision = public_revision(database)
+    with sqlite3.connect(database) as db:
+        snapshot = snapshot_entity(db, "article", "a")
+        snapshot["derived_display"] = {"summary": "Unapproved correction"}
+        stage_snapshot(db, snapshot)
+        db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('raw-new','https://example.org/raw','s','2026-10-17','2026-10-17')")
+        stage_entities(db)
+    assert public_revision(database) == revision
+    assert writer().process_next() is None and len(activated) == 1
+    assert (queue / "active.json").read_bytes() == old_pointer
+    set_visibility(database, "article", "a", False)
+    clock = ["2026-10-17T12:00:00+00:00"]
+    monkeypatch.setattr(pipeline_module, "_now", lambda: clock[0])
+    def unavailable(generation):
+        raise OSError("reload temporarily unavailable")
+    failed = writer(unavailable).process_next()
+    assert failed["stage"] == "failed" and (queue / "active.json").read_bytes() == old_pointer
+    responder.answer("Title a", language="en", answer_mode="brief")
+    assert "article-a.md" in {doc.file for doc in responder.kb.documents}
+    assert responder.kb.public_registry_revision == revision
+    assert client.get("/wiki/article-a.md").status_code == 200
+    assert EvidenceTurn(responder.chat_evidence, "Title a", "", []).reader().article("a")["article_id"] == "a"
+    projection, metadata = api_server._selected_pdf_projection()
+    restarted = AgenticWikiResponder(wiki, sources, projection,
+        approved_registry_snapshot=approved_projection_snapshot(runtime, metadata, database=database))
+    restarted.client = None
+    restarted.answer("Title a", language="en", answer_mode="brief")
+    assert restarted.kb.public_registry_revision == revision and "article-a.md" in {doc.file for doc in restarted.kb.documents}
+    assert writer().process_next() is None  # Durable backoff survives constructing a new writer.
+    clock[0] = "2026-10-17T12:01:00+00:00"
+    recovered = writer().process_next()
+    assert recovered["chat_ready"] and len(activated) == 2
+    responder.answer("Title a", language="en", answer_mode="brief")
+    assert "article-a.md" not in {doc.file for doc in responder.kb.documents}
+    assert client.get("/wiki/article-a.md").status_code == 404
+    assert responder.kb.public_registry_revision == public_revision(database)
+    with pytest.raises(RegistryNotFoundError):
+        EvidenceTurn(responder.chat_evidence, "Title a", "", []).reader().article("a")
+    assert not any("Unapproved correction" in doc.markdown for doc in responder.kb.documents)
+    assert writer().process_next() is None  # Restart at the same approved revision does no work.
+    active = json.loads((queue / "active.json").read_text())
+    damaged = runtime / "registry-snapshots/tampered.sqlite3"
+    damaged.write_bytes(Path(active["public_registry_snapshot"]).read_bytes() + b"tampered")
+    with pytest.raises(RuntimeError, match="snapshot is invalid"):
+        approved_projection_snapshot(runtime, {**active, "public_registry_snapshot": str(damaged)}, database=database)
+    with pytest.raises(RuntimeError, match="revision differs"):
+        approved_projection_snapshot(runtime, {**active, "public_registry_revision": "f" * 64}, database=database)
+    other = tmp_path / "other.sqlite3"
+    other.write_bytes(database.read_bytes())
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(other))
+    with pytest.raises(ValueError, match="frozen task binding"):
+        api_server._selected_pdf_projection()
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    historical = {key: value for key, value in active.items() if not key.startswith("public_registry_")}
+    atomic_write_json(queue / "active.json", historical)
+    assert writer().process_next()["chat_ready"]  # Upgrade an older modern generation once.
+    assert responder.kb.approved_registry_snapshot is not None
+    assert writer().process_next() is None
+
+
 def test_new_pdf_writer_waits_for_native_review_and_then_resumes(tmp_path,monkeypatch):
     from reportlab.pdfgen.canvas import Canvas
     from climate_monitor.pdf_intake import import_pdf_reports
@@ -994,7 +1132,7 @@ def test_new_pdf_writer_waits_for_native_review_and_then_resumes(tmp_path,monkey
     for directory in(queue,runtime,runs):directory.mkdir()
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database));monkeypatch.setenv("CLIMATE_ACQUISITION_RUN_DIR",str(runs))
     queued=enqueue_pdf_batch(queue,bundle,repository_root=application)
-    def reload(generation):atomic_write_json(queue/"active.json",json.loads((queue/"pending.json").read_text(encoding="utf-8")))
+    responder, reload = _actual_chat_activation(monkeypatch, database, application, queue, runtime)
     writer=PdfIntakePipeline(queue,database,tmp_path/"backups",runtime,reload,repository_root=application)
     result=writer.process_next()
     assert result["stage"] == "pending_review" and not result["chat_ready"], result
@@ -1027,6 +1165,7 @@ def test_new_pdf_writer_waits_for_native_review_and_then_resumes(tmp_path,monkey
     result=writer.process_next()
     assert result["chat_ready"] is True
     assert _reader(database,tmp_path).pdf_articles_all()
+    _assert_queued_chat_stays_activated(writer, responder, database, queue)
 
 
 @pytest.mark.parametrize("retry",[False,True])
@@ -1124,8 +1263,12 @@ def test_pdf_first_write_binding_survives_failed_imported_status_save(tmp_path,m
         assert all_files()==before_files
     if historical_missing_binding in {"processing","queued"}:
         assert retry_pdf_batch(queue,queued["batch_id"])["stage"]==historical_missing_binding  # Read-only, not a retryable failure.
+    elif historical_missing_binding:
+        assert wrong.process_next() is None  # Unbound historical failures still require an explicit retry.
     else:
-        assert wrong.process_next() is None  # Failed batches require an explicit retry.
+        with pytest.raises(ValueError, match="frozen task binding"):
+            wrong.process_next()  # Automatic public refresh must honor existing durable DB bindings too.
+        assert all_files() == before_files
     assert all_files()==before_files and database.read_bytes()==before_a and other.read_bytes()==before_b
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     if historical_missing_binding:

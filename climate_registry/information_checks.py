@@ -13,7 +13,7 @@ import sqlite3
 import uuid
 from copy import deepcopy
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -527,11 +527,11 @@ def _check_run_input(connection, prefix, run_id, database):
     return frozen
 
 
-def _currently_verified_targets(connection, prefix: str, targets: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    """Return keys with a latest verified attempt for the same logical observation and URL."""
+def _latest_target_attempts(connection, prefix: str, targets: list[dict[str, Any]]) -> dict:
+    """Read the latest actual attempt for each logical observation and URL."""
     target_keys = {(target["occurrence_id"], target["source_url"]) for target in targets}
     if not target_keys:
-        return set()
+        return {}
     grouped: dict[str, dict[str, set[str]]] = {}
     for target in targets:
         if target["entity_kind"] == "article":
@@ -546,9 +546,11 @@ def _currently_verified_targets(connection, prefix: str, targets: list[dict[str,
     available_columns = {row[1] for row in connection.execute(f"PRAGMA table_info({prefix}_check_attempts)")}
     selected_columns = ["rowid AS _attempt_rowid", "occurrence_id"] + [
         column for column in ("core_article_id", "event_source_id") if column in available_columns
-    ] + ["source_url", "checked_at", "packet_json", "packet_sha256"]
+    ] + ["source_url", "source_revision_sha256", "checked_at", "packet_json", "packet_sha256"]
     if "verification_status" in available_columns:
         selected_columns.append("verification_status")
+    if "run_id" in available_columns:
+        selected_columns.append("run_id")
     for column, identities in grouped.items():
         pairs = [(identity, url) for identity, urls in identities.items() for url in urls]
         for start in range(0, len(pairs), 300):
@@ -564,33 +566,86 @@ def _currently_verified_targets(connection, prefix: str, targets: list[dict[str,
                 key = (attempt_identity(attempt, prefix), attempt["source_url"])
                 latest.setdefault(key, attempt)
 
-    verified = set()
-    for key in target_keys:
-        row = latest.get(key)
-        if row is None or row.get("verification_status") != "verified":
-            continue
-        try:
-            packet = json.loads(row["packet_json"])
-        except (json.JSONDecodeError, TypeError) as exc:
-            raise ValueError("invalid information check packet") from exc
-        if not isinstance(packet, dict):
-            raise ValueError("invalid information check packet")
-        if _sha(packet) != row["packet_sha256"]:
-            raise ValueError("information check packet hash mismatch")
-        if (row.get("verification_status") == "verified"
-                and packet.get("verification_status") == "verified"):
-            verified.add(key)
-    return verified
+    return latest
+
+
+def _exact_attempt(target, row):
+    if row is None or row.get("source_revision_sha256") != target["source_revision_sha256"]:
+        return None
+    try:
+        packet = json.loads(row["packet_json"])
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("invalid information check packet") from exc
+    if not isinstance(packet, dict) or _sha(packet) != row["packet_sha256"]:
+        raise ValueError("information check packet hash mismatch")
+    # A URL/manual legacy receipt cannot prove which candidate or source was checked.
+    return packet if all(packet.get(key) == value for key, value in target.items()) else None
+
+
+def _terminal_attempt(connection, prefix, row):
+    if not row or not row.get("run_id"):
+        return False
+    run = connection.execute(f"SELECT status,item_count,completed_count,completed_at FROM {prefix}_check_runs WHERE run_id=?",
+        (row["run_id"],)).fetchone()
+    return bool(run and run[0] in {"complete", "partial"} and run[1] > 0 and run[1] == run[2] and run[3])
+
+
+def _currently_verified_targets(connection, prefix: str, targets: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """Skip only the exact source version and fields successfully checked."""
+    latest = _latest_target_attempts(connection, prefix, targets)
+    return {key for target in targets
+        if (row := latest.get(key := (target["occurrence_id"], target["source_url"]))) is not None
+        and row.get("verification_status") == "verified"
+        and (packet := _exact_attempt(target, row)) is not None
+        and packet.get("verification_status") == "verified"}
+
+
+def _incremental_targets(connection, prefix, targets, *, now, retry_after_minutes):
+    latest = _latest_target_attempts(connection, prefix, targets)
+    ready = []
+    for target in targets:
+        row = latest.get((target["occurrence_id"], target["source_url"]))
+        packet = _exact_attempt(target, row)
+        if packet is not None:
+            terminal = _terminal_attempt(connection, prefix, row)
+            if terminal and packet.get("verification_status") == "verified" and not packet.get("enrichment_error"):
+                continue
+            checked = datetime.fromisoformat(row["checked_at"].replace("Z", "+00:00"))
+            if terminal and now < checked + timedelta(minutes=retry_after_minutes):
+                continue
+        # Due retries go first, then enter backoff so new versions get the next tick.
+        ready.append((datetime.fromisoformat(row["checked_at"].replace("Z", "+00:00"))
+            if packet is not None else now, target))
+    return [target for _, target in sorted(ready, key=lambda item:
+        (item[0], item[1]["occurrence_id"], item[1]["source_url"]))]
+
+
+def _reusable_reader(connection, prefix, target):
+    """Reuse retained complete reader bytes only for the same frozen version."""
+    row = _latest_target_attempts(connection, prefix, [target]).get((target["occurrence_id"], target["source_url"]))
+    packet = _exact_attempt(target, row)
+    if not packet or packet.get("verification_status") != "verified":
+        return None
+    record = (packet or {}).get("reader") or {}
+    if record.get("status") != "ok" or not record.get("content"):
+        return None
+    try:
+        verify_record(record, inputs_index={target["occurrence_id"]: {"url": target["source_url"]}})
+    except (ValueError, RuntimeError):
+        return None
+    return record
 
 
 def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: set[str] | None = None,
     resume_run_id: str | None = None, retry_run_id: str | None = None, limit: int | None = None,
-    reverify_all: bool = False,
+    reverify_all: bool = False, incremental: bool = False, retry_after_minutes: int = 60,
+    clock: Callable[[], datetime] | None = None,
     data_root: Path | None = None, verifier: Callable = typesafe_verify, fetcher: Callable | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """One terminal attempt per record/URL. Retry creates new immutable attempts."""
     prefix = KINDS.get(kind)
     if (prefix is None or (resume_run_id and retry_run_id) or (limit is not None and limit < 1)
+            or retry_after_minutes < 1 or (incremental and (reverify_all or retry_run_id))
             or (reverify_all and (resume_run_id or retry_run_id))):
         raise ValueError("invalid check options")
     from .publication import resolve_database
@@ -611,7 +666,12 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
             targets = [target for target in targets if (target["occurrence_id"], target["source_url"]) in keys]
         run_id = f"{prefix}-check-" + uuid.uuid4().hex
         with _writer(database) as connection:
-            if not reverify_all:
+            if incremental:
+                targets = _incremental_targets(connection, prefix, targets,
+                    now=(clock or (lambda: datetime.now(timezone.utc)))(), retry_after_minutes=retry_after_minutes)
+                # Freeze a complete small run; T10 need not wait for the corpus.
+                targets = targets[:limit or 10]
+            elif not reverify_all:
                 verified = _currently_verified_targets(connection, prefix, targets)
                 targets = [target for target in targets
                     if (target["occurrence_id"], target["source_url"]) not in verified]
@@ -629,10 +689,15 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
     for target in targets:
         if (target["occurrence_id"], target["source_url"]) in done:
             continue
-        if limit is not None and count >= limit:
+        if not incremental and limit is not None and count >= limit:
             break
         try:
-            record = (fetcher(target["occurrence_id"], target["source_url"]) if fetcher else
+            record = None
+            if incremental and not fetcher:
+                with sqlite3.connect(database) as connection:
+                    connection.row_factory = sqlite3.Row
+                    record = _reusable_reader(connection, prefix, target)
+            record = record or (fetcher(target["occurrence_id"], target["source_url"]) if fetcher else
                 fetch_article_content(target["occurrence_id"], target["source_url"], data_root=data_root))
             packet = evaluate(target, kind, record, verifier)
         except Exception as exc:

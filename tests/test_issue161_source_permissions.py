@@ -1,5 +1,6 @@
 """Application source permissions must not relax private/external input readers."""
 import os
+import json
 from pathlib import Path
 import shutil
 import stat
@@ -70,7 +71,7 @@ def test_fixture_baseline_skips_links(tmp_path, kind):
 
 @pytest.mark.parametrize('directories,files', [(0o755, 0o644), (0o755, 0o664),
                                               (0o775, 0o644), (0o775, 0o664)])
-def test_snapshot_and_managed_start_from_source_modes(source_copy, tmp_path, directories, files):
+def test_snapshot_and_managed_start_from_source_modes(source_copy, tmp_path, directories, files, safe_managed_interpreter):
     for path in [source_copy, *source_copy.rglob('*')]:
         path.chmod(directories if path.is_dir() else files)
     assert source_copy.stat().st_mode & 0o777 == directories
@@ -105,7 +106,9 @@ print('snapshot and managed start verified')
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1',
                CLIMATE_REPOSITORY_COMMIT_SHA='a' * 40)
     env.pop('PYTHONPATH', None)
-    result = subprocess.run([sys.executable, '-B', '-c', code, str(tmp_path)],
+    dependencies = [path for path in sys.path if Path(path).name in {'site-packages', 'dist-packages'}]
+    bootstrap = 'import sys; sys.path.extend(' + json.dumps(dependencies) + ')\n'
+    result = subprocess.run([str(safe_managed_interpreter), '-B', '-c', bootstrap + code, str(tmp_path)],
                             cwd=source_copy, env=env, text=True, capture_output=True, timeout=120)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'snapshot and managed start verified'

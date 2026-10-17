@@ -1,9 +1,11 @@
-# Biweekly ET deployment and no-send rehearsal
+# Independent article pipeline deployment and no-send rehearsal
 
-The current Issue #197 deployment target is the `independent-et` profile:
-ten Hermes cron jobs (T1–T10) plus the existing independent PDF intake writer.
-Retain T1 article and meeting information checks daily at 05:00 ET
-(`America/New_York`). Use the [ten-role configuration](../PIPELINE_CONFIG.md#independent-task-profile)
+The current deployment target is the `independent-et` profile:
+eleven application Hermes cron jobs (T1–T11) plus the existing independent PDF
+intake writer. T1 checks bounded incremental article and meeting batches every
+five minutes; T11 independently synchronizes approved public Git snapshots.
+Wall-clock business times use `America/New_York`. Use the
+[task configuration](../PIPELINE_CONFIG.md#independent-task-profile)
 and [independent task cutover](#independent-task-cutover) below for the current
 schedule and deployment gates.
 
@@ -307,20 +309,52 @@ must never be described as full coverage.
 
 ## Independent task cutover
 
-The Issue #197 target supersedes the four-slot business chain above; those
+The incremental article-first target supersedes the four-slot business chain above; those
 contracts remain for historical receipts and controlled compatibility. The
 October 6, 2026 Issue inventory reported eight enabled jobs and twelve disabled
 Step jobs, with T10 uninstalled. This is dated evidence, not current deployment
-proof. Use the [ten-role configuration](../PIPELINE_CONFIG.md#independent-task-profile).
+proof. The 2026-10-17 read-only audit of deployed `24d25c5` found five enabled
+jobs, four paused Issue124 slots and twelve disabled Steps. Use the
+[eleven-role configuration](../PIPELINE_CONFIG.md#independent-task-profile).
+This PR prepares code and migration instructions; it does not install the
+replacement schedule or claim a production cycle.
 
 Before switch, back up Registry databases and necessary SQLite sidecars, active
 pointers/immutable generations, all external runs/reviews/report/mail state, task
 definitions, job configuration/IDs and old image identity. Use normal schema
 migration with exact backup/restore verification. Read back actual deployed
 commit/image/mounts/fonts/Poppler/native tools and four-recipient private config.
-Stop the old Monitor/Artifact/Publisher/Registry dispatch before enabling the six
-new jobs; retain T1/T7–T9, the writer and twelve disabled Steps. Verify ten actual
-IDs, prompts/scripts, UTC ticker, no_agent, enabled and next occurrence.
+Keep the old Monitor/Artifact/Publisher/Registry dispatch stopped. Stage the
+eleven application roles disabled, retain the existing writer, and update T1 to
+bounded incremental work and T7 to the actual new job map. Reuse the existing
+publisher for T11's report-independent public snapshot mode. Verify eleven
+actual IDs, prompts/scripts, UTC ticker, `no_agent`, interpreter, enabled state
+and next occurrence before enabling the replacement. The host health report is
+outside this application schedule and remains under host-security ownership.
+Before enabling T11, resolve any legacy report sources still pending in its
+rolling PR through the existing human review process. The public publisher
+blocks sources absent from or different in current `main`, preserves the branch
+and PR, and does not read the old report directory or import pending reports.
+An identical source already merged into `main` also passes after a squash merge.
+
+After replacement coverage and readback are verified, archive the old job
+definitions and remove the twelve disabled Step jobs and four paused Issue124
+slots from the scheduler. Preserve execution/audit history and source archives.
+Do not restore the old report-to-Registry chain alongside T1–T11. Production job
+changes happen during the separately recorded deployment, not during PR tests.
+
+Rehearse a new website candidate and a PDF candidate through terminal T1
+evidence, independent native T10 review, publication/display refresh and writer
+activation. Also prove an unchanged version skips improvement/review; a changed
+version invalidates its old receipt; delayed retries do not block other work;
+and reload failure retains the old active generation until a successful retry.
+Verify T11 can update an approved snapshot and visibility with no current
+Monday report. An empty queue or wrong-offset tick must not overwrite the last
+actual business failure with a green completion.
+Prove an unchanged approved revision, including candidate-only changes, causes
+no scheduled clone, Wiki generation or report-directory lookup. Record the
+successful frozen result's revision even after a no-op; a failed publication
+must remain eligible for retry.
 
 Native T5/T10 must run independent Hermes agent cron sessions. The identity
 bridge preflight proves only current session injection. Real T5 text/page-tool

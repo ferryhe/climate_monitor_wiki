@@ -984,10 +984,12 @@ class WikiKnowledgeBase:
         wiki_dir: Path = DEFAULT_WIKI_DIR,
         source_dir: Path = DEFAULT_SOURCE_DIR,
         wiki_overlay_dir: Path | None = None,
+        *, approved_registry_snapshot: Path | None = None,
     ) -> None:
         self.wiki_dir = wiki_dir
         self.source_dir = source_dir
         self.wiki_overlay_dir = wiki_overlay_dir
+        self.approved_registry_snapshot = approved_registry_snapshot
         self.documents: list[WikiDocument] = []
         self.source_documents: list[WikiDocument] = []
         self.source_documents_by_title: dict[str, WikiDocument] = {}
@@ -999,8 +1001,12 @@ class WikiKnowledgeBase:
         self.latest_date = ""
         self._load()
 
+    @property
+    def registry_database(self) -> str:
+        return str(self.approved_registry_snapshot) if self.approved_registry_snapshot else os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+
     def _load(self) -> None:
-        configured_registry = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+        configured_registry = self.registry_database
         pages, self.public_registry_revision = None, None
         self.public_registry_unavailable = False
         if configured_registry:
@@ -1659,8 +1665,10 @@ class AgenticWikiResponder:
         wiki_dir: Path = DEFAULT_WIKI_DIR,
         source_dir: Path = DEFAULT_SOURCE_DIR,
         wiki_overlay_dir: Path | None = None,
+        *, approved_registry_snapshot: Path | None = None,
     ) -> None:
-        self.kb = WikiKnowledgeBase(wiki_dir, source_dir, wiki_overlay_dir)
+        self.kb = WikiKnowledgeBase(wiki_dir, source_dir, wiki_overlay_dir,
+            approved_registry_snapshot=approved_registry_snapshot)
         self.model = os.getenv("OPENAI_MODEL", "gpt-5.2")
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
         self.base_source_url = self._github_blob_base_url()
@@ -1784,7 +1792,7 @@ class AgenticWikiResponder:
         if answer_mode not in VALID_ANSWER_MODES:
             raise ValueError(f"Unsupported answer mode: {answer_mode}")
 
-        configured_registry = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+        configured_registry = self.kb.registry_database
         if configured_registry:
             from climate_registry.publication import public_revision
             from climate_registry.read_api import RegistryContractError, RegistryUnavailableError

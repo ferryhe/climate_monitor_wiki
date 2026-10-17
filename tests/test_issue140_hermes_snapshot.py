@@ -58,6 +58,40 @@ def test_manager_freezes_before_launch(tmp_path, monkeypatch, runtime):
     assert 'route-A' not in json.dumps(binding)
 
 
+@pytest.mark.parametrize('damage', ['binary', 'pyvenv', 'link'])
+def test_acquisition_interpreter_preserves_venv_alias_and_rejects_runtime_drift(tmp_path, runtime, monkeypatch, safe_managed_interpreter, damage):
+    import shutil
+    from climate_monitor import hermes_identity as h
+    prefix = tmp_path / 'application-venv'
+    prefix.mkdir(mode=0o700)
+    (prefix / 'bin').mkdir(parents=True, mode=0o700)
+    binary = prefix / 'python-binary'
+    shutil.copyfile(safe_managed_interpreter, binary); binary.chmod(0o700)
+    (prefix / 'bin/python').symlink_to(binary)
+    configuration = prefix / 'pyvenv.cfg'
+    configuration.write_bytes((safe_managed_interpreter.parent.parent / 'pyvenv.cfg').read_bytes())
+    configuration.chmod(0o600)
+    alias = tmp_path / 'application-alias'; alias.symlink_to(prefix, target_is_directory=True)
+    original = h._acquisition_runtime
+    monkeypatch.setattr(h, '_acquisition_runtime', lambda interpreter=None, version=None:
+        original(interpreter or alias / 'bin/python', version))
+    run = tmp_path / 'run'; run.mkdir(mode=0o700)
+    reference = h.create_snapshot(run)
+    frozen = h.load_snapshot(run, reference)['acquisition_runtime']
+    assert frozen['interpreter'] == str(prefix / 'bin/python')
+    assert frozen['interpreter_link']['target'] == str(binary)
+    assert str(configuration) in frozen['files']
+    if damage == 'pyvenv':
+        configuration.write_bytes(configuration.read_bytes() + b'\n# changed\n')
+    elif damage == 'binary':
+        binary.write_bytes(binary.read_bytes() + b'changed')
+    else:
+        other = prefix / 'other-python'; shutil.copyfile(binary, other); other.chmod(0o700)
+        (prefix / 'bin/python').unlink(); (prefix / 'bin/python').symlink_to(other)
+    with pytest.raises(ValueError, match='fresh'):
+        h.load_snapshot(run, reference)
+
+
 def test_identity_concurrent_writers_never_overwrite(tmp_path):
     from climate_monitor.hermes_identity import publish_identity
     barrier = threading.Barrier(2)
@@ -1596,13 +1630,36 @@ print('frozen candidate registration verified')
     assert not result.stdout and not result.stderr
 
 
-@pytest.mark.parametrize('protocol', ['v2', 'v3', 'v3_body', 'legacy'])
-def test_review4_live_poison_and_attempt_resume(tmp_path, runtime, monkeypatch, protocol):
+@pytest.mark.parametrize('protocol', ['v2', 'v3', 'v3_body', 'v3_mixed', 'legacy'])
+def test_review4_live_poison_and_attempt_resume(tmp_path, runtime, monkeypatch, protocol, safe_managed_interpreter):
     from climate_monitor import hermes_identity as h, hermes_acquisition_hooks as hooks, hermes_acquisition_policy as bundle
     from scripts import run_agent_acquisition as live_runner
     from test_issue117_request_boundaries import _v3_binding, NEW_AGENT_PROTOCOL
     from climate_monitor.request_budget import RequestBudget, ledger_path
     import subprocess, shutil
+    mixed = protocol == 'v3_mixed'
+    if mixed:
+        selected = os.getenv('TEST_HERMES_PYTHON')
+        if not selected or os.sys.version_info[:2] != (3, 12):
+            pytest.skip('mixed runtime integration needs app Python3.12 and TEST_HERMES_PYTHON=Python3.11')
+        binary = tmp_path / 'private-hermes311/bin/python'
+        binary.parent.mkdir(parents=True, mode=0o700)
+        shutil.copyfile(Path(selected).resolve(), binary); binary.chmod(0o700)
+        # Official Docker Python resolves libpython beside its relocated binary.
+        library = subprocess.check_output([selected, '-I', '-S', '-c',
+            'import pathlib,sys,sysconfig; names=[sysconfig.get_config_var("INSTSONAME"),sysconfig.get_config_var("LDLIBRARY")]; '
+            'paths=[root/name for root in (pathlib.Path(sys.base_prefix)/"lib",pathlib.Path(sysconfig.get_config_var("LIBDIR"))) for name in names if name]; '
+            'print(next((p for p in paths if p.is_file()),paths[-1]))'], text=True).strip()
+        if Path(library).is_file():
+            private_lib = binary.parent.parent / 'lib'; private_lib.mkdir(mode=0o700)
+            shutil.copyfile(library, private_lib / Path(library).name)
+            (private_lib / Path(library).name).chmod(0o600)
+        base = subprocess.check_output([selected, '-I', '-S', '-c', 'import sys; print(sys._base_executable)'], text=True).strip()
+        (binary.parent.parent / 'pyvenv.cfg').write_text('home = ' + str(Path(base).resolve().parent) + '\ninclude-system-site-packages = false\n')
+        (binary.parent.parent / 'pyvenv.cfg').chmod(0o600)
+        executable = runtime[1]
+        executable.write_text('#!' + str(binary) + '\nfrom hermes_cli.main import main\nmain()\n')
+        assert subprocess.check_output([binary, '-I', '-S', '-c', 'import sys; print(sys.version_info[:2])'], text=True).strip() == '(3, 11)'
     # Mutate only a disposable copy of the creation-time source, never the
     # shared checkout. Poison loaded worker helpers independently after binding.
     source = tmp_path / 'source'; checkout = Path(bundle.__file__).parents[1]
@@ -1611,7 +1668,7 @@ def test_review4_live_poison_and_attempt_resume(tmp_path, runtime, monkeypatch, 
     for name in [*bundle.MODULES, 'climate_monitor/hermes_search_policy.py', 'climate_monitor/hermes_acquisition_bootstrap.py']:
         target = source / name; target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(checkout / name, target)
-    if protocol == 'v3_body':
+    if protocol in {'v3_body', 'v3_mixed'}:
         monkeypatch.delenv('CLIMATE_WEB_LISTENING_DATA_DIR', raising=False)
         # An offline reader source fixture is frozen before publication, rather
         # than monkeypatching a live handler after the binding exists.
@@ -1633,11 +1690,15 @@ def test_review4_live_poison_and_attempt_resume(tmp_path, runtime, monkeypatch, 
                 'extraction_metadata': {'http_status': 200}}
     return (reader,)
 '''
+        if mixed:
+            replacement = replacement.replace("    assert Path(reader_home)",
+                "    type CapturedBody = str\n    import sys, json\n    assert sys.version_info[:2] == (3, 12)\n"
+                "    Path(reader_home).joinpath('reader-runtime.json').write_text(json.dumps(list(sys.version_info[:2])))\n    assert Path(reader_home)", 1)
         adapter.write_text(''.join(lines[:function.lineno-1]) + replacement + ''.join(lines[function.end_lineno:]))
     monkeypatch.setattr(bundle, '__file__', str(source / 'climate_monitor/hermes_acquisition_policy.py'))
     monkeypatch.setattr(h, '__file__', str(source / 'climate_monitor/hermes_identity.py'))
     run = tmp_path / 'run'; run.mkdir(mode=0o700)
-    binding = _v3_binding(tmp_path, mode='unlimited' if protocol == 'v3_body' else 'recent')
+    binding = _v3_binding(tmp_path, mode='unlimited' if protocol in {'v3_body', 'v3_mixed'} else 'recent')
     binding['checkpoint_dir'] = str(run / 'checkpoint')
     if protocol == 'v2': binding['agent_protocol'] = NEW_AGENT_PROTOCOL
     if protocol == 'legacy': binding.pop('agent_protocol')
@@ -1682,6 +1743,10 @@ if protocol:
         handle = next(r['handle'] for r in budget.result_handles() if r['attempt'] == binding['attempt'])
         args = {'result_handle': handle, 'source_key': 'wmo'}
         stage = json.loads(m.tools['climate_stage_candidate']['handler'](args, session_id='session'))
+        before_reuse = budget.usage()['fetch_attempts']
+        reused = json.loads(m.tools['climate_stage_candidate']['handler'](args, session_id='session'))
+        assert reused['reused'] and reused['candidate_handle'] == stage['candidate_handle']
+        assert budget.usage()['fetch_attempts'] == before_reuse
         eligible = binding['date_policy']['mode'] == 'unlimited'
         assert stage['date_status'] == ('eligible' if eligible else 'outside_window')
         if eligible:
@@ -1691,9 +1756,15 @@ if protocol:
         assert final['status'] == ('finalized' if eligible else 'rejected')
 print('frozen acquisition lifecycle verified')
 '''
+        if mixed:
+            code = "import sys\nassert sys.version_info[:2] == (3, 11)\n" + code
         result = subprocess.run(h.launch_command(home, '-c', code), cwd=home, env=env, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == 'frozen acquisition lifecycle verified'
+        if mixed:
+            assert json.loads((home / 'reader-runtime.json').read_text()) == [3, 12]
+            manifest = json.loads((home.parent / 'manifest.json').read_text())
+            assert manifest['interpreter'] != manifest['acquisition_runtime']['interpreter']
         if protocol != 'legacy':
             plugin_bytes.append((home / 'plugins' / plugin_name / '__init__.py').read_bytes())
         assert h.load_snapshot(run, ref)['policy'] == expected['policy']

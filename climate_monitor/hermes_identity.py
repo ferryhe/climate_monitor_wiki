@@ -15,6 +15,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 
 import yaml
@@ -353,6 +354,18 @@ def _runtime(executable, *, commitments=None):
     metadata['interpreter_link'] = {'path': interpreter, 'target': resolved_interpreter,
                                     'identity': _signature(Path(interpreter).lstat())}
     return interpreter, metadata
+
+
+def _acquisition_runtime(interpreter=None, version=None):
+    """Keep the application venv while resolving directory aliases such as .venv."""
+    executable = Path(interpreter or sys.executable)
+    selected = executable.parent.resolve(strict=True) / executable.name
+    binary = selected.resolve(strict=True)
+    configuration = selected.parent.parent / 'pyvenv.cfg'
+    return {'interpreter': str(selected), 'version': version or list(sys.version_info[:2]),
+        'interpreter_link': {'path': str(selected), 'target': str(binary), 'identity': _signature(selected.lstat())},
+        'files': {str(path): secure_read(path)[1] for path in
+            ([binary, configuration] if configuration.is_file() else [binary])}}
 
 
 def _check_document(value):
@@ -762,7 +775,8 @@ def _collect(environ, executable, reader_default):
         _mkdir_private(reader_default)
         reader_root = str(reader_default)
     reader = hermes_reader_runtime.collect(reader_root, hermes_runtime_inventory)
-    return {'reader_runtime': reader, 'config': config, 'auth': auth, 'environment': frozen_env, 'blobs': blobs,
+    return {'reader_runtime': reader, 'acquisition_runtime': _acquisition_runtime(),
+            'config': config, 'auth': auth, 'environment': frozen_env, 'blobs': blobs,
             'web_config': web_config, 'web_environment': web_env, 'web_plugins_disabled': web_disabled,
             'web_environment_metadata': _environment_metadata(web_env),
             'inputs': inputs, 'environment_metadata': env_metadata, 'runtime': runtime, 'executable': executable, 'interpreter': interpreter, 'package_root': str(package), 'runtime_paths': _runtime_paths(interpreter, executable, package)}
@@ -787,12 +801,12 @@ def create_snapshot(run_dir, *, environ=None, source=None):
     policy = _policy_bytes(run_dir / SNAPSHOT, source)
     first = _collect(environment, executable, default_reader)
     from climate_monitor.hermes_acquisition_policy import provider_dependency_policy
-    dependencies = provider_dependency_policy(first['interpreter'], first['package_root'])
+    dependencies = provider_dependency_policy(first['acquisition_runtime']['interpreter'])
     second = _collect(environment, executable, default_reader)
     if first != second or (dict(os.environ if environ is None else environ) != original_environment):
         raise ValueError('Hermes inputs changed during collection; start a fresh run')
     if (policy != _policy_bytes(run_dir / SNAPSHOT, source)
-            or dependencies != provider_dependency_policy(second['interpreter'], second['package_root'])):
+            or dependencies != provider_dependency_policy(second['acquisition_runtime']['interpreter'])):
         raise ValueError('Hermes policy changed during collection; start a fresh run')
     policy.update(dependencies)
     from climate_monitor.hermes_runtime_inventory import inventory, encode_commitments
@@ -910,6 +924,9 @@ def load_snapshot(run_dir, reference):
         if (runtime != payload['runtime'] or interpreter != payload['interpreter']
                 or runtime['package_root']['path'] != payload['package_root']
                 or payload['runtime_paths'] != _runtime_paths(interpreter, payload['executable'], payload['package_root'])):
+            raise ValueError()
+        acquisition_runtime = payload.get('acquisition_runtime', {})
+        if acquisition_runtime != _acquisition_runtime(acquisition_runtime.get('interpreter'), acquisition_runtime.get('version')):
             raise ValueError()
         if payload['environment'].get('SSL_CERT_DIR') == '@snapshot/ca-dir':
             _check((root / 'ca-dir').lstat(), True, directory=True)

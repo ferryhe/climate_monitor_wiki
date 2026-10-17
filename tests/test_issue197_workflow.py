@@ -877,11 +877,12 @@ def test_daily_wrapper_keeps_admitted_occurrence_after_slow_first_phase(tmp_path
     from scripts import check_information
     from climate_registry import pdf_pipeline
     import climate_monitor.article_content_adapter as adapter
-    clock = [datetime(2026,10,6,9,tzinfo=timezone.utc)]
+    clock = [datetime(2026,10,6,17,30,tzinfo=timezone.utc)]
     monkeypatch.setattr(check_information,"datetime",SimpleNamespace(now=lambda _tz:clock[0]))
     monkeypatch.setattr(adapter,"check_dependencies",lambda:"available")
     calls = []
     def run(database, **kwargs):
+        assert kwargs["incremental"] is True and kwargs["limit"] == 10 and kwargs["retry_after_minutes"] == 60
         calls.append((kwargs["kind"],kwargs["resume_run_id"],kwargs["retry_run_id"]))
         if kwargs["kind"] == "articles":clock[0] += timedelta(minutes=6)
         status = article_status if len(calls) == 1 else "complete"
@@ -900,27 +901,27 @@ def test_daily_wrapper_keeps_admitted_occurrence_after_slow_first_phase(tmp_path
                  "CLIMATE_PDF_RUNTIME_WIKI_DIR","CLIMATE_PDF_RELOAD_URL","RELOAD_TOKEN"):
         monkeypatch.setenv(name,str(tmp_path/name))
     script = (Path(__file__).resolve().parents[1]/"scripts/hermes_job_information_check.sh").read_text()
-    program = script.split("python -c '",1)[1].rsplit("\n' ",1)[0]
+    program = script.split("/usr/local/bin/python3.12 -c '",1)[1].rsplit("\n' ",1)[0]
     def dispatch(at):
         clock[0] = at
         monkeypatch.setattr(sys,"stdin",io.StringIO("TYPESAFE_API_KEY=isolated-test\n"))
         monkeypatch.setattr(sys,"argv",["wrapper",""])
         with pytest.raises(SystemExit) as result:exec(program,{"__name__":"isolated_daily_wrapper"})
         return result.value.code
-    at = datetime(2026,10,6,9,tzinfo=timezone.utc)
+    at = datetime(2026,10,6,17,30,tzinfo=timezone.utc)
     assert dispatch(at) == (0 if article_status == "complete" else 2)
     assert [kind for kind,_,_ in calls] == ["articles","meetings"]
     for kind in ("articles","meetings"):
         receipt = json.loads((tmp_path/(kind+"-daily-check.json")).read_text())
-        assert receipt["occurrence"] == "2026-10-06T09:00:00Z"
-    assert dispatch(at+timedelta(minutes=2)) == 0
-    if article_status == "partial":assert calls[-1] == ("articles",None,"articles-run")
+        assert receipt["occurrence"] == "2026-10-06T17:30:00Z"
+    assert dispatch(at+timedelta(minutes=2)) == (0 if article_status == "complete" else 2)
+    assert len(calls) == 2  # Same occurrence does not immediately retry a failed version.
     assert [kind for kind,_,_ in calls].count("meetings") == 1
     count = len(calls)
     assert dispatch(at+timedelta(minutes=6)) == 0
-    assert len(calls) == count  # A new invocation outside the due window is blocked.
+    assert len(calls) == count + 2  # The next five-minute occurrence gets both bounded kinds.
     assert dispatch(at+timedelta(hours=1)) == 0
-    assert len(calls) == count  # The second UTC tick never starts fresh work.
+    assert len(calls) == count + 4
 
 
 def test_first_ingestion_in_window_survives_current_update_after_cutoff(tmp_path, monkeypatch):

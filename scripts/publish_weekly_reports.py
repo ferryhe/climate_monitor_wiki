@@ -82,6 +82,7 @@ class PublishResult:
     reports: tuple[str, ...] = ()
     pr_url: str | None = None
     report: ReportIdentity | None = None
+    public_revision: str | None = None
 
 
 def run_command(
@@ -370,6 +371,7 @@ def validate_remote_branch(
     report_dir: Path,
     allow_offcycle: bool = False,
     today: date,
+    public_snapshot: bool = False,
 ) -> None:
     added_dates: set[str] = set()
     cutoff = today if allow_offcycle else _current_monday(today)
@@ -379,6 +381,13 @@ def validate_remote_branch(
         )
         if not match:
             continue
+        remote_blob = _output(runner, ["git", "rev-parse", f"{ref}:{path}"], checkout)
+        if public_snapshot:
+            main_blob = runner(["git", "rev-parse", f"origin/main:{path}"], cwd=checkout, check=False)
+            if main_blob.returncode or main_blob.stdout.strip() != remote_blob:
+                raise PublishError(f"legacy rolling report requires one-time cutover before public snapshot publication: {path}")
+            added_dates.add(match.group(1))
+            continue
         report_day = date.fromisoformat(match.group(1))
         if status != "A" or (report_day.weekday() != 0 and not allow_offcycle) or report_day > cutoff:
             raise PublishError(f"invalid rolling source: {status} {path}")
@@ -386,7 +395,6 @@ def validate_remote_branch(
         if not authoritative.is_file():
             raise PublishError(f"authoritative report missing for rolling source: {path}")
         validate_report(authoritative, allow_offcycle=allow_offcycle)
-        remote_blob = _output(runner, ["git", "rev-parse", f"{ref}:{path}"], checkout)
         authoritative_blob = _output(
             runner,
             ["git", "hash-object", "--no-filters", str(authoritative.resolve())],
@@ -876,6 +884,7 @@ def _publish_attempt(
     candidate_branch: str,
     registry_database: Path | None,
     allow_offcycle: bool = False,
+    public_snapshot: bool = False,
 ) -> PublishResult:
     with tempfile.TemporaryDirectory(prefix="climate-weekly-publish-") as tmp:
         registry_snapshot: Path | None = None
@@ -894,14 +903,20 @@ def _publish_attempt(
         base_sha = _output(runner, ["git", "rev-parse", "origin/main"], checkout)
         runner(["git", "reset", "--hard", base_sha], cwd=checkout)
         public_registry=False
+        revision = None
         if registry_snapshot is not None:
             with closing(sqlite3.connect(f"{registry_snapshot.as_uri()}?mode=ro",uri=True)) as connection:
                 public_registry=connection.execute("PRAGMA user_version").fetchone()[0]>=21
             if public_registry:
-                try:
-                    load_registry_selection_snapshot(registry_snapshot,checkout/"sources")
-                except (RegistryInputError,RegistryBuildError) as exc:
-                    raise PublishError("registry selection baseline is invalid") from exc
+                from climate_registry.publication import public_revision
+                revision = public_revision(registry_snapshot)
+                if not public_snapshot:
+                    try:
+                        load_registry_selection_snapshot(registry_snapshot,checkout/"sources")
+                    except (RegistryInputError,RegistryBuildError) as exc:
+                        raise PublishError("registry selection baseline is invalid") from exc
+        if public_snapshot and (not public_registry or revision is None):
+            raise PublishError("public snapshot publication requires an approved Registry database")
 
         remote_branch_sha = _remote_branch_sha(runner, checkout)
         if remote_branch_sha:
@@ -932,9 +947,10 @@ def _publish_attempt(
                 report_dir=report_dir,
                 today=today,
                 allow_offcycle=allow_offcycle,
+                public_snapshot=public_snapshot,
             )
 
-        discovered = discover_reports(report_dir, today=today, allow_offcycle=allow_offcycle)
+        discovered = [] if public_snapshot else discover_reports(report_dir, today=today, allow_offcycle=allow_offcycle)
         pending = [
             report
             for report in discovered
@@ -1023,7 +1039,7 @@ def _publish_attempt(
             base_sha=base_sha,
             branch_sha=remote_branch_sha,
         )
-        report_identity = _final_report_identity(
+        report_identity = None if public_snapshot else _final_report_identity(
             checkout, report_dir, today=today, allow_offcycle=allow_offcycle
         )
         remote_tree = None
@@ -1037,7 +1053,7 @@ def _publish_attempt(
         if not changes:
             if not remote_branch_sha:
                 return PublishResult(
-                    status="no-op", base_sha=base_sha, report=report_identity
+                    status="no-op", base_sha=base_sha, report=report_identity, public_revision=revision
                 )
             _delete_ref_exact(
                 runner,
@@ -1055,6 +1071,7 @@ def _publish_attempt(
                 reports=tuple(imported),
                 pr_url=closed_pr,
                 report=report_identity,
+                public_revision=revision,
             )
 
         if remote_tree == published_tree:
@@ -1066,6 +1083,7 @@ def _publish_attempt(
                 reports=tuple(imported),
                 pr_url=pr_url,
                 report=report_identity,
+                public_revision=revision,
             )
 
         _promote_via_candidate(
@@ -1084,6 +1102,7 @@ def _publish_attempt(
             reports=tuple(imported),
             pr_url=pr_url,
             report=report_identity,
+            public_revision=revision,
         )
 
 
@@ -1096,6 +1115,7 @@ def publish(
     verifier: Verifier = verify_checkout,
     registry_database: Path | None = None,
     allow_offcycle: bool = False,
+    public_snapshot: bool = False,
 ) -> PublishResult:
     configured_registry = registry_database or os.getenv("CLIMATE_REGISTRY_DB", "").strip()
     if configured_registry:
@@ -1130,6 +1150,7 @@ def publish(
                     candidate_branch=candidate_branch,
                     registry_database=registry_database,
                     allow_offcycle=allow_offcycle,
+                    public_snapshot=public_snapshot,
                 )
             except _MainChanged as exc:
                 if attempt == MAX_BASE_ATTEMPTS:
@@ -1201,8 +1222,33 @@ def _append_publisher_result(
     report_date: str,
     repository_root: Path,
     allow_offcycle: bool = False,
+    public_snapshot: bool = False,
 ) -> str:
     finished_at = datetime.now(timezone.utc).replace(microsecond=0)
+    if public_snapshot:
+        from climate_delivery.io import atomic_write_json, transaction_lock
+        directory = Path(ledger_dir).resolve()
+        if directory.is_relative_to(repository_root.resolve()):
+            raise PublishError("publisher ledger must be outside the production checkout")
+        with transaction_lock(directory, "public-snapshot"):
+            path = directory / "public-snapshot.json"
+            previous = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            attempt = {"schema_version": "public-snapshot-publication.v1",
+                "attempt_id": secrets.token_hex(16), "observed_at": finished_at.isoformat(),
+                "status": "failed" if result is None else "completed" if result.status == "published" else "skipped",
+                "result_code": result.status if result else "publish_failed",
+                "public_revision": result.public_revision if result else None,
+                "base_sha": result.base_sha if result else None,
+                "published_sha": result.published_sha if result else None,
+                "pr_url": result.pr_url if result else None}
+            attempt["last_successful_public_revision"] = (result.public_revision
+                if result is not None and result.status in {"published", "unchanged", "no-op", "cleaned"}
+                else previous.get("last_successful_public_revision"))
+            attempt["last_actual_outcome"] = ({key: value for key, value in attempt.items()} if attempt["status"] != "skipped"
+                else previous.get("last_actual_outcome"))
+            atomic_write_json(directory / "public-snapshot-attempts" / (attempt["attempt_id"] + ".json"), attempt)
+            atomic_write_json(path, attempt)
+        return attempt["status"]
     if result is None:
         attempt = _publisher_attempt(
             report_date=report_date,
@@ -1238,6 +1284,8 @@ def main() -> int:
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--registry-database", type=Path)
     parser.add_argument("--ledger-dir", type=Path, required=True)
+    parser.add_argument("--public-snapshot", action="store_true", help="Sync approved public Registry/Wiki without ingesting or requiring a current report")
+    parser.add_argument("--scheduled", action="store_true", help="Guard the independent hourly public snapshot job")
     parser.add_argument(
         "--date",
         help="Publish and verify this report date instead of deriving it from today.",
@@ -1248,6 +1296,13 @@ def main() -> int:
         help="Allow non-Monday report dates (manual re-runs). Off by default.",
     )
     args = parser.parse_args()
+    if args.scheduled:
+        if not args.public_snapshot:
+            parser.error("--scheduled requires --public-snapshot")
+        from climate_monitor.schedule import pipeline_due
+        if not pipeline_due("T11", datetime.now(timezone.utc)):
+            print("publisher: skipped outside hourly occurrence")
+            return 0
     try:
         run_today = date.fromisoformat(args.date) if args.date else date.today()
     except ValueError:
@@ -1261,13 +1316,24 @@ def main() -> int:
         registry_database = args.registry_database
         if registry_database is None and os.getenv("CLIMATE_REGISTRY_DB", "").strip():
             registry_database = resolve_database()
-        result = publish(
-            production_repo=args.production_repo,
-            report_dir=args.report_dir,
-            today=run_today,
-            registry_database=registry_database,
-            allow_offcycle=args.allow_offcycle,
-        )
+        result = None
+        if args.scheduled:
+            from climate_registry.publication import public_revision
+            revision = public_revision(resolve_database(registry_database))
+            receipt = args.ledger_dir / "public-snapshot.json"
+            previous = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
+            if (revision is not None and previous.get("status") != "failed"
+                and previous.get("last_successful_public_revision") == revision):
+                result = PublishResult("revision-unchanged", previous["base_sha"], public_revision=revision)
+        if result is None:
+            result = publish(
+                production_repo=args.production_repo,
+                report_dir=args.report_dir,
+                today=run_today,
+                registry_database=registry_database,
+                allow_offcycle=args.allow_offcycle,
+                public_snapshot=args.public_snapshot,
+            )
     except Exception as exc:
         try:
             _append_publisher_result(
@@ -1276,6 +1342,7 @@ def main() -> int:
                 report_date=report_date,
                 repository_root=args.production_repo.resolve(),
                 allow_offcycle=args.allow_offcycle,
+                public_snapshot=args.public_snapshot,
             )
         except PublishError as ledger_error:
             raise PublishError(f"{exc}; {ledger_error}") from exc
@@ -1287,6 +1354,7 @@ def main() -> int:
             report_date=report_date,
             repository_root=args.production_repo.resolve(),
             allow_offcycle=args.allow_offcycle,
+            public_snapshot=args.public_snapshot,
         )
     except PublishError as exc:
         try:
@@ -1296,6 +1364,7 @@ def main() -> int:
                 report_date=report_date,
                 repository_root=args.production_repo.resolve(),
                 allow_offcycle=args.allow_offcycle,
+                public_snapshot=args.public_snapshot,
             )
         except PublishError as failure_error:
             raise PublishError(f"{exc}; {failure_error}") from exc

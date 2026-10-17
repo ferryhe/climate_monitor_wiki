@@ -71,6 +71,7 @@ def safe_managed_interpreter(tmp_path_factory):
     """One private executable copy; hosted CI Python may itself be mode 0777."""
     import shutil
     import sys
+    import sysconfig
     from pathlib import Path
 
     root = tmp_path_factory.mktemp('managed-python')
@@ -79,6 +80,14 @@ def safe_managed_interpreter(tmp_path_factory):
     binary.parent.mkdir(mode=0o700)
     shutil.copyfile(Path(sys.executable).resolve(), binary)
     binary.chmod(0o700)
+    # Relocated official Python uses $ORIGIN/../lib for its shared runtime.
+    soname = sysconfig.get_config_var('INSTSONAME')
+    if soname:
+        library = Path(sys.base_prefix) / 'lib' / soname
+        if library.is_file():
+            (root / 'lib').mkdir(mode=0o700)
+            target = root / 'lib' / soname
+            shutil.copyfile(library, target); target.chmod(0o600)
     # Preserve stdlib discovery for relocatable Python, including -I -S launches.
     config = root / 'pyvenv.cfg'
     config.write_text('home = ' + str(Path(sys._base_executable).resolve().parent)
@@ -91,7 +100,14 @@ def safe_managed_interpreter(tmp_path_factory):
 def isolated_managed_hermes_inputs(tmp_path_factory, monkeypatch, safe_managed_interpreter):
     """Managed starts must never snapshot a test runner's real credentials."""
     from climate_monitor.hermes_identity import BASE_ENV, CREDENTIAL_ENV
+    from climate_monitor import hermes_identity
+    application_runtime = hermes_identity._acquisition_runtime
+    # The host's shared interpreter may be group-writable; use only our private
+    # executable fixture for new frozen application-runtime commitments.
+    monkeypatch.setattr(hermes_identity, "_acquisition_runtime", lambda interpreter=None, version=None:
+        application_runtime(interpreter or safe_managed_interpreter, version))
     monkeypatch.delenv("CLIMATE_REGISTRY_DB", raising=False)
+    monkeypatch.delenv("CLIMATE_WEB_LISTENING_DATA_DIR", raising=False)
 
     for key in BASE_ENV | CREDENTIAL_ENV:
         if key not in {'PATH', 'HOME', 'LANG', 'LC_ALL'}:

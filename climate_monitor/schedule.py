@@ -12,13 +12,15 @@ ET = ZoneInfo("America/New_York")
 ANCHOR = date(2026, 9, 14)
 SCHEMA = "biweekly-job-status.v1"
 SLOTS = {"monitor": (8, 0), "email": (9, 0), "publisher": (10, 0), "registry": (10, 30)}
-PIPELINE_SCHEMA = "independent-job-status.v1"
-PIPELINE_SLOTS = {
+LEGACY_PIPELINE_SCHEMA = "independent-job-status.v1"
+LEGACY_PIPELINE_SLOTS = {
     "T1": ("daily", 5), "T2": ("daily", 6), "T3": ("sunday", 8),
     "T4": ("biweekly", 8), "T5": ("quarter_hour", None), "T6": ("quarter_hour", None),
     "T7": ("five_minutes", None), "T8": ("monday_utc", 0), "T9": ("daily", 4),
     "T10": ("quarter_hour", None),
 }
+PIPELINE_SCHEMA = "independent-job-status.v2"
+PIPELINE_SLOTS = {**LEGACY_PIPELINE_SLOTS, "T1": ("five_minutes", None), "T11": ("hourly", None)}
 
 
 def biweekly() -> bool:
@@ -60,12 +62,14 @@ def due(slot: str, now: datetime) -> bool:
     return is_run_date(day) and timedelta(0) <= now - occurrence(day, slot, eastern=True) < timedelta(minutes=5)
 
 
-def pipeline_occurrence(slot: str, now: datetime) -> datetime:
+def pipeline_occurrence(slot: str, now: datetime, *, historical: bool = False) -> datetime:
     """Each role owns its own occurrence; local midnight boundaries follow DST."""
     if now.tzinfo is None:
         raise ValueError("schedule clock must be aware")
-    cadence, hour = PIPELINE_SLOTS[slot]
+    cadence, hour = (LEGACY_PIPELINE_SLOTS if historical else PIPELINE_SLOTS)[slot]
     local = now.astimezone(timezone.utc if cadence == "monday_utc" else ET)
+    if cadence == "hourly":
+        return local.replace(minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     if cadence in {"quarter_hour", "five_minutes"}:
         interval = 15 if cadence == "quarter_hour" else 5
         return local.replace(minute=local.minute // interval * interval, second=0, microsecond=0).astimezone(timezone.utc)
