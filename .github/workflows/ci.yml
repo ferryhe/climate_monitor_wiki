@@ -252,9 +252,17 @@ jobs:
                       assert path.stat().st_mode & stat.S_IWGRP, path
           PY
 
-      - name: Build application image
+      - name: Build application image from CRLF entrypoint
         run: |
           set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          entrypoint = Path("scripts/docker_entrypoint.sh")
+          content = entrypoint.read_bytes().replace(b"\r\n", b"\n")
+          entrypoint.write_bytes(content.replace(b"\n", b"\r\n"))
+          assert entrypoint.read_bytes().startswith(b"#!/bin/sh\r\n")
+          PY
           docker build --pull \
             --build-arg CLIMATE_REPOSITORY_COMMIT_SHA="${{ github.sha }}" \
             --tag climate-monitor-wiki:ci .
