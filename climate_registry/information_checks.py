@@ -595,7 +595,6 @@ def _currently_verified_targets(connection, prefix: str, targets: list[dict[str,
     latest = _latest_target_attempts(connection, prefix, targets)
     return {key for target in targets
         if (row := latest.get(key := (target["occurrence_id"], target["source_url"]))) is not None
-        and _terminal_attempt(connection, prefix, row)
         and row.get("verification_status") == "verified"
         and (packet := _exact_attempt(target, row)) is not None
         and packet.get("verification_status") == "verified"}
@@ -625,6 +624,8 @@ def _reusable_reader(connection, prefix, target):
     """Reuse retained complete reader bytes only for the same frozen version."""
     row = _latest_target_attempts(connection, prefix, [target]).get((target["occurrence_id"], target["source_url"]))
     packet = _exact_attempt(target, row)
+    if not packet or packet.get("verification_status") != "verified":
+        return None
     record = (packet or {}).get("reader") or {}
     if record.get("status") != "ok" or not record.get("content"):
         return None
