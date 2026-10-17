@@ -1223,6 +1223,144 @@ raise AssertionError('reload interruption was not reached')
 
 
 @pytest.mark.skipif(os.name != "posix", reason="cross-process flock is a POSIX contract")
+def test_contending_public_refresh_cannot_replace_prepared_receipt_after_owner_dies(tmp_path, monkeypatch):
+    import subprocess, sys, select
+    from climate_registry import pdf_pipeline as pipeline
+    from climate_delivery.io import atomic_write_json, transaction_lock
+    from climate_delivery.errors import LockStateError
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db): _approve(db, sha, {"basis": "approved concurrent fixture"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    receipt = queue / "public-refresh.json"
+    def acknowledge(generation):
+        atomic_write_json(queue / "active.json", json.loads((queue / "pending.json").read_text()))
+    def writer():
+        return pipeline.PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, acknowledge, repository_root=application)
+    assert writer().process_next()["chat_ready"]
+    old = (queue / "active.json").read_bytes()
+    set_visibility(database, "article", "a", False)
+    code = '''import os,sys
+from pathlib import Path
+from climate_registry import pdf_pipeline as pipeline
+queue,database,backup,runtime,application=map(Path,sys.argv[1:])
+snapshot=pipeline._snapshot_registry
+def pause_snapshot(*args):
+    print('owned',flush=True)
+    sys.stdin.readline()
+    return snapshot(*args)
+pipeline._snapshot_registry=pause_snapshot
+def interrupt(generation):
+    print('prepared',flush=True)
+    sys.stdin.readline()
+    os._exit(42)
+pipeline.PdfIntakePipeline(queue,database,backup,runtime,interrupt,repository_root=application).refresh_publication()
+'''
+    child = subprocess.Popen([sys.executable, "-c", code, str(queue), str(database), str(tmp_path / "backups"),
+        str(runtime), str(application)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    prepared_bytes = []
+    original_read = Path.read_text
+    receipt_reads = []
+    def finish_owner():
+        child.stdin.write("prepare\n"); child.stdin.flush()
+        assert select.select([child.stdout], [], [], 30)[0] and child.stdout.readline().strip() == "prepared"
+        prepared_bytes.append(receipt.read_bytes())
+        child.stdin.write("exit\n"); child.stdin.flush()
+        assert child.wait(timeout=10) == 42
+    def read_with_contending_writer(path, *args, **kwargs):
+        value = original_read(path, *args, **kwargs)
+        if path == receipt:
+            receipt_reads.append(value)
+            if len(receipt_reads) == 2:
+                # Reproduce a stale final read while the owner prepares R1 and dies.
+                finish_owner()
+        return value
+    monkeypatch.setattr(Path, "read_text", read_with_contending_writer)
+    try:
+        assert select.select([child.stdout], [], [], 10)[0] and child.stdout.readline().strip() == "owned"
+        result = writer().refresh_publication()
+        assert result["stage"] == "failed" and result["error"] == "LockStateError"
+        if not prepared_bytes: finish_owner()
+        assert receipt.read_bytes() == prepared_bytes[0]
+        assert not receipt_reads  # A contender cannot read or write the owner's durable receipt.
+    finally:
+        if child.poll() is None: child.kill()
+        child.communicate(timeout=10)
+    monkeypatch.setattr(Path, "read_text", original_read)
+    assert (queue / "active.json").read_bytes() == old
+    prepared = json.loads(prepared_bytes[0])["prepared_generation"]
+    files = {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()}
+    monkeypatch.setattr(pipeline, "_snapshot_registry", lambda *args: pytest.fail("restart copied the Registry"))
+    monkeypatch.setattr(pipeline, "render_runtime_registry", lambda *args, **kwargs: pytest.fail("restart rendered Wiki"))
+    final_writes = []
+    def write_while_owned(path, value):
+        if path == receipt:
+            with pytest.raises(LockStateError):
+                with transaction_lock(queue, "intake-writer"):pass
+            final_writes.append(value["stage"])
+        atomic_write_json(path, value)
+    monkeypatch.setattr(pipeline, "atomic_write_json", write_while_owned)
+    resumed = writer().refresh_publication()
+    assert resumed["chat_ready"] and resumed["generation_id"] == prepared["generation_id"]
+    assert final_writes == ["chat_ready"]
+    assert {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == files
+
+
+@pytest.mark.skipif(os.name != "posix", reason="cross-process flock is a POSIX contract")
+def test_invalid_web_request_dispatch_respects_another_process_ownership(tmp_path, monkeypatch):
+    import subprocess, sys, select
+    from test_issue112_acquisition import _batch, _item
+    from climate_registry.acquisition import store_acquisition_batch, freeze_acquisition_for_report
+    from climate_registry.web_ingest_pipeline import enqueue_web_activation, read_web_activation_request
+    from climate_registry.pdf_pipeline import PdfIntakePipeline
+    from climate_delivery.io import atomic_write_json
+    from climate_delivery.errors import LockStateError
+    database = tmp_path / "registry.sqlite3"
+    with sqlite3.connect(database) as db: apply_migrations(db)
+    db.close()
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    payload = _batch([_item()])
+    store_acquisition_batch(database, payload)
+    frozen = freeze_acquisition_for_report(database, payload["batch_id"], report_date=payload["report_date"])
+    queued = enqueue_web_activation(queue, database, payload["batch_id"], frozen_payload_sha256=digest(frozen), repository_root=application)
+    request = read_web_activation_request(queue, queued["batch_id"])
+    job = Path(request["registry_snapshot_path"]).parent
+    Path(request["registry_snapshot_path"]).rename(job / "unavailable.sqlite3")
+    atomic_write_json(job / "retry.json", {"batch_id": queued["batch_id"]})
+    writer = PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, lambda _: pytest.fail("invalid request reloaded Chat"), repository_root=application)
+    code = '''import sys
+from pathlib import Path
+from climate_delivery.io import transaction_lock
+with transaction_lock(Path(sys.argv[1]),'intake-writer'):
+    print('owned',flush=True)
+    sys.stdin.readline()
+'''
+    child = subprocess.Popen([sys.executable, "-c", code, str(queue)], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert select.select([child.stdout], [], [], 10)[0] and child.stdout.readline().strip() == "owned"
+        files = lambda: {str(path): path.read_bytes() for root in (queue, runtime) for path in root.rglob("*") if path.is_file()}
+        before, before_database = files(), database.read_bytes()
+        with pytest.raises(LockStateError): writer.process_next()
+        assert files() == before and database.read_bytes() == before_database
+    finally:
+        child.communicate("\n", timeout=10)
+    assert child.returncode == 0
+    result = writer.process_next()
+    assert result["stage"] == "failed" and result["error"] == "RuntimeError: web activation request is invalid"
+    assert result["attempts"] == 1 and not result["chat_ready"]
+    assert json.loads((job / "status.json").read_text()) == result
+    assert not (job / "retry.json").exists() and not (queue / "active.json").exists()
+    assert database.read_bytes() == before_database and not list(runtime.rglob("*.sqlite3"))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="cross-process flock is a POSIX contract")
 def test_all_intake_mutations_respect_another_process_ownership(tmp_path):
     import subprocess, sys, select
     from climate_delivery.errors import LockStateError
