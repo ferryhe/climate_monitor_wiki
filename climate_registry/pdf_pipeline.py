@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from climate_delivery.io import atomic_write_json, exclusive_lock
+from climate_delivery.io import atomic_write_json, transaction_lock
 from .pdf_intake import _existing_occurrence_ids, persist_pdf_intake
 from .persistent import _file_sha256, _read_only_connection, _validate_database
 from .wiki import render_runtime_registry, snapshot_registry
@@ -170,7 +170,7 @@ def _validate_pdf_binding(status, database=None):
 
 
 def retry_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
-    with exclusive_lock(queue_dir, "intake-writer"):
+    with transaction_lock(queue_dir, "intake-writer"):
         status = read_pdf_batch(queue_dir, batch_id)
         if status.get("chat_ready") or status.get("stage") != "failed":
             return status
@@ -558,7 +558,7 @@ class PdfIntakePipeline:
         return generation, generation_id, registry_sha256, manifest_sha256
 
     def process(self, batch_id: str) -> dict[str, Any]:
-        with exclusive_lock(self.queue_dir, "intake-writer"):
+        with transaction_lock(self.queue_dir, "intake-writer"):
             return self._process_unlocked(batch_id)
 
     def _process_unlocked(self, batch_id: str) -> dict[str, Any]:
@@ -804,7 +804,7 @@ class PdfIntakePipeline:
 
     def refresh_checks(self, run_id: str) -> dict[str, Any]:
         """Refresh the existing writer after exact Registry approval."""
-        with exclusive_lock(self.queue_dir, "intake-writer"):
+        with transaction_lock(self.queue_dir, "intake-writer"):
             prior_generation, metadata = self._active_projection()
             revision = public_revision(self.database)
             if (prior_generation is None or metadata is None) and revision is None:

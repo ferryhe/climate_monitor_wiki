@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from climate_delivery.io import atomic_write_json, exclusive_lock
+from climate_delivery.io import atomic_write_json, transaction_lock
 
 from .pdf_pipeline import (
     _external,
@@ -424,7 +424,7 @@ class WebIngestPipeline:
         return status
 
     def process(self, batch_id: str) -> dict[str, Any]:
-        with exclusive_lock(self.queue_dir, "intake-writer"):
+        with transaction_lock(self.queue_dir, "intake-writer"):
             return self._process_unlocked(batch_id)
 
     def _process_unlocked(self, batch_id: str) -> dict[str, Any]:

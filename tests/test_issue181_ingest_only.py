@@ -16,7 +16,7 @@ from reportlab.pdfgen.canvas import Canvas
 
 from agentic_wiki import AgenticWikiResponder
 from climate_delivery.errors import LockStateError
-from climate_delivery.io import exclusive_lock
+from climate_delivery.io import transaction_lock
 from climate_monitor.pdf_intake import import_pdf_reports
 from climate_registry.pdf_intake import persist_pdf_intake
 from climate_registry.pdf_pipeline import (
@@ -300,7 +300,7 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     )["stage"] == "queued"
     assert (queue / "web" / _sha("web-batch") / "request.json").read_bytes() == request_bytes
     assert (queue / "web" / _sha("web-batch") / "registry.sqlite3").read_bytes() == snapshot_bytes
-    with exclusive_lock(queue, "intake-writer"):
+    with transaction_lock(queue, "intake-writer"):
         with pytest.raises(LockStateError):
             writer.process_next()
 

@@ -1174,6 +1174,87 @@ def test_public_refresh_prepared_generation_survives_restart_and_invalidates_cha
         writer().process_next()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="real process death and flock are POSIX contracts")
+@pytest.mark.parametrize("exit_mode", ["exit", "kill"])
+def test_public_refresh_recovers_prepared_generation_after_real_process_death(tmp_path, monkeypatch, exit_mode):
+    import subprocess, sys, signal
+    from climate_registry import pdf_pipeline as pipeline
+    from climate_delivery.io import atomic_write_json
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db): _approve(db, sha, {"basis": "approved process-death fixture"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    def acknowledge(generation):
+        atomic_write_json(queue / "active.json", json.loads((queue / "pending.json").read_text()))
+    def writer():
+        return pipeline.PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, acknowledge, repository_root=application)
+    assert writer().process_next()["chat_ready"]
+    old = (queue / "active.json").read_bytes()
+    set_visibility(database, "article", "a", False)
+    code = '''import os,signal,sys
+from pathlib import Path
+from climate_registry.pdf_pipeline import PdfIntakePipeline
+queue,database,backup,runtime,application=map(Path,sys.argv[1:6])
+def interrupt(generation):
+    if sys.argv[6]=='kill': os.kill(os.getpid(),signal.SIGKILL)
+    os._exit(42)
+PdfIntakePipeline(queue,database,backup,runtime,interrupt,repository_root=application).process_next()
+raise AssertionError('reload interruption was not reached')
+'''
+    child = subprocess.run([sys.executable, "-c", code, str(queue), str(database), str(tmp_path / "backups"),
+        str(runtime), str(application), exit_mode], capture_output=True, text=True, timeout=30)
+    assert child.returncode == (42 if exit_mode == "exit" else -signal.SIGKILL), child.stderr
+    prepared = json.loads((queue / "public-refresh.json").read_text())["prepared_generation"]
+    assert (queue / "active.json").read_bytes() == old
+    assert (queue / "locks/intake-writer.lock").exists()  # The file survives; ownership must not.
+    files = {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()}
+    monkeypatch.setattr(pipeline, "_snapshot_registry", lambda *args: pytest.fail("crash recovery copied the Registry"))
+    monkeypatch.setattr(pipeline, "render_runtime_registry", lambda *args, **kwargs: pytest.fail("crash recovery rendered Wiki"))
+    resumed = writer().process_next()
+    assert resumed["chat_ready"] and resumed["generation_id"] == prepared["generation_id"]
+    assert {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == files
+
+
+@pytest.mark.skipif(os.name != "posix", reason="cross-process flock is a POSIX contract")
+def test_all_intake_mutations_respect_another_process_ownership(tmp_path):
+    import subprocess, sys, select
+    from climate_delivery.errors import LockStateError
+    from climate_delivery.io import transaction_lock
+    from climate_registry.pdf_pipeline import PdfIntakePipeline, retry_pdf_batch
+    from climate_registry.web_ingest_pipeline import WebIngestPipeline
+    from climate_registry.owner_checks import _transaction
+    database = _database(tmp_path, version=24)
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    writer = PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, lambda _: None, repository_root=application)
+    web = WebIngestPipeline(queue, database, runtime, lambda _: None, repository_root=application)
+    code = '''import sys
+from pathlib import Path
+from climate_delivery.io import transaction_lock
+with transaction_lock(Path(sys.argv[1]),'intake-writer'):
+    print('owned',flush=True)
+    sys.stdin.readline()
+'''
+    child = subprocess.Popen([sys.executable, "-c", code, str(queue)], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def owner_write():
+        with _transaction(database, queue, True): pytest.fail("owner write bypassed intake ownership")
+    try:
+        assert select.select([child.stdout], [], [], 10)[0] and child.stdout.readline().strip() == "owned"
+        for operation in (lambda: writer.process("missing"), lambda: retry_pdf_batch(queue, "missing"),
+                lambda: writer.refresh_checks("missing"), lambda: web.process("missing"), owner_write):
+            with pytest.raises(LockStateError): operation()
+    finally:
+        child.communicate("\n", timeout=10)
+    assert child.returncode == 0
+    with transaction_lock(queue, "intake-writer"):
+        pass  # Normal exit releases the same surviving lock file too.
+
+
 @pytest.mark.skipif(os.name == "nt", reason="actual API activation uses POSIX locking")
 def test_public_refresh_rejects_revision_changed_while_api_builds_replacement(tmp_path, monkeypatch):
     from climate_registry.pdf_pipeline import PdfIntakePipeline

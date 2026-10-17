@@ -853,6 +853,8 @@ corpus may need several minutes while the old generation continues serving.
 retries and restarts at the same approved revision validate and reuse its frozen
 files. A changed approved revision requires a new snapshot. An activation failure
 preserves the old active generation and does not establish a successful refresh.
+All intake operations share a process-released transaction lock, so a terminated
+writer does not leave an occupied lock that blocks recovery after restart.
 
 #### Single Registry publication migration
 

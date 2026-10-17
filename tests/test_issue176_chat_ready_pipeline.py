@@ -18,7 +18,7 @@ from reportlab.pdfgen.canvas import Canvas
 from agentic_wiki import AgenticWikiResponder
 from agentic_wiki.wiki_agent import _evidence_excerpt
 from climate_delivery.errors import LockStateError
-from climate_delivery.io import exclusive_lock
+from climate_delivery.io import transaction_lock
 from climate_monitor.pdf_intake import import_pdf_reports
 from climate_registry.pdf_intake import persist_pdf_intake
 from climate_registry.pdf_pipeline import (
@@ -657,7 +657,7 @@ def test_retry_does_not_overwrite_a_batch_while_the_writer_is_processing(tmp_pat
     failed.update(stage="failed", error="RuntimeError: reload unavailable", attempts=1)
     path.write_text(json.dumps(failed), encoding="utf-8")
 
-    with exclusive_lock(queue, "intake-writer"):
+    with transaction_lock(queue, "intake-writer"):
         with pytest.raises(LockStateError):
             retry_pdf_batch(queue, status["batch_id"])
     assert read_pdf_batch(queue, status["batch_id"])["stage"] == "failed"
