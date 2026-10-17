@@ -998,6 +998,23 @@ def test_manual_enrichment_can_attach_to_an_article_version_without_body(registr
     assert report_article["summary_provenance"] == "verified_source_evidence"
 
 
+def test_pdf_snapshot_keeps_approved_verified_article_summary(monkeypatch):
+    reader = object.__new__(RegistryReader)
+    reader._pdf_occurrences_from_snapshot = lambda _snapshot: [{
+        "occurrence_id": "page-14", "page": 14, "summary": "PDF page summary"}]
+    monkeypatch.setattr("climate_registry.publication.approved_display", lambda _snapshot: {
+        "title": "Approved article title", "summary": "Approved article summary",
+        "summary_provenance": "verified_source_evidence", "categories": ["Climate risk"],
+        "keywords": ["insurance"], "metadata_provenance": {"categories": "verified", "keywords": "verified"}})
+    snapshot = {"entity_kind": "pdf_article", "entity_id": "pdf-a", "_approved_candidate_sha256": "a" * 64,
+        "tables": {"pdf_intake_articles": [{"article_id": "pdf-a", "canonical_url": "https://example.org/a",
+            "title": "PDF title"}], "articles": []}, "supplements": []}
+    detail = reader._pdf_article_from_snapshot(snapshot)
+    assert detail["summary"] == "Approved article summary"
+    assert detail["summary_provenance"] == "verified_source_evidence"
+    assert detail["categories"] == ["Climate risk"] and detail["keywords"] == ["insurance"]
+
+
 def test_bundled_161_annotations_preserve_private_archive_payloads(tmp_path):
     root = Path(__file__).resolve().parents[1]
     database = tmp_path / "historical-registry.sqlite3"
@@ -1162,6 +1179,9 @@ def test_combined_article_filters_keep_core_dto_for_a_matching_linked_pdf(regist
     monkeypatch.setattr(RegistryReader, "article", fail_detail)
     monkeypatch.setattr(RegistryReader, "articles", fail_detail)
 
+    # The approved core summary does not contain “wildfire”; the linked PDF
+    # occurrence does, and should make the core article searchable without
+    # replacing the core DTO's displayed fields.
     for params in (
         {"query": "wildfire", "include_pdf": "true"},
         {"report_date": "2026-09-03", "include_pdf": "true"},
@@ -1923,7 +1943,7 @@ def test_frontend_exposes_safe_registry_workspace_without_operations():
     assert "/api/registry/articles" in script
     assert "registryMarkdown.textContent" in script
     assert "function registrySummaryPresentation(article)" in script
-    article_list = script.split("async function loadRegistryArticles()", 1)[1].split("function appendPdfVerifiedInformation", 1)[0]
+    article_list = script.split("async function loadRegistryArticles()", 1)[1].split("function appendPdfAppearances", 1)[0]
     assert "registry-card__summary" not in article_list
     assert "registrySummaryPresentation(article)" not in article_list
     assert "data-article-source=" not in index

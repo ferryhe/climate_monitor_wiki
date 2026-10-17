@@ -3273,76 +3273,6 @@ async function loadRegistryArticles() {
   }
 }
 
-function appendPdfVerifiedInformation(container, occurrence) {
-  const information = occurrence.verified_information;
-  const displaySummary = occurrence.display_summary;
-  if (displaySummary) {
-    const block = registryElement("section", "registry-detail-section");
-    block.append(registryElement("h4", "", "Summary"), registryElement("p", "", displaySummary),
-      registryElement("p", "muted registry-provenance", "Approved reviewed summary"));
-    container.append(block);
-  }
-  if (information) {
-    const block = registryElement("section", "registry-detail-section");
-    if (information.summary && !displaySummary) {
-      const summary = registryElement("div", "registry-summary");
-      summary.append(registryElement("h4", "", "Summary"), registryElement("p", "", information.summary));
-      block.append(summary);
-    }
-    appendRegistryTags(block, "Source Categories", information.categories);
-    appendRegistryTags(block, "Keywords", information.keywords);
-    const status = occurrence.verification_status || "status unavailable";
-    const checkedAt = occurrence.checked_at ? ` · checked ${occurrence.checked_at}` : "";
-    block.append(registryElement("p", "muted registry-provenance", `Website verification: ${status}${checkedAt}`));
-    const checkedSourceUrl = reviewedCheckedSourceUrl(occurrence);
-    const originalUrl = safeSourceUrl(information.source_url || occurrence.raw_url);
-    const sourceUrl = safeSourceUrl(checkedSourceUrl || originalUrl);
-    if (sourceUrl) {
-      const link = registryElement("a", "registry-source-link", checkedSourceUrl ? "Open checked source" : "Open source link");
-      link.href = sourceUrl;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      block.append(link);
-      if (checkedSourceUrl && originalUrl && checkedSourceUrl !== originalUrl) {
-        const original = registryElement("a", "registry-source-link", "Open original source");
-        original.href = originalUrl;
-        original.target = "_blank";
-        original.rel = "noopener noreferrer";
-        block.append(original);
-      }
-    }
-    container.append(block);
-  }
-  if (!displaySummary && !information?.summary && occurrence.summary) {
-    const block = registryElement("section", "registry-detail-section");
-    const summary = registryElement("div", "registry-summary");
-    summary.append(registryElement("h4", "", "Summary"), registryElement("p", "", occurrence.summary));
-    block.append(summary);
-    const status = occurrence.verification_status || "status unavailable";
-    const checkedAt = occurrence.checked_at ? ` · checked ${occurrence.checked_at}` : "";
-    const basis = occurrence.owner_agent_verification ? "Owner-agent source verification · Independently reviewed" : "PDF-provided";
-    block.append(registryElement("p", "muted registry-provenance", `${basis} · Verification: ${status}${checkedAt}`));
-    const checkedSourceUrl = reviewedCheckedSourceUrl(occurrence);
-    const originalUrl = safeSourceUrl(occurrence.raw_url);
-    const sourceUrl = safeSourceUrl(checkedSourceUrl || originalUrl);
-    if (sourceUrl) {
-      const link = registryElement("a", "registry-source-link", checkedSourceUrl ? "Open checked source" : "Open source link");
-      link.href = sourceUrl;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      block.append(link);
-      if (checkedSourceUrl && originalUrl && checkedSourceUrl !== originalUrl) {
-        const original = registryElement("a", "registry-source-link", "Open original source");
-        original.href = originalUrl;
-        original.target = "_blank";
-        original.rel = "noopener noreferrer";
-        block.append(original);
-      }
-    }
-    container.append(block);
-  }
-}
-
 function appendPdfAppearances(container, occurrences) {
   if (!Array.isArray(occurrences)) return;
   occurrences.forEach((occurrence) => {
@@ -3436,7 +3366,7 @@ async function loadImportedRegistryReport(documentId, page = 1) {
         button.dataset.originalUrl = roles.originalSourceUrl;
       }
       block.append(button);
-      appendRegistryPdfOccurrences(block, article.occurrences);
+      appendRegistryPdfOccurrences(block, article);
       modules.append(block);
     });
     if (report.calendar_items?.length) modules.append(registryElement("h4", "", "Meetings & Key Dates"));
@@ -3528,10 +3458,12 @@ async function loadImportedRegistryReport(documentId, page = 1) {
   }
 }
 
-function appendRegistryPdfOccurrences(container, occurrences) {
-  if (!Array.isArray(occurrences) || !occurrences.length) {
-    return;
+function appendRegistryPdfOccurrences(container, article) {
+  if (typeof article?.summary === "string" && article.summary.trim()) {
+    container.append(registryElement("p", "registry-pdf-article-summary", article.summary));
   }
+  const occurrences = article?.occurrences;
+  if (!Array.isArray(occurrences) || !occurrences.length) return;
   const block = registryElement("div", "registry-pdf-history");
   const list = registryElement("ul", "registry-pdf-history__list");
   occurrences.forEach((occurrence) => {
@@ -3549,7 +3481,6 @@ function appendRegistryPdfOccurrences(container, occurrences) {
       registryElement("strong", "", `${sourceName} · ${date}${page}`),
     );
     appendInformationCheck(information, occurrence);
-    item.append(registryElement("p", "registry-pdf-history__summary", occurrence.display_summary || occurrence.summary || "No article context was captured."));
     const checkedSourceUrl = reviewedCheckedSourceUrl(occurrence);
     const originalSourceUrl = safeSourceUrl(occurrence.raw_url || occurrence.original_source_url);
     const sourceUrl = safeSourceUrl(checkedSourceUrl || originalSourceUrl);
@@ -3566,9 +3497,6 @@ function appendRegistryPdfOccurrences(container, occurrences) {
       }
     }
     item.append(information);
-    if (occurrence.display_summary) {
-      item.append(registryElement("p", "muted registry-provenance", "Approved reviewed summary"));
-    }
     list.append(item);
   });
   block.append(list);
@@ -3682,7 +3610,7 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
     if (pdfSource && article.type_safe_classification?.label) {
       appendRegistryTags(els.registryEnrichment, "TypeSafe classification", [article.type_safe_classification.label]);
     }
-    if (!pdfSource && summaryPresentation.text) {
+    if (summaryPresentation.text) {
       const summaryBlock = registryElement("div", "registry-summary");
       summaryBlock.append(
         registryElement("h4", "", "Summary"),
@@ -3721,11 +3649,6 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
           `${summaryPresentation.provenanceCopy}${reviewed}`,
         ),
       );
-    }
-    if (pdfSource) {
-      (article.occurrences || []).forEach((occurrence) => appendPdfVerifiedInformation(els.registryEnrichment, occurrence));
-    } else {
-      (article.pdf_occurrences || []).forEach((occurrence) => appendPdfVerifiedInformation(els.registryEnrichment, occurrence));
     }
     if (!pdfSource && !(article.pdf_occurrences || []).length) {
       const sourceRoles = reviewedSourceRoles(article);

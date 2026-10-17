@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
 const extract = (name) => source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
-const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfVerifiedInformation', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
+const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
 const created = [];
 const document = { createElement(tag) {
   const element = { tag, children: [], append(...items) { this.children.push(...items); },
@@ -42,47 +42,6 @@ const text = (node) => [node.textContent, ...(node.children || []).map(text)].fi
 const rootTags = (node, label) => node.children.filter((child) => child.children?.[0]?.textContent === label);
 const anchors = (node) => [...(node.tag === 'a' ? [{ label: node.textContent, href: node.href }] : []), ...(node.children || []).flatMap(anchors)];
 
-const verified = { children: [], append(...items) { this.children.push(...items); } };
-context.appendPdfVerifiedInformation(verified, {
-  verification_status: 'partial', checked_at: '2026-08-11', raw_url: 'https://example.org/article',
-  summary: 'Do not repeat this PDF passage.',
-  verified_information: { summary: 'Checked facts.', categories: ['Climate risk'], keywords: ['insurance'] },
-});
-assert.match(text(verified), /Summary Checked facts\./);
-assert.match(text(verified), /Categories Climate risk/);
-assert.match(text(verified), /Source Categories Climate risk/);
-assert.match(text(verified), /Keywords insurance/);
-assert.match(text(verified), /Website verification: partial · checked 2026-08-11/);
-assert.doesNotMatch(text(verified), /Do not repeat this PDF passage\./);
-assert.equal(verified.children[0].children.at(-1).href, 'https://example.org/article');
-
-const partial = { children: [], append(...items) { this.children.push(...items); } };
-context.appendPdfVerifiedInformation(partial, { verification_status: 'unchecked', verified_information: { keywords: ['retained'] } });
-assert.doesNotMatch(text(partial), /Summary|Categories/);
-assert.match(text(partial), /Keywords retained/);
-assert.match(text(partial), /Website verification: unchecked/);
-
-const pdfProvided = { children: [], append(...items) { this.children.push(...items); } };
-context.appendPdfVerifiedInformation(pdfProvided, {
-  verification_status: 'partial', checked_at: '2026-08-12', raw_url: 'https://example.org/original.pdf',
-  summary: 'Passage summary from the PDF.',
-});
-assert.match(text(pdfProvided), /Summary Passage summary from the PDF\./);
-assert.match(text(pdfProvided), /PDF-provided · Verification: partial · checked 2026-08-12/);
-assert.equal(pdfProvided.children[0].children.at(-1).href, 'https://example.org/original.pdf');
-
-const ownerChecked = { children: [], append(...items) { this.children.push(...items); } };
-context.appendPdfVerifiedInformation(ownerChecked, {
-  verification_status: 'verified', summary: 'Supported corrected summary.',
-  owner_agent_verification: { verification_basis: 'owner-agent-information-check.v1' },
-});
-assert.match(text(ownerChecked), /Owner-agent source verification · Independently reviewed · Verification: verified/);
-assert.doesNotMatch(text(ownerChecked), /PDF-provided/);
-
-const missing = { children: [], append(...items) { this.children.push(...items); } };
-context.appendPdfVerifiedInformation(missing, { verification_status: 'unchecked' });
-assert.equal(missing.children.length, 0);
-
 const appearances = { children: [], append(...items) { this.children.push(...items); } };
 context.appendPdfAppearances(appearances, [
   { source_document: 'climate.pdf', page: 22, raw_url: 'https://example.org/a' },
@@ -117,13 +76,10 @@ await context.loadRegistryArticle('reviewed-pdf', 'pdf');
 assert.match(text(enrichment), /Categories Capital & Solvency Supervision & Disclosure/);
 assert.match(text(enrichment), /Keywords solvency climate risk/);
 assert.doesNotMatch(text(enrichment), /manual_category_standardization|manual_supplement/);
-assert.match(text(enrichment), /Website-only category/);
-assert.match(text(enrichment), /website-only keyword/);
+assert.doesNotMatch(text(enrichment), /Website-only category|website-only keyword/);
 assert.doesNotMatch(text(enrichment), /Verified information/);
 assert.equal(rootTags(enrichment, 'Categories').length, 1, 'current article categories render once');
 assert.equal(rootTags(enrichment, 'Keywords').length, 1);
-assert.match(text(enrichment), /Source Categories Website-only category/);
-assert.doesNotMatch(text(rootTags(enrichment, 'Categories')[0]), /Website-only category/);
 
 enrichment.replaceChildren();
 context.registryFetch = async () => ({ ...reviewedPdf, categories: ['Adaptation & Resilience'], keywords: [],
@@ -146,7 +102,7 @@ await context.loadRegistryArticle('registry-article');
 assert.match(text(enrichment), /Registry category/);
 assert.match(text(enrichment), /Registry keyword/);
 
-context.registryFetch = async () => ({ ...reviewedPdf, categories: ['Food & Water Security'],
+context.registryFetch = async () => ({ ...reviewedPdf, summary: 'Approved article summary.', categories: ['Food & Water Security'],
   occurrences: [
     { verified_information: { summary: 'First checked source.', categories: ['First source tag'], keywords: ['first-source-keyword'] } },
     { verified_information: { summary: 'Second checked source.', categories: ['Second source tag'], keywords: ['second-source-keyword'] } },
@@ -156,8 +112,9 @@ await context.loadRegistryArticle('multiple-sources', 'pdf');
 assert.equal(rootTags(enrichment, 'Categories').length, 1);
 assert.match(text(rootTags(enrichment, 'Categories')[0]), /Categories Food & Water Security/);
 assert.doesNotMatch(text(rootTags(enrichment, 'Categories')[0]), /source tag/);
-assert.match(text(enrichment), /Summary First checked source\. Source Categories First source tag Keywords first-source-keyword/);
-assert.match(text(enrichment), /Summary Second checked source\. Source Categories Second source tag Keywords second-source-keyword/);
+assert.equal(rootTags(enrichment, 'Summary').length, 1, 'PDF detail renders the approved article summary once');
+assert.match(text(rootTags(enrichment, 'Summary')[0]), /Approved article summary\./);
+assert.doesNotMatch(text(enrichment), /First checked source|Second checked source|First source tag|second-source-keyword/);
 
 for (const categories of [[], undefined]) {
   context.registryFetch = async () => ({ ...reviewedPdf, categories, keywords: [],
@@ -167,7 +124,7 @@ for (const categories of [[], undefined]) {
   assert.equal(rootTags(enrichment, 'Categories').length, 0, 'empty or missing PDF root categories never borrow older values');
   assert.equal(rootTags(enrichment, 'Keywords').length, 0);
   assert.doesNotMatch(text(enrichment), /Stale enrichment/);
-  assert.match(text(enrichment), /Source Categories Website-only category/);
+  assert.doesNotMatch(text(enrichment), /Source Categories|Website-only category/);
 }
 
 for (const field of ['categories', 'keywords']) {
@@ -178,7 +135,7 @@ for (const field of ['categories', 'keywords']) {
   await context.loadRegistryArticle('mixed-field-provenance', 'pdf');
   assert.equal(rootTags(enrichment, 'Categories').length, field === 'categories' ? 1 : 0);
   assert.equal(rootTags(enrichment, 'Keywords').length, field === 'keywords' ? 1 : 0);
-  assert.match(text(enrichment), /Source Categories Website-only category/);
+  assert.doesNotMatch(text(enrichment), /Source Categories|Website-only category/);
   assert.ok(!text(enrichment).includes(field === 'categories' ? 'article-only-keyword' : 'Article-only category'));
 }
 
@@ -194,20 +151,6 @@ assert.equal(rootTags(enrichment, 'Categories').length, 1);
 assert.match(text(enrichment), /Stale Registry category/);
 console.log('PASS full Registry/PDF detail render: reviewed PDF tags and field sources, occurrence website values, missing tags, legacy provenance hiding, Registry values, summaries, links, and appearances');
 
-// Reviewed presentation never rewrites the retained PDF or website evidence.
-const curated = { children: [], append(...items) { this.children.push(...items); } };
-context.appendPdfVerifiedInformation(curated, {
-  display_summary: 'Reviewed source summary.', display_summary_provenance: 'owner_reviewed_source_evidence',
-  summary: 'Mixed PDF passage.', verification_status: 'partial', checked_at: '2026-10-15',
-  verified_information: { summary: 'Retained check summary.', keywords: ['insurance'], source_url: 'https://example.org/checked' },
-});
-assert.match(text(curated), /Reviewed source summary\./);
-assert.match(text(curated), /Approved reviewed summary/);
-assert.match(text(curated), /Website verification: partial/);
-assert.match(text(curated), /Keywords insurance/);
-assert.doesNotMatch(text(curated), /Mixed PDF passage|Retained check summary/);
-assert.equal(curated.children.at(-1).children.at(-1).href, 'https://example.org/checked');
-
 const originalUrl = 'https://example.org/pdf-only';
 const checkedUrl = 'https://example.org/articles/current';
 const ownerReview = { verification_status: 'verified', review_id: 'review-1', reviewer: { id: 'reviewer' }, final_url: checkedUrl };
@@ -221,8 +164,7 @@ for (const articleSource of ['pdf', 'registry']) {
   assert.equal(originalLink.href, checkedUrl);
   assert.equal(originalLink.textContent, 'Open checked source');
   const detailLinks = anchors(enrichment), appearanceLinks = anchors(appearancesEl);
-  assert.ok(detailLinks.some((link) => link.href === checkedUrl && link.label === 'Open checked source'));
-  assert.ok(detailLinks.some((link) => link.href === originalUrl && link.label === 'Open original source'));
+  assert.equal(detailLinks.length, 0, 'source links stay with the page appearance instead of article fields');
   assert.ok(appearanceLinks.some((link) => link.href === checkedUrl && link.label === 'Open checked source'));
   assert.ok(appearanceLinks.some((link) => link.href === originalUrl && link.label === 'Open original source'));
 }

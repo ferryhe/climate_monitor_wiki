@@ -183,6 +183,13 @@ def page_pdf_articles(
     return {"items": selected[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
 
 
+def _pdf_article_search_text(item: dict[str, Any]) -> str:
+    parts = [item.get("title") or "", item.get("summary") or "", item.get("canonical_url") or ""]
+    for occurrence in item.get("occurrences", []):
+        parts.extend(str(occurrence.get(key) or "") for key in ("title", "summary", "raw_url", "url", "canonical_url"))
+    return " ".join(parts).casefold()
+
+
 def filter_pdf_articles(
     items: list[dict[str, Any]], *, query: str = "", source: str = "", report_date: str = "",
 ) -> list[dict[str, Any]]:
@@ -197,7 +204,7 @@ def filter_pdf_articles(
             continue
         if report_date and not any(value.get("report_date") == report_date for value in item["occurrences"]):
             continue
-        searchable = " ".join((item["title"] or "", item["summary"] or "", item["canonical_url"])).casefold()
+        searchable = _pdf_article_search_text(item)
         if query and query.casefold() not in searchable:
             continue
         latest = item["occurrences"][0] if item["occurrences"] else {}
@@ -1969,8 +1976,6 @@ class RegistryReader:
                     "evidence": evidence, "knowledge_id": supplements[-1]["knowledge_id"]})
         if snapshot is not None:
             display = approved_display(snapshot)
-            if display.get("summary_provenance") in {"verified_source_evidence", "verified_pdf_source"}:
-                display = {key: value for key, value in display.items() if key not in {"summary", "summary_provenance"}}
             payload.update(display)
             payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or digest(snapshot)
             payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"],
@@ -3218,8 +3223,6 @@ class RegistryReader:
                 manual_enrichment={**pending, "generator_kind": "manual", "evidence": evidence,
                     "knowledge_id": supplements[-1]["knowledge_id"]})
         display = approved_display(snapshot)
-        if display.get("summary_provenance") in {"verified_source_evidence", "verified_pdf_source"}:
-            display = {key: value for key, value in display.items() if key not in {"summary", "summary_provenance"}}
         payload.update(display)
         if occurrences and all(item.get("metadata_only") for item in occurrences):
             reference = next((item.get("verified_primary_reference") for item in occurrences if item.get("verified_primary_reference")), None)

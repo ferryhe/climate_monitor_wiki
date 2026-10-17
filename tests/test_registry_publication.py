@@ -4496,23 +4496,20 @@ def test_legacy_pdf_alias_cannot_revive_ineligible_target(tmp_path, monkeypatch,
         assert calendar["records"] == []
 
 
-@pytest.mark.parametrize("display,provenance,expected", [("Reviewed summary", "owner_reviewed_source_evidence", "Reviewed summary"),
-    ("", "owner_reviewed_source_evidence", "Raw summary"), ("   ", "owner_reviewed_source_evidence", "Raw summary"),
-    ("Unmarked summary", None, "Raw summary")])
-def test_pdf_api_payload_normalization_uses_only_marked_occurrence_summary(display, provenance, expected):
+@pytest.mark.parametrize("display,provenance", [("Reviewed summary", "owner_reviewed_source_evidence"),
+    ("", "owner_reviewed_source_evidence"), ("   ", "owner_reviewed_source_evidence"),
+    ("Unmarked summary", None)])
+def test_pdf_api_payload_normalization_keeps_article_summary(display, provenance):
     import api_server
     occurrence = {"occurrence_id": "pdf-observation", "summary": "Raw summary", "source_document_sha256": "a"*64,
         "display_summary": display, "display_summary_provenance": provenance}
     payload = {"summary": "Entity summary", "summary_provenance": "owner_reviewed_source_evidence", "occurrences": [occurrence]}
     merged = api_server._merge_pdf_article_payloads(payload, None)
-    assert merged["summary"] == expected and merged["occurrences"][0]["summary"] == "Raw summary"
-    if expected == "Reviewed summary":
-        assert merged["summary_provenance"] == provenance
-    else:
-        assert "summary_provenance" not in merged
+    assert merged["summary"] == "Entity summary" and merged["occurrences"][0]["summary"] == "Raw summary"
+    assert merged["summary_provenance"] == "owner_reviewed_source_evidence"
 
 
-def test_pdf_api_raw_latest_observation_does_not_inherit_older_reviewed_summary_provenance():
+def test_pdf_api_keeps_article_summary_when_merging_new_occurrences():
     import api_server
     older = {"occurrence_id": "older", "report_date": "2026-09-14", "summary": "Older raw summary", "page": 1,
         "source_document_sha256": "a"*64, "raw_url": "https://example.org/article",
@@ -4521,11 +4518,27 @@ def test_pdf_api_raw_latest_observation_does_not_inherit_older_reviewed_summary_
         "source_document_sha256": "b"*64, "raw_url": "https://example.org/article"}
     public = {"summary": "Older approved summary", "summary_provenance": "owner_reviewed_source_evidence", "occurrences": [older]}
     merged = api_server._merge_pdf_article_payloads(public, {"occurrences": [latest]})
-    assert merged["summary"] == "Latest report observation"
-    assert "summary_provenance" not in merged
+    assert merged["summary"] == "Older approved summary"
+    assert merged["summary_provenance"] == "owner_reviewed_source_evidence"
     assert merged["occurrences"][0]["summary"] == latest["summary"]
     assert merged["occurrences"][1]["display_summary"] == "Older approved summary"
     assert public["summary_provenance"] == "owner_reviewed_source_evidence"
+
+
+def test_pdf_article_merge_keeps_article_level_title_summary_categories_and_keywords():
+    from climate_registry.publication import _merge_pdf_article_payloads
+    merged = _merge_pdf_article_payloads({
+        "title": "Approved article title", "summary": "Approved article summary.",
+        "summary_provenance": "verified_source_evidence", "categories": ["Climate risk"],
+        "keywords": ["insurance"],
+        "occurrences": [{"occurrence_id": "page", "page": 14, "report_date": "2026-10-12",
+            "summary": "PDF passage summary", "source_document_sha256": "a" * 64,
+            "raw_url": "https://example.org/article"}],
+    }, None)
+    assert merged["title"] == "Approved article title"
+    assert merged["summary"] == "Approved article summary."
+    assert merged["categories"] == ["Climate risk"]
+    assert merged["keywords"] == ["insurance"]
 
 
 def test_repeated_target_report_keeps_verified_primary_across_public_consumers(tmp_path, monkeypatch):
