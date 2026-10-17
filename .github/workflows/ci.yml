@@ -277,6 +277,8 @@ jobs:
           for name in ("docker_entrypoint.sh", "qualify_web_listening_playwright.py"):
               path = Path("/app/scripts") / name
               assert path.stat().st_mode & 0o111 == 0o111, path
+          entrypoint = Path("/app/scripts/docker_entrypoint.sh").read_bytes()
+          assert entrypoint.startswith(b"#!/bin/sh\n") and b"\r" not in entrypoint
 
           import agentic_wiki.wiki_agent
           import api_server
