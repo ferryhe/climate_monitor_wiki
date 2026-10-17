@@ -14,7 +14,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from climate_delivery.io import exclusive_lock
+from climate_delivery.io import transaction_lock
 from climate_monitor.meeting_fields import MEETING_FIELDS
 from .acquisition_review import digest, timestamp
 from .errors import RegistryInputError
@@ -263,7 +263,7 @@ def validate_manifest(manifest, *, require_current_taxonomy=True):
 def _transaction(database, queue_dir, apply):
     """Use the same intake-writer ownership as projection activation."""
     from contextlib import nullcontext
-    with (exclusive_lock(Path(queue_dir), "intake-writer") if apply else nullcontext()):
+    with (transaction_lock(Path(queue_dir), "intake-writer") if apply else nullcontext()):
         with (_exclusive_database_lock(database) if apply else nullcontext()):
             with closing(sqlite3.connect(database if apply else f"{database.as_uri()}?mode=ro", uri=not apply)) as connection:
                 connection.row_factory = sqlite3.Row

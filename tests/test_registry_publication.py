@@ -799,7 +799,7 @@ def test_web_activation_binding_precedes_all_task_mutations(tmp_path,monkeypatch
     from climate_registry.publication import digest
     from climate_registry.web_ingest_pipeline import enqueue_web_activation,WebIngestPipeline
     from climate_registry.pdf_pipeline import PdfIntakePipeline
-    from climate_delivery.io import atomic_write_json
+    from climate_delivery.io import atomic_write_json,transaction_lock
     database=tmp_path/"registry.sqlite3"
     with sqlite3.connect(database) as db:apply_migrations(db)
     db.close()
@@ -828,6 +828,8 @@ def test_web_activation_binding_precedes_all_task_mutations(tmp_path,monkeypatch
         assert enqueue(database)["stage"]=="failed"
         assert list((queue/"web").glob("*/retry.json"))
     other=tmp_path/"copy.sqlite3";other.write_bytes(database.read_bytes())
+    # flock keeps its coordination inode after releasing ownership.
+    with transaction_lock(queue,"intake-writer"):pass
     files=lambda:{str(p):p.read_bytes() for root in (queue,runtime) for p in root.rglob("*") if p.is_file()}
     before=files();before_a,before_b=database.read_bytes(),other.read_bytes()
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(other))
@@ -857,7 +859,7 @@ def test_historical_web_queue_binding_is_checked_independently_of_schema(tmp_pat
     from climate_registry.acquisition import store_acquisition_batch,freeze_acquisition_for_report
     from climate_registry.web_ingest_pipeline import enqueue_web_activation,read_web_activation_request,WebIngestPipeline
     from climate_registry.pdf_pipeline import PdfIntakePipeline
-    from climate_delivery.io import atomic_write_json
+    from climate_delivery.io import atomic_write_json,transaction_lock
     if version==19:
         database=_historical_selected_acquisition(tmp_path)
     else:
@@ -886,6 +888,8 @@ def test_historical_web_queue_binding_is_checked_independently_of_schema(tmp_pat
     other=tmp_path/"other.sqlite3"
     with sqlite3.connect(other) as db:apply_migrations(db)
     db.close()
+    # flock keeps its coordination inode after releasing ownership.
+    with transaction_lock(queue,"intake-writer"):pass
     files=lambda:{str(p):p.read_bytes() for root in (queue,runtime) for p in root.rglob("*") if p.is_file()}
     before=files();before_a,before_b=database.read_bytes(),other.read_bytes();reloads=[]
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(other))
@@ -1019,6 +1023,16 @@ def test_existing_writer_polls_approved_revision_and_retries_reload_after_restar
     from fastapi.testclient import TestClient
     import api_server
     import climate_registry.pdf_pipeline as pipeline_module
+    snapshots, renders = [], []
+    snapshot_registry, render = pipeline_module._snapshot_registry, pipeline_module.render_runtime_registry
+    def capture(database, target):
+        snapshots.append(target)
+        return snapshot_registry(database, target)
+    def render_once(*args, **kwargs):
+        renders.append(args[0])
+        return render(*args, **kwargs)
+    monkeypatch.setattr(pipeline_module, "_snapshot_registry", capture)
+    monkeypatch.setattr(pipeline_module, "render_runtime_registry", render_once)
     database = _database(tmp_path, version=24)
     with sqlite3.connect(database) as db:
         for sha in stage_entities(db):
@@ -1066,9 +1080,12 @@ def test_existing_writer_polls_approved_revision_and_retries_reload_after_restar
     clock = ["2026-10-17T12:00:00+00:00"]
     monkeypatch.setattr(pipeline_module, "_now", lambda: clock[0])
     def unavailable(generation):
-        raise OSError("reload temporarily unavailable")
+        raise TimeoutError("reload temporarily unavailable")
     failed = writer(unavailable).process_next()
     assert failed["stage"] == "failed" and (queue / "active.json").read_bytes() == old_pointer
+    prepared = failed["prepared_generation"]
+    assert prepared["generation_id"] != first["generation_id"]
+    assert len(snapshots) == len(renders) == 2
     responder.answer("Title a", language="en", answer_mode="brief")
     assert "article-a.md" in {doc.file for doc in responder.kb.documents}
     assert responder.kb.public_registry_revision == revision
@@ -1084,6 +1101,8 @@ def test_existing_writer_polls_approved_revision_and_retries_reload_after_restar
     clock[0] = "2026-10-17T12:01:00+00:00"
     recovered = writer().process_next()
     assert recovered["chat_ready"] and len(activated) == 2
+    assert recovered["generation_id"] == prepared["generation_id"]
+    assert len(snapshots) == len(renders) == 2  # Retry reuses complete frozen bytes and Markdown.
     responder.answer("Title a", language="en", answer_mode="brief")
     assert "article-a.md" not in {doc.file for doc in responder.kb.documents}
     assert client.get("/wiki/article-a.md").status_code == 404
@@ -1110,6 +1129,341 @@ def test_existing_writer_polls_approved_revision_and_retries_reload_after_restar
     assert writer().process_next()["chat_ready"]  # Upgrade an older modern generation once.
     assert responder.kb.approved_registry_snapshot is not None
     assert writer().process_next() is None
+
+
+@pytest.mark.parametrize("interruption", [TimeoutError, SystemExit])
+def test_public_refresh_prepared_generation_survives_restart_and_invalidates_changed_revision(tmp_path, monkeypatch, interruption):
+    from climate_registry import pdf_pipeline as pipeline
+    from climate_delivery.io import atomic_write_json
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db): _approve(db, sha, {"basis": "approved retry fixture"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    clock = ["2026-10-17T12:00:00+00:00"]
+    monkeypatch.setattr(pipeline, "_now", lambda: clock[0])
+    calls = []
+    def acknowledge(generation):
+        calls.append(generation)
+        atomic_write_json(queue / "active.json", json.loads((queue / "pending.json").read_text()))
+    def writer(callback=acknowledge):
+        return pipeline.PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, callback, repository_root=application)
+    assert writer().process_next()["chat_ready"]
+    old = (queue / "active.json").read_bytes()
+    set_visibility(database, "article", "a", False)
+    def interrupt(generation): raise interruption("reload interrupted")
+    if interruption is SystemExit:
+        with pytest.raises(SystemExit): writer(interrupt).process_next()
+    else:
+        assert writer(interrupt).process_next()["stage"] == "failed"
+    receipt = json.loads((queue / "public-refresh.json").read_text())
+    prepared = receipt["prepared_generation"]
+    files = {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()}
+    assert (queue / "active.json").read_bytes() == old and not (queue / "pending.json").exists()
+    clock[0] = "2026-10-17T12:01:00+00:00"
+    monkeypatch.setattr(pipeline, "_snapshot_registry", lambda *args: pytest.fail("same-revision retry copied the Registry"))
+    monkeypatch.setattr(pipeline, "render_runtime_registry", lambda *args, **kwargs: pytest.fail("same-revision retry rendered Wiki"))
+    resumed = writer().process_next()
+    assert resumed["chat_ready"] and resumed["generation_id"] == prepared["generation_id"]
+    assert {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == files
+    set_visibility(database, "article", "b", False)
+    before = (queue / "active.json").read_bytes()
+    with pytest.raises(RuntimeError, match="revision changed"):
+        writer()._activate(prepared)
+    assert (queue / "active.json").read_bytes() == before
+    # A changed approved revision must prepare a different snapshot, never reuse the old one.
+    with pytest.raises(pytest.fail.Exception, match="copied the Registry"):
+        writer().process_next()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real process death and flock are POSIX contracts")
+@pytest.mark.parametrize("exit_mode", ["exit", "kill"])
+def test_public_refresh_recovers_prepared_generation_after_real_process_death(tmp_path, monkeypatch, exit_mode):
+    import subprocess, sys, signal
+    from climate_registry import pdf_pipeline as pipeline
+    from climate_delivery.io import atomic_write_json
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db): _approve(db, sha, {"basis": "approved process-death fixture"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    def acknowledge(generation):
+        atomic_write_json(queue / "active.json", json.loads((queue / "pending.json").read_text()))
+    def writer():
+        return pipeline.PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, acknowledge, repository_root=application)
+    assert writer().process_next()["chat_ready"]
+    old = (queue / "active.json").read_bytes()
+    set_visibility(database, "article", "a", False)
+    code = '''import os,signal,sys
+from pathlib import Path
+from climate_registry.pdf_pipeline import PdfIntakePipeline
+queue,database,backup,runtime,application=map(Path,sys.argv[1:6])
+def interrupt(generation):
+    if sys.argv[6]=='kill': os.kill(os.getpid(),signal.SIGKILL)
+    os._exit(42)
+PdfIntakePipeline(queue,database,backup,runtime,interrupt,repository_root=application).process_next()
+raise AssertionError('reload interruption was not reached')
+'''
+    child = subprocess.run([sys.executable, "-c", code, str(queue), str(database), str(tmp_path / "backups"),
+        str(runtime), str(application), exit_mode], capture_output=True, text=True, timeout=30)
+    assert child.returncode == (42 if exit_mode == "exit" else -signal.SIGKILL), child.stderr
+    prepared = json.loads((queue / "public-refresh.json").read_text())["prepared_generation"]
+    assert (queue / "active.json").read_bytes() == old
+    assert (queue / "locks/intake-writer.lock").exists()  # The file survives; ownership must not.
+    files = {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()}
+    monkeypatch.setattr(pipeline, "_snapshot_registry", lambda *args: pytest.fail("crash recovery copied the Registry"))
+    monkeypatch.setattr(pipeline, "render_runtime_registry", lambda *args, **kwargs: pytest.fail("crash recovery rendered Wiki"))
+    resumed = writer().process_next()
+    assert resumed["chat_ready"] and resumed["generation_id"] == prepared["generation_id"]
+    assert {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == files
+
+
+@pytest.mark.skipif(os.name != "posix", reason="cross-process flock is a POSIX contract")
+def test_contending_public_refresh_cannot_replace_prepared_receipt_after_owner_dies(tmp_path, monkeypatch):
+    import subprocess, sys, select
+    from climate_registry import pdf_pipeline as pipeline
+    from climate_delivery.io import atomic_write_json, transaction_lock
+    from climate_delivery.errors import LockStateError
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db): _approve(db, sha, {"basis": "approved concurrent fixture"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    receipt = queue / "public-refresh.json"
+    def acknowledge(generation):
+        atomic_write_json(queue / "active.json", json.loads((queue / "pending.json").read_text()))
+    def writer():
+        return pipeline.PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, acknowledge, repository_root=application)
+    assert writer().process_next()["chat_ready"]
+    old = (queue / "active.json").read_bytes()
+    set_visibility(database, "article", "a", False)
+    code = '''import os,sys
+from pathlib import Path
+from climate_registry import pdf_pipeline as pipeline
+queue,database,backup,runtime,application=map(Path,sys.argv[1:])
+snapshot=pipeline._snapshot_registry
+def pause_snapshot(*args):
+    print('owned',flush=True)
+    sys.stdin.readline()
+    return snapshot(*args)
+pipeline._snapshot_registry=pause_snapshot
+def interrupt(generation):
+    print('prepared',flush=True)
+    sys.stdin.readline()
+    os._exit(42)
+pipeline.PdfIntakePipeline(queue,database,backup,runtime,interrupt,repository_root=application).refresh_publication()
+'''
+    child = subprocess.Popen([sys.executable, "-c", code, str(queue), str(database), str(tmp_path / "backups"),
+        str(runtime), str(application)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    prepared_bytes = []
+    original_read = Path.read_text
+    receipt_reads = []
+    def finish_owner():
+        child.stdin.write("prepare\n"); child.stdin.flush()
+        assert select.select([child.stdout], [], [], 30)[0] and child.stdout.readline().strip() == "prepared"
+        prepared_bytes.append(receipt.read_bytes())
+        child.stdin.write("exit\n"); child.stdin.flush()
+        assert child.wait(timeout=10) == 42
+    def read_with_contending_writer(path, *args, **kwargs):
+        value = original_read(path, *args, **kwargs)
+        if path == receipt:
+            receipt_reads.append(value)
+            if len(receipt_reads) == 2:
+                # Reproduce a stale final read while the owner prepares R1 and dies.
+                finish_owner()
+        return value
+    monkeypatch.setattr(Path, "read_text", read_with_contending_writer)
+    try:
+        assert select.select([child.stdout], [], [], 10)[0] and child.stdout.readline().strip() == "owned"
+        result = writer().refresh_publication()
+        assert result["stage"] == "failed" and result["error"] == "LockStateError"
+        if not prepared_bytes: finish_owner()
+        assert receipt.read_bytes() == prepared_bytes[0]
+        assert not receipt_reads  # A contender cannot read or write the owner's durable receipt.
+    finally:
+        if child.poll() is None: child.kill()
+        child.communicate(timeout=10)
+    monkeypatch.setattr(Path, "read_text", original_read)
+    assert (queue / "active.json").read_bytes() == old
+    prepared = json.loads(prepared_bytes[0])["prepared_generation"]
+    files = {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()}
+    monkeypatch.setattr(pipeline, "_snapshot_registry", lambda *args: pytest.fail("restart copied the Registry"))
+    monkeypatch.setattr(pipeline, "render_runtime_registry", lambda *args, **kwargs: pytest.fail("restart rendered Wiki"))
+    final_writes = []
+    def write_while_owned(path, value):
+        if path == receipt:
+            with pytest.raises(LockStateError):
+                with transaction_lock(queue, "intake-writer"):pass
+            final_writes.append(value["stage"])
+        atomic_write_json(path, value)
+    monkeypatch.setattr(pipeline, "atomic_write_json", write_while_owned)
+    resumed = writer().refresh_publication()
+    assert resumed["chat_ready"] and resumed["generation_id"] == prepared["generation_id"]
+    assert final_writes == ["chat_ready"]
+    assert {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == files
+
+
+@pytest.mark.skipif(os.name != "posix", reason="cross-process flock is a POSIX contract")
+def test_invalid_web_request_dispatch_respects_another_process_ownership(tmp_path, monkeypatch):
+    import subprocess, sys, select
+    from test_issue112_acquisition import _batch, _item
+    from climate_registry.acquisition import store_acquisition_batch, freeze_acquisition_for_report
+    from climate_registry.web_ingest_pipeline import enqueue_web_activation, read_web_activation_request
+    from climate_registry.pdf_pipeline import PdfIntakePipeline
+    from climate_delivery.io import atomic_write_json
+    from climate_delivery.errors import LockStateError
+    database = tmp_path / "registry.sqlite3"
+    with sqlite3.connect(database) as db: apply_migrations(db)
+    db.close()
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    payload = _batch([_item()])
+    store_acquisition_batch(database, payload)
+    frozen = freeze_acquisition_for_report(database, payload["batch_id"], report_date=payload["report_date"])
+    queued = enqueue_web_activation(queue, database, payload["batch_id"], frozen_payload_sha256=digest(frozen), repository_root=application)
+    request = read_web_activation_request(queue, queued["batch_id"])
+    job = Path(request["registry_snapshot_path"]).parent
+    Path(request["registry_snapshot_path"]).rename(job / "unavailable.sqlite3")
+    atomic_write_json(job / "retry.json", {"batch_id": queued["batch_id"]})
+    writer = PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, lambda _: pytest.fail("invalid request reloaded Chat"), repository_root=application)
+    code = '''import sys
+from pathlib import Path
+from climate_delivery.io import transaction_lock
+with transaction_lock(Path(sys.argv[1]),'intake-writer'):
+    print('owned',flush=True)
+    sys.stdin.readline()
+'''
+    child = subprocess.Popen([sys.executable, "-c", code, str(queue)], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert select.select([child.stdout], [], [], 10)[0] and child.stdout.readline().strip() == "owned"
+        files = lambda: {str(path): path.read_bytes() for root in (queue, runtime) for path in root.rglob("*") if path.is_file()}
+        before, before_database = files(), database.read_bytes()
+        with pytest.raises(LockStateError): writer.process_next()
+        assert files() == before and database.read_bytes() == before_database
+    finally:
+        child.communicate("\n", timeout=10)
+    assert child.returncode == 0
+    result = writer.process_next()
+    assert result["stage"] == "failed" and result["error"] == "RuntimeError: web activation request is invalid"
+    assert result["attempts"] == 1 and not result["chat_ready"]
+    assert json.loads((job / "status.json").read_text()) == result
+    assert not (job / "retry.json").exists() and not (queue / "active.json").exists()
+    assert database.read_bytes() == before_database and not list(runtime.rglob("*.sqlite3"))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="cross-process flock is a POSIX contract")
+def test_all_intake_mutations_respect_another_process_ownership(tmp_path):
+    import subprocess, sys, select
+    from climate_delivery.errors import LockStateError
+    from climate_delivery.io import transaction_lock
+    from climate_registry.pdf_pipeline import PdfIntakePipeline, retry_pdf_batch
+    from climate_registry.web_ingest_pipeline import WebIngestPipeline
+    from climate_registry.owner_checks import _transaction
+    database = _database(tmp_path, version=24)
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    writer = PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, lambda _: None, repository_root=application)
+    web = WebIngestPipeline(queue, database, runtime, lambda _: None, repository_root=application)
+    code = '''import sys
+from pathlib import Path
+from climate_delivery.io import transaction_lock
+with transaction_lock(Path(sys.argv[1]),'intake-writer'):
+    print('owned',flush=True)
+    sys.stdin.readline()
+'''
+    child = subprocess.Popen([sys.executable, "-c", code, str(queue)], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def owner_write():
+        with _transaction(database, queue, True): pytest.fail("owner write bypassed intake ownership")
+    try:
+        assert select.select([child.stdout], [], [], 10)[0] and child.stdout.readline().strip() == "owned"
+        for operation in (lambda: writer.process("missing"), lambda: retry_pdf_batch(queue, "missing"),
+                lambda: writer.refresh_checks("missing"), lambda: web.process("missing"), owner_write):
+            with pytest.raises(LockStateError): operation()
+    finally:
+        child.communicate("\n", timeout=10)
+    assert child.returncode == 0
+    with transaction_lock(queue, "intake-writer"):
+        pass  # Normal exit releases the same surviving lock file too.
+
+
+@pytest.mark.skipif(os.name == "nt", reason="actual API activation uses POSIX locking")
+def test_public_refresh_rejects_revision_changed_while_api_builds_replacement(tmp_path, monkeypatch):
+    from climate_registry.pdf_pipeline import PdfIntakePipeline
+    from fastapi.testclient import TestClient
+    import api_server
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db): _approve(db, sha, {"basis": "approved race fixture"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    responder, reload = _actual_chat_activation(monkeypatch, database, application, queue, runtime)
+    writer = PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, reload, repository_root=application)
+    assert writer.process_next()["chat_ready"]
+    old, old_kb = (queue / "active.json").read_bytes(), responder.kb
+    build = api_server.WikiKnowledgeBase
+    def changed_during_build(*args, **kwargs):
+        replacement = build(*args, **kwargs)
+        set_visibility(database, "article", "b", False)
+        return replacement
+    monkeypatch.setattr(api_server, "WikiKnowledgeBase", changed_during_build)
+    set_visibility(database, "article", "a", False)
+    statuses = []
+    def reload_observed(generation):
+        response = TestClient(api_server.app).post("/api/reload", params={"generation_id": generation},
+            headers={"X-Reload-Token": "activation-fixture"})
+        statuses.append(response.status_code)
+        if response.status_code != 200: raise RuntimeError("reload revision changed")
+    writer.reload_chat = reload_observed
+    failed = writer.process_next()
+    assert failed["stage"] == "failed" and statuses == [409]
+    assert responder.kb is old_kb and (queue / "active.json").read_bytes() == old
+    stale = failed["prepared_generation"]["generation_id"]
+    monkeypatch.setattr(api_server, "WikiKnowledgeBase", build)
+    recovered = writer.process_next()
+    assert recovered["chat_ready"] and recovered["generation_id"] != stale
+
+
+@pytest.mark.parametrize("damage", ["snapshot", "manifest", "database"])
+def test_public_refresh_invalid_prepared_generation_fails_closed_without_copying(tmp_path, monkeypatch, damage):
+    from climate_registry import pdf_pipeline as pipeline
+    from climate_delivery.io import atomic_write_json
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db): _approve(db, sha, {"basis": "approved corruption fixture"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    app = tmp_path / "app"; app.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    def unavailable(generation): raise TimeoutError("reload unavailable")
+    writer = pipeline.PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, unavailable, repository_root=app)
+    failed = writer.process_next()
+    prepared = failed["prepared_generation"]
+    if damage == "snapshot":
+        path = Path(prepared["public_registry_snapshot"]); path.write_bytes(path.read_bytes() + b"changed")
+    elif damage == "manifest":
+        (Path(prepared["path"]) / "intake-manifest.json").write_text("{}")
+    else:
+        other = tmp_path / "other.sqlite3"; other.write_bytes(database.read_bytes())
+        prepared["registry_database"] = str(other)
+    failed["retry_after"] = "2020-01-01T00:00:00+00:00"
+    atomic_write_json(queue / "public-refresh.json", failed)
+    monkeypatch.setattr(pipeline, "_snapshot_registry", lambda *args: pytest.fail("invalid prepared bytes caused a new copy"))
+    result = writer.process_next()
+    assert result["stage"] == "failed" and not (queue / "active.json").exists()
+    assert Path(prepared["public_registry_snapshot"]).is_file() and Path(prepared["path"]).is_dir()
 
 
 def test_new_pdf_writer_waits_for_native_review_and_then_resumes(tmp_path,monkeypatch):
@@ -1604,6 +1958,34 @@ def test_writer_entrypoint_requires_an_existing_canonical_database(tmp_path,monk
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(missing))
     with pytest.raises(ValueError,match="existing database"):_pipeline()
     assert not missing.exists()
+
+
+@pytest.mark.parametrize("configured,expected", [(None, 900), ("1800", 1800), ("1", 1), ("3600", 3600)])
+def test_writer_reload_wait_is_configurable_and_preserves_exact_acknowledgement(monkeypatch, configured, expected):
+    from scripts import run_pdf_intake_writer as entry
+    from io import StringIO
+    monkeypatch.setenv("CLIMATE_PDF_RELOAD_URL", "http://wiki/api/reload")
+    monkeypatch.setenv("RELOAD_TOKEN", "test-only-token")
+    if configured is None: monkeypatch.delenv("CLIMATE_PDF_RELOAD_TIMEOUT_SECONDS", raising=False)
+    else: monkeypatch.setenv("CLIMATE_PDF_RELOAD_TIMEOUT_SECONDS", configured)
+    observed = []
+    def urlopen(call, *, timeout):
+        observed.append((call.full_url, timeout))
+        response = StringIO(json.dumps({"pdf_projection": {"generation_id": "expected"}})); response.status = 200
+        return response
+    monkeypatch.setattr(entry.request, "urlopen", urlopen)
+    entry._reload_chat("expected")
+    assert observed == [("http://wiki/api/reload?generation_id=expected", expected)]
+    with pytest.raises(RuntimeError, match="requested PDF Wiki projection"):
+        entry._reload_chat("different")
+
+
+@pytest.mark.parametrize("configured", ["0", "-1", "3601", "inf", "nan", "1.5", ""])
+def test_writer_reload_rejects_unbounded_or_invalid_wait_before_request(monkeypatch, configured):
+    from scripts import run_pdf_intake_writer as entry
+    monkeypatch.setenv("CLIMATE_PDF_RELOAD_TIMEOUT_SECONDS", configured)
+    monkeypatch.setattr(entry.request, "urlopen", lambda *args, **kwargs: pytest.fail("invalid timeout opened reload request"))
+    with pytest.raises(ValueError): entry._reload_chat("expected")
 
 
 def test_writer_pending_review_obeys_poll_interval(monkeypatch):

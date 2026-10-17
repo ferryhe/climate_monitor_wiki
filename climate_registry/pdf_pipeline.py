@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from climate_delivery.io import atomic_write_json, exclusive_lock
+from climate_delivery.io import atomic_write_json, transaction_lock
 from .pdf_intake import _existing_occurrence_ids, persist_pdf_intake
 from .persistent import _file_sha256, _read_only_connection, _validate_database
 from .wiki import render_runtime_registry, snapshot_registry
@@ -170,7 +170,7 @@ def _validate_pdf_binding(status, database=None):
 
 
 def retry_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
-    with exclusive_lock(queue_dir, "intake-writer"):
+    with transaction_lock(queue_dir, "intake-writer"):
         status = read_pdf_batch(queue_dir, batch_id)
         if status.get("chat_ready") or status.get("stage") != "failed":
             return status
@@ -207,6 +207,14 @@ def load_active_projection(
         return None, None
     try:
         value = json.loads(pointer.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("active PDF Wiki projection is invalid") from exc
+    return _validated_projection(root, value)
+
+
+def _validated_projection(root: Path, value: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    """Validate the same generation identity for active and prepared metadata."""
+    try:
         generation_id = value["generation_id"]
         generation = Path(value["path"]).resolve()
         generations = (root / "generations").resolve()
@@ -465,6 +473,8 @@ class PdfIntakePipeline:
     def _activate(self, metadata: dict[str, Any]) -> None:
         metadata.update(_approved_snapshot_metadata(self.database, Path(metadata["pdf_registry_snapshot"]),
             metadata["pdf_registry_sha256"]))
+        if metadata.get("public_registry_revision") is not None and public_revision(self.database) != metadata["public_registry_revision"]:
+            raise RuntimeError("approved Registry revision changed before activation")
         atomic_write_json(self.pending_pointer, metadata)
         try:
             self.reload_chat(metadata["generation_id"])
@@ -548,7 +558,7 @@ class PdfIntakePipeline:
         return generation, generation_id, registry_sha256, manifest_sha256
 
     def process(self, batch_id: str) -> dict[str, Any]:
-        with exclusive_lock(self.queue_dir, "intake-writer"):
+        with transaction_lock(self.queue_dir, "intake-writer"):
             return self._process_unlocked(batch_id)
 
     def _process_unlocked(self, batch_id: str) -> dict[str, Any]:
@@ -794,38 +804,65 @@ class PdfIntakePipeline:
 
     def refresh_checks(self, run_id: str) -> dict[str, Any]:
         """Refresh the existing writer after exact Registry approval."""
-        with exclusive_lock(self.queue_dir, "intake-writer"):
-            prior_generation, metadata = self._active_projection()
-            revision = public_revision(self.database)
-            if (prior_generation is None or metadata is None) and revision is None:
-                return {"status": "not_active", "run_id": run_id}
-            metadata = metadata or {"batch_id": "public-registry", "batch_created_at": "", "projection_kind": "pdf"}
-            manifest = load_projection_manifest(prior_generation, metadata)
-            pdf_ids = _active_pdf_occurrence_ids(prior_generation, manifest)
-            calendar_ids = _active_calendar_ids(self.database, manifest, pdf_ids)
-            generation_id = "checks-" + uuid.uuid4().hex
-            generation = self.runtime_wiki_dir / "generations" / generation_id
-            snapshot = self.runtime_wiki_dir / "registry-snapshots" / f"{generation_id}.sqlite3"
-            digest = _snapshot_registry(self.database, snapshot)
-            revision = public_revision(snapshot)
-            web_items = list((manifest or {}).get("web_items", []))
-            web_snapshot = _active_registry_snapshot(self.runtime_wiki_dir, metadata, "web", required=bool(web_items))
-            generation.mkdir(parents=True)
-            render_runtime_registry(generation, web_database=snapshot if public_revision(snapshot) is not None else web_snapshot, pdf_database=snapshot,
-                manifest={"web_items": web_items, "pdf_occurrence_ids": sorted(pdf_ids),
-                    "pdf_calendar_occurrence_ids": sorted(calendar_ids)})
-            manifest_sha = _write_projection_manifest(generation, generation_id, web_items=web_items,
-                pdf_occurrence_ids=pdf_ids, pdf_calendar_occurrence_ids=calendar_ids)
-            updated = {**metadata, "generation_id": generation_id, "path": str(generation.resolve()),
-                "pdf_registry_snapshot": str(snapshot.resolve()), "pdf_registry_sha256": digest,
-                "manifest_sha256": manifest_sha, "activated_at": _now(), "check_run_id": run_id}
-            if metadata.get("projection_kind") != "web":
-                updated.update(registry_snapshot=str(snapshot.resolve()), registry_sha256=digest)
-            self._activate(updated)
-            return {"status": "chat_ready", "generation_id": generation_id, "run_id": run_id}
+        with transaction_lock(self.queue_dir, "intake-writer"):
+            return self._refresh_checks_unlocked(run_id)
+
+    def _refresh_checks_unlocked(self, run_id: str) -> dict[str, Any]:
+        prior_generation, metadata = self._active_projection()
+        revision = public_revision(self.database)
+        if (prior_generation is None or metadata is None) and revision is None:
+            return {"status": "not_active", "run_id": run_id}
+        receipt = self.queue_dir / "public-refresh.json"
+        previous = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
+        prepared = previous.get("prepared_generation")
+        if revision is not None and prepared and prepared.get("public_registry_revision") == revision:
+            generation, prepared = _validated_projection(self.runtime_wiki_dir, prepared)
+            if load_projection_manifest(generation, prepared) is None:
+                raise RuntimeError("prepared public generation manifest is missing")
+            approved_projection_snapshot(self.runtime_wiki_dir, prepared, database=self.database)
+            self._activate(prepared)
+            return {"status": "chat_ready", "generation_id": generation.name, "run_id": run_id}
+        metadata = metadata or {"batch_id": "public-registry", "batch_created_at": "", "projection_kind": "pdf"}
+        manifest = load_projection_manifest(prior_generation, metadata)
+        pdf_ids = _active_pdf_occurrence_ids(prior_generation, manifest)
+        calendar_ids = _active_calendar_ids(self.database, manifest, pdf_ids)
+        generation_id = "checks-" + uuid.uuid4().hex
+        generation = self.runtime_wiki_dir / "generations" / generation_id
+        snapshot = self.runtime_wiki_dir / "registry-snapshots" / f"{generation_id}.sqlite3"
+        digest = _snapshot_registry(self.database, snapshot)
+        revision = public_revision(snapshot)
+        web_items = list((manifest or {}).get("web_items", []))
+        web_snapshot = _active_registry_snapshot(self.runtime_wiki_dir, metadata, "web", required=bool(web_items))
+        generation.mkdir(parents=True)
+        render_runtime_registry(generation, web_database=snapshot if public_revision(snapshot) is not None else web_snapshot, pdf_database=snapshot,
+            manifest={"web_items": web_items, "pdf_occurrence_ids": sorted(pdf_ids),
+                "pdf_calendar_occurrence_ids": sorted(calendar_ids)})
+        manifest_sha = _write_projection_manifest(generation, generation_id, web_items=web_items,
+            pdf_occurrence_ids=pdf_ids, pdf_calendar_occurrence_ids=calendar_ids)
+        updated = {**metadata, "generation_id": generation_id, "path": str(generation.resolve()),
+            "pdf_registry_snapshot": str(snapshot.resolve()), "pdf_registry_sha256": digest,
+            "manifest_sha256": manifest_sha, "activated_at": _now(), "check_run_id": run_id}
+        if metadata.get("projection_kind") != "web":
+            updated.update(registry_snapshot=str(snapshot.resolve()), registry_sha256=digest)
+        if revision is not None:
+            updated.update(_approved_snapshot_metadata(self.database, snapshot, digest))
+            atomic_write_json(receipt, {"batch_id": "public-registry", "stage": "prepared", "chat_ready": False,
+                "public_registry_revision": revision, "prepared_generation": updated, "observed_at": _now()})
+        self._activate(updated)
+        return {"status": "chat_ready", "generation_id": generation_id, "run_id": run_id}
 
     def refresh_publication(self) -> dict[str, Any] | None:
         """The existing writer polls the durable approved revision, including after restart."""
+        from climate_delivery.errors import LockStateError
+        try:
+            with transaction_lock(self.queue_dir, "intake-writer"):
+                return self._refresh_publication_unlocked()
+        except LockStateError as exc:
+            # A contender reports failure without changing the owner's durable receipt.
+            return {"batch_id": "public-registry", "stage": "failed", "status": "failed", "chat_ready": False,
+                "error": type(exc).__name__, "observed_at": _now()}
+
+    def _refresh_publication_unlocked(self) -> dict[str, Any] | None:
         revision = public_revision(self.database)
         if revision is None:
             return None
@@ -842,7 +879,7 @@ class PdfIntakePipeline:
         if previous.get("public_registry_revision") == revision and previous.get("retry_after") and _now() < previous["retry_after"]:
             return None
         try:
-            result = self.refresh_checks("public-" + revision)
+            result = self._refresh_checks_unlocked("public-" + revision)
             result.update(batch_id="public-registry", stage="chat_ready", chat_ready=True,
                 public_registry_revision=self._active_projection()[1]["public_registry_revision"], observed_at=_now())
         except Exception as exc:
@@ -851,6 +888,9 @@ class PdfIntakePipeline:
                 "public_registry_revision": revision, "error": type(exc).__name__, "observed_at": _now(),
                 "retry_after": (datetime.fromisoformat(_now()) + timedelta(seconds=60)).isoformat()}
         # The old active pointer remains authoritative until reload acknowledges this generation.
+        current = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
+        if current.get("prepared_generation"):
+            result["prepared_generation"] = current["prepared_generation"]
         atomic_write_json(receipt, result)
         return result
 
@@ -897,7 +937,7 @@ class PdfIntakePipeline:
                 status.get("stage") == "failed" and retry_requested
             ):
                 candidates.append({
-                    **status, "projection_kind": "web", "status_path": status_path,
+                    **status, "projection_kind": "web",
                 })
         if not candidates:
             return self.refresh_publication()
@@ -907,21 +947,9 @@ class PdfIntakePipeline:
         )
         batch_id = str(status.get("batch_id", ""))
         if status["projection_kind"] == "web":
-            from .web_ingest_pipeline import WebIngestPipeline, read_web_activation_request, preflight_web_activation
+            from .web_ingest_pipeline import WebIngestPipeline, preflight_web_activation
 
             preflight_web_activation(self.queue_dir, batch_id, self.database)
-            try:
-                request = read_web_activation_request(self.queue_dir, batch_id)
-            except Exception as exc:
-                status_path = Path(status["status_path"])
-                persisted = json.loads(status_path.read_text(encoding="utf-8"))
-                persisted.update(
-                    stage="failed", chat_ready=False,
-                    error=f"{type(exc).__name__}: {exc}", updated_at=_now(),
-                )
-                atomic_write_json(status_path, persisted)
-                (status_path.parent / "retry.json").unlink(missing_ok=True)
-                return persisted
             return WebIngestPipeline(
                 self.queue_dir,
                 self.database,

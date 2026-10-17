@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -225,6 +226,14 @@ def project_independent(connection, job_ids, *, now, business, definitions):
 
 def export_snapshot(executions_db, jobs_map, status_dir, *, clock=None, jobs_file=None,
     report_root=None, acquisition_root=None, checks_root=None, queue_root=None, publisher_root=None):
+    databases = [executions_db] if isinstance(executions_db, (str, Path)) else list(executions_db)
+    databases = [Path(path).resolve(strict=True) for path in databases]
+    if not 1 <= len(databases) <= 2 or len(set(databases)) != len(databases):
+        raise ValueError("one or two distinct Hermes execution databases are required")
+    job_files = ([jobs_file] if isinstance(jobs_file, (str, Path)) else list(jobs_file or []))
+    job_files = [Path(path).resolve(strict=True) for path in job_files]
+    if len(set(job_files)) != len(job_files):
+        raise ValueError("Hermes jobs files must be distinct")
     target = Path(status_dir).resolve()
     if target.is_relative_to(ROOT):
         raise ValueError("status output must be outside the production checkout")
@@ -236,14 +245,34 @@ def export_snapshot(executions_db, jobs_map, status_dir, *, clock=None, jobs_fil
             previous = validate_snapshot(json.loads(snapshot.read_text()), now=now)
         except (OSError, ValueError, JobStatusInvalidSnapshotError):
             pass
-        with sqlite3.connect(Path(executions_db).resolve().as_uri() + "?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect(databases[0].as_uri() + "?mode=ro" if len(databases) == 1 else ":memory:", uri=True)) as db:
             job_ids = json.loads(Path(jobs_map).read_text())
+            if len(databases) == 2:
+                if set(job_ids) != set(schedule.PIPELINE_SLOTS):
+                    raise ValueError("multiple profiles require the current eleven-role mapping")
+                columns = "job_id,status,claimed_at,started_at,finished_at"
+                for index, path in enumerate(databases):
+                    db.execute(f"ATTACH DATABASE ? AS profile{index}", (path.as_uri() + "?mode=ro",))
+                db.execute(f"CREATE TEMP VIEW executions AS SELECT {columns} FROM profile0.executions "
+                    f"UNION ALL SELECT {columns} FROM profile1.executions")
+                db.execute("PRAGMA query_only=ON")
             if set(job_ids) in (set(schedule.PIPELINE_SLOTS), set(schedule.LEGACY_PIPELINE_SLOTS)):
-                if not jobs_file:
-                    raise ValueError("independent observer requires the actual Hermes jobs file")
-                definitions = json.loads(Path(jobs_file).read_text())
-                if isinstance(definitions, dict):
-                    definitions = definitions["jobs"]
+                if len(job_files) != len(databases):
+                    raise ValueError("each execution database requires its actual Hermes jobs file")
+                definitions, seen = [], set()
+                for path in job_files:
+                    observed = json.loads(path.read_text())
+                    if isinstance(observed, dict):
+                        observed = observed["jobs"]
+                    if not isinstance(observed, list):
+                        raise ValueError("Hermes jobs definitions must be a list")
+                    for item in observed:
+                        identity = item.get("id") or item.get("job_id") if isinstance(item, dict) else None
+                        if (not isinstance(identity, str) or not identity or identity in seen
+                            or item.get("id") and item.get("job_id") and item["id"] != item["job_id"]):
+                            raise ValueError("Hermes definitions have a missing, duplicate or conflicting job ID")
+                        seen.add(identity)
+                        definitions.append(item)
                 payload = project_independent(db, job_ids, now=now, definitions=definitions,
                     business=business_status(report_root=report_root, acquisition_root=acquisition_root, checks_root=checks_root,
                         queue_root=queue_root, publisher_root=publisher_root))
@@ -255,10 +284,10 @@ def export_snapshot(executions_db, jobs_map, status_dir, *, clock=None, jobs_fil
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--executions-db", type=Path, required=True)
+    parser.add_argument("--executions-db", type=Path, action="append", required=True)
     parser.add_argument("--jobs-map", type=Path, required=True)
     parser.add_argument("--status-dir", type=Path, required=True)
-    parser.add_argument("--jobs-file", type=Path)
+    parser.add_argument("--jobs-file", type=Path, action="append")
     parser.add_argument("--report-root", type=Path)
     parser.add_argument("--acquisition-root", type=Path)
     parser.add_argument("--checks-root", type=Path)

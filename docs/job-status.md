@@ -195,6 +195,14 @@ scheduled unchanged ticks skip generation without replacing the last actual
 business outcome. Failed attempts do not advance that success marker.
 Historical `independent-job-status.v1` ten-role and biweekly four-slot snapshots
 remain readable with their original occurrence rules.
+If native review jobs use a separate Hermes profile, repeat `--executions-db`
+and `--jobs-file` once per profile, in matching order. The eleven-role map must
+contain the actual IDs across those profiles. The exporter reads both execution
+databases read-only and merges their real definitions; it rejects duplicate or
+missing IDs and mismatched input counts before replacing the status file.
+Unmapped definitions, such as the host health job, stay outside the application
+map. Single-profile commands keep their existing form; historical four-slot and
+ten-role exports use one profile.
 Cron `completed` never implies a business PASS or an email delivery. Existing
 freshness handling still applies. Observer export has no notification side
 effect; native jobs remain silent on empty queues and unchanged blockers.
