@@ -394,6 +394,45 @@ def test_scheduled_t1_admits_both_kinds_and_preserves_last_actual_failure(tmp_pa
     assert result["business_status"] == "skipped" and result["last_actual_outcome"]["run_id"] == "failed"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="real transaction and Registry locks require POSIX")
+def test_daily_wrapper_preserves_frozen_run_after_mid_batch_writer_lock(tmp_path, monkeypatch):
+    from scripts import check_information as cli
+    from climate_registry import information_checks as checks
+    from types import SimpleNamespace
+    from datetime import timedelta
+    database = _database(tmp_path)
+    clock = [datetime(2026, 10, 17, 17, 30, tzinfo=timezone.utc)]
+    monkeypatch.setattr(cli, "datetime", SimpleNamespace(now=lambda *_: clock[0]))
+    monkeypatch.setattr(checks, "_now", lambda: clock[0].isoformat())
+    original = checks.run_checks
+    monkeypatch.setattr(cli, "run_checks", lambda *args, **kwargs: original(*args, **kwargs, verifier=_judgment))
+    calls, held = [], []
+    def fetch(identity, url, **kwargs):
+        calls.append(identity)
+        if identity == "meeting-2" and not held:
+            lock = checks._exclusive_database_lock(database); lock.__enter__(); held.append(lock)
+        return _record(identity, url)
+    monkeypatch.setattr(checks, "fetch_article_content", fetch)
+    args = ["--database", str(database), "--backup-dir", str(tmp_path / "backups"), "--limit", "2"]
+    try:
+        assert cli.run_daily_checks(args, result_dir=tmp_path) == 2
+    finally:
+        for lock in held: lock.__exit__(None, None, None)
+    failed = json.loads((tmp_path / "meetings-daily-check.json").read_text())
+    assert failed["business_status"] == "failed" and failed["error"] == "RegistryLockError"
+    assert failed["run_id"] and failed["completed_count"] == 1 and failed["item_count"] == 2
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT status,completed_count FROM meeting_check_runs").fetchone() == ("running", 1)
+    clock[0] += timedelta(minutes=5)
+    assert cli.run_daily_checks(args, result_dir=tmp_path) == 2  # Second meeting remains a real partial result.
+    result = json.loads((tmp_path / "meetings-daily-check.json").read_text())
+    assert result["run_id"] == failed["run_id"] and result["completed_count"] == result["item_count"] == 2
+    assert result["failure_history"][0]["error"] == "RegistryLockError"
+    assert calls.count("meeting-1") == 1 and calls.count("meeting-2") == 2
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT status,item_count,completed_count FROM meeting_check_runs").fetchall() == [("partial", 2, 2)]
+
+
 def test_accessible_homepage_and_conflicting_date_never_promote(tmp_path):
     database = _database(tmp_path)
     target = check_targets(database, "meetings", {"meeting-1"})[0]

@@ -1048,6 +1048,14 @@ exec "$REAL_PYTHON" "$@"
         encoding="utf-8",
     )
     python_shim.chmod(0o755)
+    # Keep the production interpreter fixed to the isolated Hermes runtime;
+    # replace that one executable only in this fault-injection fixture.
+    entrypoint_source = (ROOT / "scripts" / "docker_entrypoint.sh").read_text(encoding="utf-8")
+    fixed_command = "/opt/hermes-venv/bin/python -m climate_monitor.hermes_dashboard_server"
+    assert entrypoint_source.count(fixed_command) == 1
+    entrypoint = tmp_path / "docker_entrypoint.sh"
+    entrypoint.write_text(entrypoint_source.replace(fixed_command,
+        f'"{python_shim}" -m climate_monitor.hermes_dashboard_server'), encoding="utf-8")
     app = (
         "import pathlib,signal,sys,time; "
         "started=pathlib.Path(sys.argv[1]); stopped=pathlib.Path(sys.argv[2]); "
@@ -1067,7 +1075,7 @@ exec "$REAL_PYTHON" "$@"
     result = subprocess.run(
         [
             "sh",
-            str(ROOT / "scripts" / "docker_entrypoint.sh"),
+            str(entrypoint),
             sys.executable,
             "-c",
             app,

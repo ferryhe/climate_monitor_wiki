@@ -20,6 +20,7 @@ from .pdf_pipeline import (
     _snapshot_registry,
     _write_projection_manifest,
     _active_calendar_ids,
+    _approved_snapshot_metadata,
     load_active_projection,
     load_projection_manifest,
 )
@@ -557,6 +558,7 @@ class WebIngestPipeline:
                 "pdf_registry_snapshot": pdf_registry_snapshot,
                 "pdf_registry_sha256": pdf_registry_sha256,
                 "activated_at": _now(),
+                **_approved_snapshot_metadata(self.database, snapshot, registry_sha256),
             }
             self._save(status, stage="activating")
             atomic_write_json(self.queue_dir / "pending.json", metadata)

@@ -557,7 +557,7 @@ class EvidenceTurn:
             return self.owner.reader_factory()
         import os
         from climate_registry.read_api import RegistryReader, RegistryUnavailableError
-        path = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+        path = self.owner.responder.kb.registry_database
         if not path or os.getenv("CLIMATE_REGISTRY_STATIC_SNAPSHOT") == "1":
             return RegistryReader.from_public_export(self.owner.responder.kb.wiki_dir.parent)
         return RegistryReader(path, repository_root=Path(__file__).resolve().parents[1])

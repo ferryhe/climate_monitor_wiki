@@ -598,7 +598,7 @@ def _currently_verified_targets(connection, prefix: str, targets: list[dict[str,
         and _terminal_attempt(connection, prefix, row)
         and row.get("verification_status") == "verified"
         and (packet := _exact_attempt(target, row)) is not None
-        and packet.get("verification_status") == "verified" and not packet.get("enrichment_error")}
+        and packet.get("verification_status") == "verified"}
 
 
 def _incremental_targets(connection, prefix, targets, *, now, retry_after_minutes):

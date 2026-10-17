@@ -377,6 +377,28 @@ def _active_registry_snapshot(
     return snapshot
 
 
+def _approved_snapshot_metadata(database: Path, snapshot: Path, sha256: str) -> dict[str, Any]:
+    revision = public_revision(snapshot)
+    return ({"public_registry_revision": revision, "registry_database": str(database.resolve()),
+        "public_registry_snapshot": str(snapshot.resolve()), "public_registry_sha256": sha256}
+        if revision is not None else {})
+
+
+def approved_projection_snapshot(runtime_wiki_dir: Path, metadata: dict[str, Any] | None,
+    *, database: Path | str | None = None) -> Path | None:
+    """New writer generations bind Wiki and Chat to one approved immutable read."""
+    if not metadata or metadata.get("public_registry_revision") is None:
+        return None
+    from .publication import resolve_database
+    if not metadata.get("registry_database"):
+        raise RuntimeError("approved Wiki generation has no Registry binding")
+    resolve_database(database, frozen=metadata["registry_database"])
+    snapshot = _active_registry_snapshot(runtime_wiki_dir, metadata, "public", required=True)
+    if public_revision(snapshot) != metadata["public_registry_revision"]:
+        raise RuntimeError("approved Wiki generation revision differs from its frozen Registry")
+    return snapshot
+
+
 def _stored_bundle_occurrence_ids(database: Path, bundle: dict[str, Any]) -> set[str]:
     """Resolve this bundle's natural identities to their persisted occurrence IDs."""
     connection = sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True)
@@ -441,6 +463,8 @@ class PdfIntakePipeline:
         return load_active_projection(self.runtime_wiki_dir, self.active_pointer)
 
     def _activate(self, metadata: dict[str, Any]) -> None:
+        metadata.update(_approved_snapshot_metadata(self.database, Path(metadata["pdf_registry_snapshot"]),
+            metadata["pdf_registry_sha256"]))
         atomic_write_json(self.pending_pointer, metadata)
         try:
             self.reload_chat(metadata["generation_id"])
@@ -794,8 +818,7 @@ class PdfIntakePipeline:
                 pdf_occurrence_ids=pdf_ids, pdf_calendar_occurrence_ids=calendar_ids)
             updated = {**metadata, "generation_id": generation_id, "path": str(generation.resolve()),
                 "pdf_registry_snapshot": str(snapshot.resolve()), "pdf_registry_sha256": digest,
-                "manifest_sha256": manifest_sha, "activated_at": _now(), "check_run_id": run_id,
-                "public_registry_revision": revision}
+                "manifest_sha256": manifest_sha, "activated_at": _now(), "check_run_id": run_id}
             if metadata.get("projection_kind") != "web":
                 updated.update(registry_snapshot=str(snapshot.resolve()), registry_sha256=digest)
             self._activate(updated)
@@ -812,11 +835,6 @@ class PdfIntakePipeline:
                 if not connection.execute("SELECT 1 FROM registry_publication WHERE published_candidate_sha256 IS NOT NULL LIMIT 1").fetchone():
                     return None
         active_revision = (active or {}).get("public_registry_revision")
-        if active and active_revision is None:
-            kind = "web" if active.get("projection_kind") == "web" else "pdf"
-            snapshot = _active_registry_snapshot(self.runtime_wiki_dir, active, kind,
-                required=bool(active.get(kind + "_registry_snapshot")))
-            active_revision = public_revision(snapshot) if snapshot else None
         if active_revision == revision:
             return None
         receipt = self.queue_dir / "public-refresh.json"

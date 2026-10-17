@@ -31,9 +31,14 @@ def run_daily_checks(argv: list[str], *, result_dir: Path) -> int:
             code = main([*argv, "--kind", kind, "--scheduled", "--result",
                 str(result_dir / (kind + "-daily-check.json"))], _admitted_occurrence=occurrence)
         except Exception as exc:
-            failure = {"kind": kind, "status": "failed", "business_status": "failed", "occurrence": occurrence,
+            path = result_dir / (kind + "-daily-check.json")
+            previous = json.loads(path.read_text()) if path.is_file() else {}
+            failure = {**previous, "kind": kind, "status": "failed", "business_status": "failed", "occurrence": occurrence,
                 "error": type(exc).__name__, "observed_at": datetime.now(timezone.utc).isoformat()}
-            atomic_write_json(result_dir / (kind + "-daily-check.json"), {**failure, "last_actual_outcome": failure})
+            failure.pop("last_actual_outcome", None)
+            failure["failure_history"] = [*previous.get("failure_history", []),
+                {key: failure[key] for key in ("run_id", "completed_count", "error", "observed_at") if key in failure}]
+            atomic_write_json(path, {**failure, "last_actual_outcome": failure})
             print(json.dumps(failure), flush=True)
             code = 2
         result = max(result, code)
@@ -84,7 +89,7 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
                 if not args.refresh_chat or previous.get("projection", {}).get("status") in {"chat_ready", "pending_review"}:
                     print(json.dumps({"status": "already_complete", "kind": args.kind, "occurrence": occurrence}))
                     return 0 if previous["status"] == "complete" else 2
-            continuation = ["--resume", previous["run_id"]] if previous.get("status") in {"pending", "running"} else []
+            continuation = ["--resume", previous["run_id"]] if previous.get("run_id") and previous.get("status") in {"pending", "running", "failed"} else []
             forwarded = [value for value in (argv if argv is not None else sys.argv[1:]) if value != "--scheduled"] + continuation + ["--incremental", "--occurrence", occurrence]
             code = main(forwarded)
             result = json.loads(args.result.read_text())
@@ -93,11 +98,16 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
             return code
     previous = json.loads(args.result.read_text()) if args.result and args.result.exists() else {}
     last_actual = previous.get("last_actual_outcome") or (previous if previous.get("completed_count", 0) else None)
+    checkpoint = {}
     def progress(item):
         print(json.dumps(item, ensure_ascii=False), flush=True)
         if args.result and item.get("status") == "pending":
-            atomic_write_json(args.result, {**item, "kind": args.kind, "occurrence": args.occurrence,
-                "last_actual_outcome": last_actual})
+            checkpoint.update(item, kind=args.kind, occurrence=args.occurrence, last_actual_outcome=last_actual,
+                failure_history=previous.get("failure_history", []))
+            atomic_write_json(args.result, checkpoint)
+        elif args.result and checkpoint and item.get("occurrence_id"):
+            checkpoint["completed_count"] += 1
+            atomic_write_json(args.result, checkpoint)
     # Fetch and TypeSafe run outside the intake-writer lock; DB writes keep their short lock.
     result = run_checks(args.database.resolve(), kind=args.kind, backup_dir=args.backup_dir.resolve(),
         occurrence_ids=set(args.occurrence_id) if args.occurrence_id else None,
@@ -106,6 +116,8 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
         data_root=args.data_root, progress=progress)
     if args.occurrence:
         result["occurrence"] = args.occurrence
+    if previous.get("failure_history"):
+        result["failure_history"] = previous["failure_history"]
     result["business_status"] = ("skipped" if not result.get("item_count") else
         "completed" if result["status"] == "complete" else "failed" if result["status"] == "partial" else "running")
     if result.get("completed_count"):

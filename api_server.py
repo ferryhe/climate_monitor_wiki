@@ -85,6 +85,7 @@ from climate_registry.pdf_pipeline import (
     load_active_projection,
     read_pdf_batch,
     retry_pdf_batch,
+    approved_projection_snapshot,
 )
 from climate_registry.information_checks import merge_checked_observation, deduplicate_pdf_occurrences
 from climate_registry.publication import _public_dto, _pdf_dto, _calendar_dto, _merge_pdf_article_payloads
@@ -178,6 +179,17 @@ def _configured_pdf_queue() -> Path | None:
 def _selected_pdf_projection() -> tuple[Path | None, dict[str, Any] | None]:
     configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
     if configured:
+        queue = _configured_pdf_queue()
+        if PDF_RUNTIME_WIKI_DIR is not None and queue is not None:
+            pointer = queue / "active.json"
+            try:
+                metadata = json.loads(pointer.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                metadata = None
+            if isinstance(metadata, dict) and metadata.get("public_registry_revision") is not None:
+                projection, metadata = load_active_projection(PDF_RUNTIME_WIKI_DIR, pointer)
+                approved_projection_snapshot(PDF_RUNTIME_WIKI_DIR, metadata, database=configured)
+                return projection, metadata
         try:
             with RegistryReader(configured, repository_root=ROOT, public=False).connect() as connection:
                 if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
@@ -230,13 +242,15 @@ class WikiStaticFiles(StaticFiles):
     """Serve the same approved Public + activated Registry view used by RAG."""
 
     def _merged_markdown(self, path: str) -> str | None:
-        configured = os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+        configured = responder.kb.registry_database
         if configured and path.endswith(".md"):
             from climate_registry.publication import public_wiki_pages
             pages = _registry_query(lambda: public_wiki_pages(configured, page=path))
             if pages is not None:
                 if path not in pages:
                     raise HTTPException(status_code=404, detail="Wiki page not found")
+                if responder.kb.approved_registry_snapshot:
+                    return pages[path]
                 # Preserve the scheduled base + activated PDF merge only after
                 # the target Registry read has confirmed this page is public.
                 if is_registry_runtime_path(path) and self._has_runtime_layer(path):
@@ -303,8 +317,11 @@ class WikiStaticFiles(StaticFiles):
         return await super().get_response(path, scope)
 
 
-_startup_projection, _ = _selected_pdf_projection()
-responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR, _startup_projection)
+_startup_projection, _startup_metadata = _selected_pdf_projection()
+_startup_registry_snapshot = (approved_projection_snapshot(PDF_RUNTIME_WIKI_DIR, _startup_metadata,
+    database=os.getenv("CLIMATE_REGISTRY_DB", "").strip()) if PDF_RUNTIME_WIKI_DIR else None)
+responder = AgenticWikiResponder(WIKI_DIR, SOURCE_DIR, _startup_projection,
+    approved_registry_snapshot=_startup_registry_snapshot)
 RELOAD_TOKEN = os.getenv("RELOAD_TOKEN", "").strip()
 management_service: ManagementService | None = None
 ConsolePrincipal = Annotated[ConsoleUser, Depends(current_console_user)]
@@ -593,10 +610,13 @@ def _effective_meetings(reader: RegistryReader, *, page: int = 1, page_size: int
     return {**payload, "items": [_calendar_dto(item) for item in payload["items"]]}
 
 
-responder.chat_evidence.reader_factory = lambda: (_registry_reader() if os.getenv("CLIMATE_REGISTRY_DB", "").strip()
+responder.chat_evidence.reader_factory = lambda: (RegistryReader(responder.kb.approved_registry_snapshot,
+    repository_root=ROOT, source_dir=SOURCE_DIR, metadata_dir=ARTICLE_METADATA_DIR)
+    if responder.kb.approved_registry_snapshot else _registry_reader() if os.getenv("CLIMATE_REGISTRY_DB", "").strip()
     else RegistryReader.from_public_export(ROOT))
-responder.chat_evidence.meeting_view = lambda reader, **kwargs: _effective_meetings(
-    reader, timezone_name="America/New_York", include_unknown=True, **kwargs)
+responder.chat_evidence.meeting_view = lambda reader, **kwargs: (reader.meetings(
+    timezone_name="America/New_York", include_unknown=True, **kwargs) if responder.kb.approved_registry_snapshot
+    else _effective_meetings(reader, timezone_name="America/New_York", include_unknown=True, **kwargs))
 
 
 def _merge_pdf_calendar_items(
@@ -1321,7 +1341,11 @@ def reload_wiki(
         if PDF_RUNTIME_WIKI_DIR is None:
             responder.kb.reload()
         else:
-            replacement = WikiKnowledgeBase(WIKI_DIR, SOURCE_DIR, projection)
+            approved_snapshot = approved_projection_snapshot(PDF_RUNTIME_WIKI_DIR, metadata,
+                database=os.getenv("CLIMATE_REGISTRY_DB", "").strip())
+            replacement = (WikiKnowledgeBase(WIKI_DIR, SOURCE_DIR, projection,
+                approved_registry_snapshot=approved_snapshot) if approved_snapshot is not None
+                else WikiKnowledgeBase(WIKI_DIR, SOURCE_DIR, projection))
             if generation_id is not None:
                 try:
                     current_pending = json.loads(pending.read_text(encoding="utf-8"))

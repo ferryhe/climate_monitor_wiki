@@ -1644,6 +1644,15 @@ def test_review4_live_poison_and_attempt_resume(tmp_path, runtime, monkeypatch, 
         binary = tmp_path / 'private-hermes311/bin/python'
         binary.parent.mkdir(parents=True, mode=0o700)
         shutil.copyfile(Path(selected).resolve(), binary); binary.chmod(0o700)
+        # Official Docker Python resolves libpython beside its relocated binary.
+        library = subprocess.check_output([selected, '-I', '-S', '-c',
+            'import pathlib,sys,sysconfig; names=[sysconfig.get_config_var("INSTSONAME"),sysconfig.get_config_var("LDLIBRARY")]; '
+            'paths=[root/name for root in (pathlib.Path(sys.base_prefix)/"lib",pathlib.Path(sysconfig.get_config_var("LIBDIR"))) for name in names if name]; '
+            'print(next((p for p in paths if p.is_file()),paths[-1]))'], text=True).strip()
+        if Path(library).is_file():
+            private_lib = binary.parent.parent / 'lib'; private_lib.mkdir(mode=0o700)
+            shutil.copyfile(library, private_lib / Path(library).name)
+            (private_lib / Path(library).name).chmod(0o600)
         base = subprocess.check_output([selected, '-I', '-S', '-c', 'import sys; print(sys._base_executable)'], text=True).strip()
         (binary.parent.parent / 'pyvenv.cfg').write_text('home = ' + str(Path(base).resolve().parent) + '\ninclude-system-site-packages = false\n')
         (binary.parent.parent / 'pyvenv.cfg').chmod(0o600)
