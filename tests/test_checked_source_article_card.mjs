@@ -51,7 +51,7 @@ async function run(list, detail = null) {
     setWorkspaceView(value) { state.activeView = value; }, setRegistryMode() {}, showMobileDetail() {},
     console, requestAnimationFrame() {},
   });
-  for (const name of ["registryElement", "registryMetric", "registrySummaryPresentation", "appendRegistryTags",
+  for (const name of ["registryElement", "registryMetric", "registryArticleDateSummary", "registrySummaryPresentation", "appendRegistryTags",
     "appendPdfAppearances", "safeSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "loadRegistryArticles",
     "sourceNavigationTarget", "sourceNavigationHref", "sourceNavigationFromHash", "resetRegistryArticleDetail", "loadRegistryArticle"])
     vm.runInContext(extract(name), context);

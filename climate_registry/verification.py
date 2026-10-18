@@ -358,6 +358,63 @@ def _owner_article_date(owner, article):
         "recorded_at": owner["checked_at"]}]
 
 
+def _public_reviewed_date_rows(snapshot, table, verdict):
+    """Keep only independently reviewed typed dates bound to this exact page."""
+    if not verdict.get("eligible"):
+        return []
+    from climate_monitor.dedupe import canonical_url
+    from .article_dates import ArticleDateImportError, _article_event_from_observation, _typed_date_kind, _typed_information_date
+
+    tables = snapshot.get("tables", {})
+    if snapshot.get("entity_kind") == "article":
+        owner = next(iter(tables.get("articles", [])), {})
+        owner_ids = {owner.get("article_id")} if owner.get("article_id") else set()
+        owner_url = owner.get("canonical_url")
+        if table == "pdf_article_date_observations":
+            owner_ids = {row.get("article_id") for row in tables.get("pdf_intake_articles", [])
+                if row.get("canonical_url") == owner_url}
+    elif snapshot.get("entity_kind") == "pdf_article":
+        owner = next(iter(tables.get("pdf_intake_articles", [])), {})
+        owner_ids = {owner.get("article_id")} if owner.get("article_id") else set()
+        owner_url = owner.get("canonical_url")
+        if table == "article_date_observations":
+            owner_ids = set()
+    else:
+        return []
+    if not owner_url:
+        return []
+    try:
+        canonical_owner_url = canonical_url(owner_url)
+    except (TypeError, UnicodeError, ValueError):
+        return []
+
+    approved = []
+    for row in tables.get(table, []):
+        if row.get("observation_kind") != "page_information" or row.get("article_id") not in owner_ids:
+            continue
+        try:
+            evidence = json.loads(row.get("evidence_json") or "null")
+            if (not isinstance(evidence, dict) or evidence.get("review_status") != "pass"
+                    or not all(isinstance(evidence.get(key), str) and evidence[key].strip()
+                        for key in ("source_url", "target_url", "field", "text"))):
+                continue
+            if canonical_url(row.get("canonical_url") or "") != canonical_owner_url:
+                continue
+            if canonical_url(evidence["target_url"]) != canonical_owner_url:
+                continue
+            date_kind = _typed_date_kind(evidence)
+            if date_kind is None:
+                continue
+            _typed_information_date(row.get("observed_at"), evidence.get("date_precision"))
+            if date_kind == "event":
+                _article_event_from_observation({"kind": "page_information", **row,
+                    "observed_at": row.get("observed_at"), "evidence": evidence})
+        except (ArticleDateImportError, json.JSONDecodeError, TypeError, UnicodeError, ValueError):
+            continue
+        approved.append(row)
+    return approved
+
+
 def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None):
     """A derived read projection; original candidate JSON and SHA never change."""
     from .owner_dates import OVERLAY, date_public_view
@@ -372,6 +429,17 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
     primary_display = primary_display or _primary_display(snapshot, verdict)
     verified = {key for key, result in verdict["observations"].items() if result["verified"]}
     tables = view["tables"]
+    removed_date_observations = False
+    reviewed_date_rows = {}
+    for table in ("article_date_observations", "pdf_article_date_observations"):
+        if table not in tables:
+            continue
+        rows = tables.get(table, [])
+        reviewed = _public_reviewed_date_rows(view, table, verdict)
+        reviewed_date_rows[table] = reviewed
+        if len(reviewed) != len(rows):
+            removed_date_observations = True
+        tables[table] = reviewed
     hidden = view["_hidden_factual_fields"] = {}
     if (verdict["primary"] and snapshot.get("derived_display", {}).get("summary_provenance") == "owner_reviewed_source_evidence"
             and not verdict.get("reviewed_summary")):
@@ -582,12 +650,14 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
                 if row["markdown_content"]:
                     excluded.append("reader_body_mismatch")
                 row["markdown_content"] = ""
-        if tables.get("article_date_observations"):
+        if removed_date_observations:
             excluded.append("unverified_date_observation")
-        tables["article_date_observations"] = []
         owner = native_primary.get("owner_agent_verification")
         if owner:
-            tables["article_date_observations"] = _owner_article_date(owner, article)
+            tables["article_date_observations"] = (
+                _owner_article_date(owner, article)
+                + reviewed_date_rows.get("article_date_observations", [])
+            )
         for row in tables.get("acquisition_items", []):
             if (row.get("publication_date") != fields.get("publication_date")
                     or json.loads(row.get("publication_date_evidence_json") or "null") != fields.get("publication_date_evidence")):
@@ -625,8 +695,9 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
             for row in tables.get("article_versions", []):
                 if row.get("version_id") == current:
                     row.update(observed_title=fields.get("title") or fields.get("anchor_text") or "Verified PDF article", observed_summary=fields.get("summary") or "")
-            for table in ("article_content_versions", "article_enrichments", "article_semantics", "article_date_observations"):
+            for table in ("article_content_versions", "article_enrichments", "article_semantics"):
                 tables[table] = []
+            tables["article_date_observations"] = reviewed_date_rows.get("article_date_observations", [])
             for row in tables.get("articles", []):
                 row["current_content_version_id"] = None
             for row in tables.get("acquisition_items", []):
@@ -637,7 +708,10 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
                 "summary_provenance": "owner_agent_verified_source" if owner else "verified_pdf_source"}
             if owner:
                 view["derived_display"]["owner_agent_verification"] = owner
-                tables["article_date_observations"] = _owner_article_date(owner, tables["articles"][0])
+                tables["article_date_observations"] = (
+                    _owner_article_date(owner, tables["articles"][0])
+                    + reviewed_date_rows.get("article_date_observations", [])
+                )
     owner = (verdict.get("primary") or {}).get("owner_agent_verification")
     if owner:
         # Owner review covers only public_fields, never retained classifier output

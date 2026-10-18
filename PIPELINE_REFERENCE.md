@@ -59,6 +59,11 @@ visibility flag per canonical entity. `climate_registry/publication.py` supplies
 the common read-only public projection. T5 still reviews generated report PDFs,
 not intake candidates. Schema 22 adds real core/native source FKs to the existing T1 attempts. New automatic candidates require exact terminal T1 evidence before the independent T10 full-snapshot review; terminal partial evidence remains visible to that review. No additional review service or cron is required. Schema 23 separately records exact original PDF Executive Summary adoptions (label `Adopted from the original PDF`); it does not grant factual verification. Public facts use frozen published verification, and the normal acquisition T10 `peek`/`submit`/`activate` emit complete JSON/English Markdown inventories under `registry-review/verification-reports/`. See [the deployment runbook](docs/deployment.md#verified-public-facts-original-pdf-summaries-and-the-normal-t10-inventory). The [owner-agent check and independent approval route](docs/owner-agent-verification.md) separately records actual captures and reviewed public field scopes in schema23; it never claims a native T1 run or completes unchecked siblings.
 
+Schema 24 adds rebuildable display projections in the same physical Registry
+database. Schema 25 adds typed, append-only PDF article date observations;
+publication dates order Articles with collection time as fallback, while
+reviewed update/revision dates and event dates retain their separate meanings.
+
 Business state lives outside Git: run `acquisition-review/`, per-occurrence
 `reports/DATE/snapshot.json`, immutable `revisions/NNNN/{report-source.json,
 report.pdf,full-text.txt,page-*.png,packet.json,review.json}`, claim history and

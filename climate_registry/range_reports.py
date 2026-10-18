@@ -527,11 +527,24 @@ def _range_source_read(
                                        basis="web_listening_snapshot")
                     collection_dates[row["article_id"]].append(observation)
             elif row["observation_kind"] == "page_information":
+                from .article_dates import _typed_date_kind
+                typed_kind = _typed_date_kind(evidence)
+                if typed_kind in {"updated", "revision", "event"}:
+                    continue
                 publication_date = _day_precision_publication_date(row["observed_at"])
                 if publication_date is None:
+                    if typed_kind == "published":
+                        # Month- and year-precision publication dates sort articles,
+                        # but range reports require exact days.
+                        continue
                     raise RegistryContractError("invalid Registry page information date")
-                observation.update(date=publication_date, basis="page_information")
-                information_dates[row["article_id"]].append(observation)
+                if typed_kind == "published":
+                    observation.update(date=publication_date, basis="page_publication_date")
+                    publication_dates[row["article_id"]].append(observation)
+                    evidenced_dates[row["article_id"]].append(observation)
+                else:
+                    observation.update(date=publication_date, basis="page_information")
+                    information_dates[row["article_id"]].append(observation)
             else:
                 raise RegistryContractError("invalid Registry article date observation kind")
 

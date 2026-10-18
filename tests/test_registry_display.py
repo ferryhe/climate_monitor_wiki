@@ -141,7 +141,7 @@ def test_publication_batch_refreshes_once_after_all_mutations(tmp_path, monkeypa
 
 def test_display_snapshot_is_atomic_and_backfill_is_idempotent(tmp_path):
     from climate_registry.publication import migrate_publication
-    database = _database(tmp_path, version=24)
+    database = _database(tmp_path, version=25)
     with sqlite3.connect(database) as db:
         _publish(db)
     with sqlite3.connect(database) as db:

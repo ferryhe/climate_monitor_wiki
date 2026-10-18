@@ -1255,6 +1255,12 @@ preserved even when the independent review used a source index. Native article
 summaries come from the actual checked fields; unverified generated enrichment
 and native dates cannot ride on a verified linked PDF observation.
 
+Schema 24 adds rebuildable display projections inside that same physical
+Registry database. Schema 25 adds append-only typed date observations for PDF
+articles. Date backfills use the existing `backfill_article_dates.py` importer;
+reviewed activity dates are projected to Dates and excluded from Articles,
+while page update and revision dates remain separate from publication dates.
+
 The existing T10 entrypoint emits the complete private verification inventory on
 acquisition `peek`, `submit` and `activate`, including when `peek` has no review
 to wake:

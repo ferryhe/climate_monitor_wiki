@@ -1604,6 +1604,48 @@ MIGRATIONS += ((24, "published_display_generation", "\n".join(
     + [f"CREATE TRIGGER {name} {sql}" for name, sql in DISPLAY_DIRTY_TRIGGERS.items()]
 )),)
 
+MIGRATIONS += ((25, "pdf_article_date_observations", """
+    CREATE TABLE pdf_article_date_observations (
+        observation_id TEXT PRIMARY KEY,
+        article_id TEXT NOT NULL REFERENCES pdf_intake_articles(article_id),
+        canonical_url TEXT NOT NULL,
+        observation_kind TEXT NOT NULL CHECK (observation_kind='page_information'),
+        observed_at TEXT NOT NULL,
+        source_system TEXT NOT NULL,
+        source_database TEXT NOT NULL,
+        source_table TEXT NOT NULL,
+        source_record_id TEXT NOT NULL,
+        evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json)),
+        recorded_at TEXT NOT NULL,
+        UNIQUE (
+            article_id, observation_kind, source_system, source_database,
+            source_table, source_record_id
+        )
+    );
+    CREATE INDEX idx_pdf_article_date_observations_article_kind_time
+        ON pdf_article_date_observations(article_id, observation_kind, observed_at);
+    CREATE TRIGGER pdf_article_date_observations_are_append_only_update
+    BEFORE UPDATE ON pdf_article_date_observations BEGIN
+        SELECT RAISE(ABORT, 'PDF article date observations are append-only');
+    END;
+    CREATE TRIGGER pdf_article_date_observations_are_append_only_delete
+    BEFORE DELETE ON pdf_article_date_observations BEGIN
+        SELECT RAISE(ABORT, 'PDF article date observations are append-only');
+    END;
+    CREATE TRIGGER display_dirty_pdf_article_date_observations_insert
+    AFTER INSERT ON pdf_article_date_observations BEGIN
+        UPDATE display_state SET dirty=1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER display_dirty_pdf_article_date_observations_update
+    AFTER UPDATE ON pdf_article_date_observations BEGIN
+        UPDATE display_state SET dirty=1 WHERE singleton=1;
+    END;
+    CREATE TRIGGER display_dirty_pdf_article_date_observations_delete
+    AFTER DELETE ON pdf_article_date_observations BEGIN
+        UPDATE display_state SET dirty=1 WHERE singleton=1;
+    END;
+"""),)
+
 
 def apply_migrations(connection: sqlite3.Connection, *, target_version: int | None = None) -> list[int]:
     """Apply all pending schema migrations and return their version numbers."""

@@ -731,8 +731,6 @@ def _registry_list_projection(selected=None, *, prepare=True):
                         if _REGISTRY_LIST_CACHE is not None:
                             _REGISTRY_LIST_CACHE[1].close()
                             _REGISTRY_LIST_CACHE = None
-                        if version != 24:
-                            raise RegistryContractError("unsupported display schema")
                         yield DisplayReader(connection)
                         return
                     if version < 21:

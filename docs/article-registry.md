@@ -10,7 +10,7 @@ reviewed publication and deployment.
 ## Boundaries
 
 `climate_registry.contract` validates exact read contracts for supported schemas
-3 through 22 and reports the actual version. Current writes target schema 22.
+3 through 25 and reports the actual version. Current migrations target schema 25.
 Schema v4 introduced validated fallback resolutions; v5 added article semantic
 storage, v6 added its report binding and relational constraints, and v7 added
 durable pre-report acquisition batches. Migration v8 adds
@@ -21,8 +21,11 @@ must first be explicitly migrated with `migrate-publication --apply`.
 Schema 22 extends those same information-check attempts with real core-article and native event-source foreign keys. A 21→22 upgrade preserves all existing publication snapshots, receipts, visibility and pointers without restaging or approving them.
 
 Migration v17 adds independent information checks;
-migration v18 adds append-only article date observations. Earlier supported snapshots remain
-read-only compatibility inputs; readers never migrate them implicitly.
+migration v18 adds append-only core-article date observations. Migration v24
+adds rebuildable display projections in the same physical database, and v25 adds
+append-only typed date observations for PDF articles. Earlier supported
+snapshots remain read-only compatibility inputs; readers never migrate them
+implicitly.
 
 - Code, migrations, tests, and this contract live in Git.
 - Runtime SQLite files, WAL/SHM companions, and generated audit output do not.
@@ -380,16 +383,25 @@ article was collected outside the requested range.
 The importer defaults to read-only validation. It requires an absolute path to
 a migrated Registry and an observations JSON file using
 `article-date-observations.v1`; `--write` appends validated records and repeated
-imports are idempotent. Dry runs support schema18–21; writes require explicit
-schema22 explicit migration, use the shared database lock, and stage a pending
-candidate while preserving the approved version and visibility. Collection
-observations require an RFC 3339 timestamp with its original timezone. The one
-day-precision exception must match `evidence.date_basis=daily_or_weekly_report_date`
-and `evidence.report_date=observed_at` exactly. This report observation does not
-block a more precise page information date. Page information observations use exact
-`YYYY-MM-DD` precision. Each row includes `article_id`, exact `canonical_url`,
+imports are idempotent. Core article observations require schema 18 or later;
+PDF-only observations require schema 25 or later. Writes also require the
+explicit `migrate-publication --apply` gate (schema 22 or later), use the shared
+database lock, and stage a pending candidate while preserving the approved
+version and visibility. Collection observations require an RFC 3339 timestamp
+with its original timezone. The one day-precision exception must match
+`evidence.date_basis=daily_or_weekly_report_date` and
+`evidence.report_date=observed_at` exactly. This report observation does not
+block a more precise page information date. Untyped page information uses exact
+`YYYY-MM-DD` precision. Typed page dates use `evidence.date_kind` (`published`,
+`updated`, `revised`, or `event`) and a matching `evidence.date_precision`
+(`day`, `month`, or `year`); month and year values stay at their original
+precision. Each row includes `article_id`, exact `canonical_url`,
 `observation_kind`, `observed_at`, and evidence identifying its original
-source, database, table, record ID, URL, and match basis.
+source, database, table, record ID, source and target URLs, field, text, and
+match basis. Event rows also identify the event name, type, status, and exact
+start/end dates; after approval they appear in Dates and are omitted from the
+article list. Publication dates determine article order; collection time is the
+fallback, while update and revision dates are displayed separately.
 
 ```bash
 python scripts/backfill_article_dates.py \
@@ -398,8 +410,18 @@ python scripts/backfill_article_dates.py \
 
 python scripts/backfill_article_dates.py \
   --database /external/path/article-registry.sqlite3 \
+  --observations /external/path/pdf-article-date-observations.json \
+  --entity-kind pdf_article
+
+python scripts/backfill_article_dates.py \
+  --database /external/path/article-registry.sqlite3 \
   --observations /external/path/article-date-observations.json \
   --write
+
+python scripts/backfill_article_dates.py \
+  --database /external/path/article-registry.sqlite3 \
+  --observations /external/path/pdf-article-date-observations.json \
+  --entity-kind pdf_article --write
 ```
 
 This import records evidence only; it does not create acquisition items or

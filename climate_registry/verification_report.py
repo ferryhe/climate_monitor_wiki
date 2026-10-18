@@ -64,7 +64,10 @@ def reason_explanation(code):
 
 def _current_snapshot(connection, kind, identity, targets):
     from .publication import ENTITY_TABLES, _rows
-    tables = {table: _rows(connection, table, column + "=?", (identity,)) for table, column in ENTITY_TABLES[kind].items()}
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    tables = {table: _rows(connection, table, column + "=?", (identity,))
+        for table, column in ENTITY_TABLES[kind].items()
+        if table != "pdf_article_date_observations" or version >= 25}
     dependencies = {}
     for prefix, check_kind, table in (("article", "articles", "pdf_intake_article_occurrences"), ("meeting", "meetings", "pdf_intake_calendar_items")):
         selected = [target for target in targets if target["check_kind"] == check_kind]

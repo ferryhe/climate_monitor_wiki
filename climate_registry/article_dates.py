@@ -18,6 +18,8 @@ from .contract import validate_registry_contract
 OBSERVATIONS_SCHEMA = "article-date-observations.v1"
 _RFC3339 = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)\Z")
 _DATE = re.compile(r"\d{4}-\d\d-\d\d\Z")
+_MONTH = re.compile(r"\d{4}-\d\d\Z")
+_YEAR = re.compile(r"\d{4}\Z")
 _EVIDENCE_REQUIRED = ("source_system", "database", "table", "record_id", "source_url", "match_basis")
 
 
@@ -53,6 +55,41 @@ def _information_date(value: Any) -> str:
     return parsed.isoformat()
 
 
+def _typed_date_kind(evidence: Any) -> str | None:
+    if not isinstance(evidence, Mapping):
+        return None
+    kind = re.sub(r"[\s_]+", "-", str(evidence.get("date_kind") or "").strip().casefold())
+    if kind in {"published", "publication", "date-published", "published-date"}:
+        return "published"
+    if kind in {"updated", "update", "modified", "last-modified", "date-modified", "updated-date"}:
+        return "updated"
+    if kind in {"revised", "revision", "version", "version-revision", "revision-date", "revised-date", "version-date"}:
+        return "revision"
+    if kind in {"event", "activity", "event-date", "activity-date"}:
+        return "event"
+    return None
+
+
+def _typed_information_date(value: Any, precision: Any) -> str:
+    if precision is None:
+        if isinstance(value, str) and _DATE.fullmatch(value):
+            return _information_date(value)
+        raise ArticleDateImportError("typed page_information date must state its precision")
+    if precision == "day":
+        return _information_date(value)
+    if precision == "month" and isinstance(value, str) and _MONTH.fullmatch(value):
+        try:
+            date.fromisoformat(value + "-01")
+        except ValueError as exc:
+            raise ArticleDateImportError("page_information month is invalid") from exc
+        return value
+    if precision == "year" and isinstance(value, str) and _YEAR.fullmatch(value):
+        year = int(value)
+        if 1 <= year <= 9999:
+            return value
+    raise ArticleDateImportError("typed page_information date must match its stated precision")
+
+
 
 def report_observation_date(value: Any, evidence: Any) -> str | None:
     """Recognize a sourced report day without inventing a collection instant."""
@@ -68,7 +105,7 @@ def report_observation_date(value: Any, evidence: Any) -> str | None:
 
 def select_article_dates(observations, *, collection_times=(), acquisition_observations=()):
     """Select precise source dates before the explicitly recorded report-day fallback."""
-    collected, information, reports = [], [], []
+    collected, information, reports, updates, revisions, page_publications = [], [], [], [], [], []
     for item in observations:
         if item["kind"] == "collection":
             report_day = report_observation_date(item["observed_at"], item["evidence"])
@@ -77,7 +114,21 @@ def select_article_dates(observations, *, collection_times=(), acquisition_obser
             else:
                 collected.append(_collection_timestamp(item["observed_at"]))
         elif item["kind"] == "page_information":
-            information.append(_information_date(item["observed_at"]))
+            evidence = item.get("evidence")
+            precision = evidence.get("date_precision") if isinstance(evidence, Mapping) else None
+            kind = _typed_date_kind(evidence)
+            information_value = (
+                _typed_information_date(item["observed_at"], precision)
+                if kind else _information_date(item["observed_at"])
+            )
+            if not kind:
+                information.append(information_value)
+            if kind == "published":
+                page_publications.append(information_value)
+            elif kind == "updated":
+                updates.append(information_value)
+            elif kind == "revision":
+                revisions.append(information_value)
         else:
             raise ArticleDateImportError("invalid article date observation kind")
     for value in collection_times:
@@ -94,12 +145,74 @@ def select_article_dates(observations, *, collection_times=(), acquisition_obser
                 qualified_publication.append(_information_date(item.get("publication_date")))
             except ArticleDateImportError:
                 pass  # Non-day source precision remains unconfirmed, as in range selection.
+    qualified_publication.extend(page_publications)
     publication_date = max(qualified_publication) if qualified_publication else None
+    updated_date = max(updates) if updates else None
+    revision_date = max(revisions) if revisions else None
     report_date = max(reports) if reports else None
     basis = ("collection_time" if collected_at else "information_date" if information_date else
              "publication_date" if publication_date else "report_date" if report_date else "unknown")
     return {"collected_at": collected_at, "information_date": information_date,
-            "publication_date": publication_date, "report_date": report_date, "date_basis": basis}
+            "publication_date": publication_date, "report_date": report_date, "date_basis": basis,
+            "updated_date": updated_date, "revision_date": revision_date}
+
+
+def _article_event_from_observation(item: Mapping[str, Any]) -> dict[str, Any] | None:
+    evidence = item.get("evidence")
+    if _typed_date_kind(evidence) != "event":
+        return None
+    if not isinstance(evidence, Mapping):
+        raise ArticleDateImportError("event date evidence must be an object")
+    precision = evidence.get("date_precision")
+    if precision not in {"day", "month", "year"}:
+        raise ArticleDateImportError("event date evidence must state day, month, or year precision")
+    start = _typed_information_date(evidence.get("event_start_date", item.get("observed_at")), precision)
+    observed = _typed_information_date(item.get("observed_at"), precision)
+    end = _typed_information_date(evidence.get("event_end_date", start), precision)
+    if observed != start:
+        raise ArticleDateImportError("event observed_at must equal its start date")
+    if start > end:
+        raise ArticleDateImportError("event end date must not precede its start date")
+    event_name = evidence.get("event_name")
+    if not isinstance(event_name, str) or not event_name.strip():
+        raise ArticleDateImportError("event evidence must include event_name")
+    raw_date = evidence.get("date_text")
+    if not isinstance(raw_date, str) or not raw_date.strip():
+        raise ArticleDateImportError("event evidence must include its source date text")
+    event_type = evidence.get("event_type")
+    if event_type not in {"meeting", "conference", "summit", "webinar", "deadline", "retrospective"}:
+        raise ArticleDateImportError("event evidence has an unsupported event_type")
+    status = evidence.get("event_status", "scheduled")
+    if status not in {"scheduled", "tentative", "postponed", "cancelled", "conflict", "retrospective"}:
+        raise ArticleDateImportError("event evidence has an unsupported event_status")
+    canonical = json.dumps([event_name.casefold().strip(), start, end, precision], ensure_ascii=False, separators=(",", ":"))
+    event_id = "reviewed-article-event-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+    source_url = evidence.get("source_url")
+    urls = list(dict.fromkeys(value for value in (source_url, evidence.get("event_url")) if isinstance(value, str) and value.strip()))
+    return {
+        "event_id": event_id, "article_id": item.get("article_id"),
+        "name": event_name.strip(), "event_type": event_type, "status": status,
+        "date_precision": precision, "start_date": start, "end_date": end,
+        "raw_date": raw_date.strip(), "raw_time_text": evidence.get("raw_time_text"),
+        "event_timezone": evidence.get("event_timezone"), "organizer": evidence.get("event_organizer"),
+        "location": evidence.get("event_location"), "online_url": evidence.get("event_url") or source_url,
+        "relevance_reason": evidence.get("event_summary"), "source_urls": urls,
+        "source_count": 1, "verification_status": "verified" if evidence.get("review_status") == "pass" else "unchecked",
+        "verification_basis": "independent_article_date_review" if evidence.get("review_status") == "pass" else None,
+        "origin": "reviewed_article_page", "collection_status": "collected", "access_status": "accessible",
+    }
+
+
+def select_article_events(observations: Any) -> list[dict[str, Any]]:
+    """Project only typed, source-backed activity dates into the Dates view."""
+    events = []
+    for item in observations or []:
+        if not isinstance(item, Mapping) or item.get("kind") != "page_information":
+            continue
+        event = _article_event_from_observation(item)
+        if event is not None and event["verification_status"] == "verified":
+            events.append(event)
+    return events
 
 
 def validate_observations(payload: Any) -> list[dict[str, Any]]:
@@ -136,7 +249,12 @@ def validate_observations(payload: Any) -> list[dict[str, Any]]:
                 evidence[field] = str(evidence[field])
             _text(evidence[field], f"evidence.{field}")
         report_day = report_observation_date(item["observed_at"], evidence) if kind == "collection" else None
-        item["observed_at"] = (report_day or _collection_timestamp(item["observed_at"])) if kind == "collection" else _information_date(item["observed_at"])
+        if kind == "collection":
+            item["observed_at"] = report_day or _collection_timestamp(item["observed_at"])
+        elif _typed_date_kind(evidence):
+            item["observed_at"] = _typed_information_date(item["observed_at"], evidence.get("date_precision"))
+        else:
+            item["observed_at"] = _information_date(item["observed_at"])
         if kind == "collection" and report_day is None:
             source_record = (evidence["source_system"], evidence["table"])
             if source_record not in {
@@ -153,6 +271,8 @@ def validate_observations(payload: Any) -> list[dict[str, Any]]:
             ):
                 raise ArticleDateImportError("article_fetches collection evidence must be successful HTTP 2xx")
         item["evidence"] = evidence
+        if _typed_date_kind(evidence) == "event":
+            _article_event_from_observation(item)
         identity = (
             item["article_id"], kind, evidence["source_system"], evidence["database"],
             evidence["table"], evidence["record_id"],
@@ -204,12 +324,17 @@ def import_observations(
     database: str | Path,
     payload: Any,
     *,
+    entity_kind: str = "article",
     write: bool = False,
     recorded_at: str | None = None,
 ) -> dict[str, int]:
     """Validate and optionally append evidence to a migrated Registry."""
     from .persistent import _exclusive_database_lock
     from .publication import require_publication_migration, resolve_database, stage_entities
+    if entity_kind not in {"article", "pdf_article"}:
+        raise ArticleDateImportError("entity_kind must be article or pdf_article")
+    table = "article_date_observations" if entity_kind == "article" else "pdf_article_date_observations"
+    entity_table = "articles" if entity_kind == "article" else "pdf_intake_articles"
     path = resolve_database(_database_path(database))
     items = validate_observations(payload)
     mode = "rw" if write else "ro"
@@ -219,22 +344,30 @@ def import_observations(
         connection.execute("PRAGMA foreign_keys=ON")
         try:
             version = validate_registry_contract(connection)
-            if version < 18:
-                raise ArticleDateImportError("Registry schema 18 or later is required; run the normal migration first")
+            minimum_version = 18 if entity_kind == "article" else 25
+            if version < minimum_version:
+                raise ArticleDateImportError(
+                    f"Registry schema {minimum_version} or later is required for {entity_kind}; run the normal migration first"
+                )
             if write:
                 require_publication_migration(connection)
                 connection.execute("BEGIN IMMEDIATE")
+            if entity_kind == "pdf_article" and any(item["observation_kind"] != "page_information"
+                    or _typed_date_kind(item["evidence"]) is None for item in items):
+                raise ArticleDateImportError("PDF article date evidence must be typed page_information")
             collection_articles = {
                 item["article_id"] for item in items if item["observation_kind"] == "collection"
                 and report_observation_date(item["observed_at"], item["evidence"]) is None
             }
             for item in items:
                 article = connection.execute(
-                    "SELECT canonical_url FROM articles WHERE article_id=?", (item["article_id"],)
+                    f"SELECT canonical_url FROM {entity_table} WHERE article_id=?", (item["article_id"],)
                 ).fetchone()
                 if article is None or article["canonical_url"] != item["canonical_url"]:
                     raise ArticleDateImportError("article_id and exact canonical_url do not match Registry")
                 if (item["observation_kind"] == "page_information"
+                        and _typed_date_kind(item["evidence"]) is None
+                        and entity_kind == "article"
                         and (item["article_id"] in collection_articles
                              or _has_collection(connection, item["article_id"]))):
                     raise ArticleDateImportError("page_information is allowed only when no collection evidence exists")
@@ -247,7 +380,7 @@ def import_observations(
                 identity = item["_identity"]
                 source = (item["article_id"], item["observation_kind"], *identity[2:])
                 old = connection.execute(
-                    """SELECT canonical_url, observed_at, evidence_json FROM article_date_observations
+                    f"""SELECT canonical_url, observed_at, evidence_json FROM {table}
                        WHERE article_id=? AND observation_kind=? AND source_system=?
                          AND source_database=? AND source_table=? AND source_record_id=?""",
                     source,
@@ -264,7 +397,7 @@ def import_observations(
                 stable_input = "\n".join(map(str, (item["article_id"], item["observation_kind"], *identity[2:])))
                 observation_id = "article-date-" + hashlib.sha256(stable_input.encode()).hexdigest()[:32]
                 connection.execute(
-                    """INSERT INTO article_date_observations(
+                    f"""INSERT INTO {table}(
                            observation_id, article_id, canonical_url, observation_kind, observed_at,
                            source_system, source_database, source_table, source_record_id,
                            evidence_json, recorded_at)
@@ -276,7 +409,18 @@ def import_observations(
                 counts["inserted"] += 1
             if write:
                 if counts["inserted"]:
-                    stage_entities(connection, article_ids={item["article_id"] for item in items})
+                    entity_ids = {item["article_id"] for item in items}
+                    if entity_kind == "article":
+                        stage_entities(connection, article_ids=entity_ids)
+                    else:
+                        from .publication import canonical_entity
+                        linked_core_ids = {
+                            owner_id
+                            for identity in entity_ids
+                            for owner_kind, owner_id in [canonical_entity(connection, "pdf_article", identity)]
+                            if owner_kind == "article"
+                        }
+                        stage_entities(connection, article_ids=linked_core_ids, pdf_article_ids=entity_ids)
                     from .display import refresh_display
                     refresh_display(connection)
                 connection.commit()

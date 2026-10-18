@@ -52,7 +52,7 @@ def test_atomic_writers_preserve_shared_metadata_or_leave_live_database_unchange
         assert invoke()["status"]=="updated"
         assert database.read_bytes()!=before
         with sqlite3.connect(database) as db:
-            assert db.execute("PRAGMA user_version").fetchone()[0]==24
+            assert db.execute("PRAGMA user_version").fetchone()[0]==25
             assert db.execute("PRAGMA foreign_key_check").fetchall()==[]
     after=database.stat()
     assert (after.st_uid,after.st_gid,after.st_mode)==(metadata.st_uid,metadata.st_gid,metadata.st_mode)
@@ -213,7 +213,7 @@ def test_plan_is_read_only_and_update_is_backed_up_incremental_and_idempotent(tm
     }
 
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (24,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (25,)
     assert connection.execute("SELECT COUNT(*) FROM reports").fetchone() == (2,)
     assert connection.execute(
         """
@@ -260,7 +260,7 @@ def test_update_requires_explicit_legacy_migration_then_imports_a_new_report(tmp
     _write_report(source_dir, "2026-08-10", _item("New", "New summary.", "https://example.com/new"))
 
     plan = persistent.plan_registry_update(source_dir, database)
-    assert plan["pending_migrations"] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    assert plan["pending_migrations"] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
     assert [item["date"] for item in plan["new_reports"]] == ["2026-08-10"]
 
     before = database.read_bytes()
@@ -279,7 +279,7 @@ def test_update_requires_explicit_legacy_migration_then_imports_a_new_report(tmp
     assert result["applied_migrations"] == []
     assert result["imported_reports"] == ["2026-08-10"]
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (24,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (25,)
     assert connection.execute("SELECT COUNT(*) FROM reports").fetchone() == (2,)
 
 
@@ -390,8 +390,8 @@ def test_v2_registry_can_be_planned_and_migrated_without_changing_existing_rows(
     plan = persistent.plan_registry_update(source_dir, database)
 
     assert plan["database_schema_version"] == 2
-    assert plan["target_schema_version"] == 24
-    assert plan["pending_migrations"] == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    assert plan["target_schema_version"] == 25
+    assert plan["pending_migrations"] == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
     before = database.read_bytes()
     with pytest.raises(RegistryInputError, match="migrate-publication"):
         persistent.update_registry(source_dir, database, tmp_path / "backups")
@@ -404,7 +404,7 @@ def test_v2_registry_can_be_planned_and_migrated_without_changing_existing_rows(
     result = persistent.update_registry(source_dir, database, tmp_path / "backups")
     assert result["status"] == "no-op" and result["pending_migrations"] == []
     connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA user_version").fetchone() == (24,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (25,)
     assert counts_before == {
         table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         for table in counts_before

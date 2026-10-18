@@ -146,6 +146,13 @@ def _mutate_native_article_context(database, report_path, metadata_path, mutatio
 
 def test_owner_correction_requires_distinct_new_candidate_review_and_projects_every_reader(tmp_path):
     database = _database(tmp_path)
+    reviewed_date = {"date_kind": "updated", "date_precision": "day", "review_status": "pass",
+        "source_url": "https://example.org/good", "target_url": "https://example.org/good",
+        "field": "Last updated", "text": "Last updated 15 October 2026"}
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO article_date_observations VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+            "reviewed-update", "good", "https://example.org/good", "page_information", "2026-10-15",
+            "official_page", "source_page", "official_dates", "reviewed-update", json.dumps(reviewed_date), "2026-10-16"))
     manifest = _manifest(database)
     with sqlite3.connect(database) as db:
         original = db.execute("SELECT * FROM article_versions").fetchall()
@@ -166,6 +173,8 @@ def test_owner_correction_requires_distinct_new_candidate_review_and_projects_ev
         assert article["title"] == "Climate risk findings"
         assert article["summary"] == "Flood exposure increased in the study region."
         assert article["summary_provenance"] == "owner_agent_verified_source"
+        assert article["updated_date"] == "2026-10-15"
+        assert [item["observed_at"] for item in article["date_observations"]] == ["2026-10-15"]
         assert "PRIVATE TOOL" not in json.dumps(article)
         assert "Summary good" not in json.dumps(article)
         with pytest.raises(RegistryNotFoundError):
@@ -175,7 +184,7 @@ def test_owner_correction_requires_distinct_new_candidate_review_and_projects_ev
         check(reader)
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT * FROM article_versions").fetchall() == original
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 24
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 25
         assert db.execute("SELECT count(*) FROM registry_reviews WHERE status='pass'").fetchone()[0] == 1
         projected = public_connection(db)
         try:
@@ -202,7 +211,7 @@ def test_native_article_report_json_roundtrip_survives_ingest_and_independent_re
     database = _database(tmp_path)
     _seed_native_article_report_context(database, tmp_path, monkeypatch)
     with sqlite3.connect(database) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 24
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 25
         current = snapshot_entity(db, "article", "good")
     assert current["report_fallbacks"]["2026-09-14"]["articles"]
     assert current["fallback_annotations"]["https://example.org/good"]["categories"] == ("Physical Risk", "Insurance Risk")

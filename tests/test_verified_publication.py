@@ -410,6 +410,10 @@ def test_pdf_verified_primary_does_not_publish_unchecked_native_dates(tmp_path, 
     with sqlite3.connect(database) as db:
         evidence={"text":"UNVERIFIED native date claim"}
         db.execute("INSERT INTO article_date_observations VALUES('native-date','good','https://example.org/good','page_information','2025-01-02','fixture','old','dates','old',?,'2026-09-01')",(json.dumps(evidence),))
+        reviewed_date={"date_kind":"updated","date_precision":"day","review_status":"pass",
+            "source_url":"https://example.org/good","target_url":"https://example.org/good",
+            "field":"Last updated","text":"Last updated 15 October 2026"}
+        db.execute("INSERT INTO article_date_observations VALUES('reviewed-update','good','https://example.org/good','page_information','2026-10-15','official_page','source_page','official_dates','reviewed-update',?,'2026-10-16')",(json.dumps(reviewed_date),))
         db.execute("INSERT INTO acquisition_batches VALUES('date-batch','pre-report-acquisition-batch.v1','2026-09-14','2026-09-14T00:00:00Z','2026-09-14T00:01:00Z','{}','no_search','fixture',?,'2026-09-14T00:01:00Z')",('a'*64,))
         db.execute("INSERT INTO article_fetches(fetch_id,article_id,requested_url,fetched_at,fetch_status,error_code) VALUES('native-fetch','good','https://example.org/good','2026-09-14T00:00:00Z','failed','unavailable')")
         db.execute("INSERT INTO acquisition_items(acquisition_item_id,batch_id,ordinal,article_id,raw_url,source_name,title,summary,discovered_at,discovery_kind,discovery_ref,origins_json,publication_date,publication_date_evidence_json,date_status,selection_status,selection_reason,update_status,material_status,fetch_id,attempts_json,processing_status) VALUES('native-acq','date-batch',1,'good','https://example.org/good','fixture','UNVERIFIED native acquisition title','UNVERIFIED native acquisition summary','2026-09-14T00:00:00Z','site','fixture','[]','2025-01-03',?,'eligible','unselected','failed','failed','error','native-fetch','[]','failed')",(json.dumps(evidence),))
@@ -424,7 +428,8 @@ def test_pdf_verified_primary_does_not_publish_unchecked_native_dates(tmp_path, 
         detail=current.article('good')
         assert detail['title']==('Verified PDF title' if primary=='pdf' else 'Title good')
         assert detail['summary']==('Verified PDF summary' if primary=='pdf' else 'Summary good')
-        assert detail['date_observations']==[] and detail['information_date'] is None
+        assert [item['observed_at'] for item in detail['date_observations']] == ['2026-10-15']
+        assert detail['updated_date'] == '2026-10-15' and detail['information_date'] is None
         assert 'UNVERIFIED' not in json.dumps(detail)
         assert all(item.get('publication_date') is None and item.get('publication_date_evidence') is None for item in detail['acquisition_observations'])
         assert detail['pdf_occurrences'][0]['publication_date']==('2026-09-12' if primary=='pdf' else None)

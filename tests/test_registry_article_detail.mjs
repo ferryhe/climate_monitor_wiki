@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
 const extract = (name) => source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
-const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfAppearances', 'registryMetric', 'registrySummaryPresentation', 'loadRegistryArticle'];
+const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfAppearances', 'registryMetric', 'registryArticleDateSummary', 'registrySummaryPresentation', 'loadRegistryArticle'];
 const created = [];
 const document = { createElement(tag) {
   const element = { tag, children: [], append(...items) { this.children.push(...items); },
@@ -61,6 +61,7 @@ assert.doesNotMatch(source.match(/async function loadRegistryArticle\([\s\S]*?\n
 const reviewedPdf = {
   title: 'Reviewed PDF article', publisher: 'Example', first_seen: '2026-01-01', last_seen: '2026-02-01',
   publication_date: '2026-01-15', collected_at: '2026-02-01T00:00:00Z',
+  updated_date: '2026-02-10', revision_date: '2026-02',
   source_kind: 'pdf', categories: ['Capital & Solvency', 'Supervision & Disclosure'], keywords: ['solvency', 'climate risk'],
   metadata_provenance: { categories: 'manual_category_standardization', keywords: 'manual_supplement' },
   occurrences: [{ verification_status: 'verified', verified_information: { categories: ['Website-only category'], keywords: ['website-only keyword'] } }],
@@ -71,6 +72,9 @@ await context.loadRegistryArticle('reviewed-pdf', 'pdf');
 assert.equal(articleInfo.hidden, false);
 assert.match(text(articleMeta), /Publication date 2026-01-15/);
 assert.match(text(articleMeta), /Collected at 2026-02-01T00:00:00Z/);
+assert.match(text(articleMeta), /Updated 2026-02-10/);
+assert.match(text(articleMeta), /Version revised 2026-02/);
+assert.equal(context.registryArticleDateSummary(reviewedPdf), 'Published 2026-01-15 · Updated 2026-02-10 · Version revised 2026-02');
 articleInfo.open = true;
 context.resetRegistryArticleDetail('Loading another article…');
 assert.equal(articleInfo.hidden, true);

@@ -1490,7 +1490,7 @@ def test_page_information_date_is_used_only_when_collection_is_absent(tmp_path):
                ('page-date-month', 'article-month', 'https://example.org/month', 'page_information',
                 '2026-09-18', 'original_website', 'review.json', 'original_page_dates',
                 'page-check-month', ?, '2026-10-01T00:00:00Z')""",
-            (json.dumps({"date_kind": "updated", "source_url": "https://example.org/month"}),),
+            (json.dumps({"source_url": "https://example.org/month"}),),
         )
     snapshot = freeze_range_report(
         _reader(database, tmp_path), tmp_path / "range-output",
@@ -1501,6 +1501,53 @@ def test_page_information_date_is_used_only_when_collection_is_absent(tmp_path):
     assert article["range_date"] == article["information_date"] == "2026-09-18"
     assert article["publication_date"] is None
     assert article["collected_at"] is None
+
+
+def test_typed_publisher_publication_date_is_not_treated_as_information_date(tmp_path):
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO article_date_observations VALUES
+               ('page-publication', 'article-month', 'https://example.org/month', 'page_information',
+                '2026-09-18', 'original_website', 'review.json', 'original_page_dates',
+                'page-published-month', ?, '2026-10-01T00:00:00Z')""",
+            (json.dumps({"date_kind": "published", "date_precision": "day",
+                "source_url": "https://example.org/month"}),),
+        )
+    snapshot = freeze_range_report(
+        _reader(database, tmp_path), tmp_path / "published-date",
+        start_date="2026-09-14", end_date="2026-09-27",
+    )
+    article = next(item for item in snapshot["articles"] if item["article_id"] == "article-month")
+    assert article["date_basis"] == "publication_date"
+    assert article["publication_date"] == article["range_date"] == "2026-09-18"
+    assert article["information_date"] is None
+
+
+@pytest.mark.parametrize(("precision", "value"), [
+    ("day", "2026-09-20"), ("month", "2026-09"), ("year", "2026"),
+])
+def test_typed_activity_dates_stay_out_of_article_range_dates(tmp_path, precision, value):
+    database = _database(tmp_path, target_version=25)
+    url = "https://example.org/a"
+    evidence = {
+        "date_kind": "event", "date_precision": precision,
+        "event_name": "Climate risk conference", "event_type": "conference",
+        "event_status": "scheduled", "event_start_date": value, "event_end_date": value,
+        "date_text": value, "review_status": "pass", "target_url": url,
+        "source_url": url, "field": "Event date", "text": value,
+    }
+    with sqlite3.connect(database) as connection:
+        connection.execute("""INSERT INTO article_date_observations VALUES
+            ('event-date-a','article-a',?,'page_information',?,'official_page','reviewed_page',
+             'official_dates','event-a',?,'2026-10-01T00:00:00Z')""",
+            (url, value, json.dumps(evidence)))
+    _approve_public_fixture(database)
+
+    source = range_reports._range_source(_reader(database, tmp_path), "2026-09-01", "2026-09-30")
+    article = next(item for item in source["articles"] if item["article_id"] == "article-a")
+    assert article["publication_date"] == "2026-09-20"
+    assert article["information_date"] is None
 
 
 
@@ -1574,14 +1621,15 @@ def test_report_day_is_only_a_fallback_for_more_precise_approved_evidence(tmp_pa
             connection.execute("""INSERT INTO article_date_observations VALUES
                 ('information-month', 'article-month', 'https://example.org/month', 'page_information',
                  '2026-09-20', 'original_website', 'review.json', 'original_page_dates',
-                 'page-check-month', '{"date_kind":"updated"}', '2026-10-01T00:00:00Z')""")
+                 'page-check-month', '{"date_kind":"updated","date_precision":"day"}', '2026-10-01T00:00:00Z')""")
     _approve_public_fixture(database)
     reader = _reader(database, tmp_path)
     before = database.read_bytes()
     snapshot = freeze_range_report(reader, tmp_path / "priority", start_date="2026-09-18", end_date="2026-09-30")
     if priority=='page_information':
         assert not any(item['article_id']==identity for item in snapshot['articles'])
-        assert RegistryReader(database,repository_root=tmp_path/'application',public=False).article(identity)['information_date']=='2026-09-20'
+        article = RegistryReader(database,repository_root=tmp_path/'application',public=False).article(identity)
+        assert article['updated_date']=='2026-09-20' and article['information_date'] is None
         assert database.read_bytes()==before
         return
     article = next(item for item in snapshot["articles"] if item["article_id"] == identity)
