@@ -11,7 +11,7 @@ from .read_api import RegistryQueryError, _pagination, _pdf_article_search_text,
 
 ARTICLE_FIELDS = {
     "article_id", "canonical_url", "title", "publisher", "source", "source_kind", "source_label",
-    "first_seen", "last_seen", "pdf_occurrence_count", "occurrence_count", "checked_source_url",
+    "publication_date", "collected_at", "first_seen", "last_seen", "pdf_occurrence_count", "occurrence_count", "checked_source_url",
     "original_source_url", "owner_agent_verification",
 }
 REPORT_FIELDS = {
@@ -81,11 +81,15 @@ class RegistryListProjection:
                     merged = filter_pdf_articles([imported])[0]
                     category_items.append(merged)
                 card = {key: value for key, value in merged.items() if key in ARTICLE_FIELDS}
+                card["publication_date"] = card.get("publication_date") or None
+                card["collected_at"] = card.get("collected_at") or None
                 if "publisher" in card:
                     card["publisher"] = publisher_name(card["publisher"], [card.get("canonical_url")])
                 core_card = ({key: value for key, value in core_item.items() if key in ARTICLE_FIELDS}
                     if core_item is not None else None)
                 if core_card is not None:
+                    core_card["publication_date"] = core_card.get("publication_date") or None
+                    core_card["collected_at"] = core_card.get("collected_at") or None
                     core_card["publisher"] = publisher_name(core_card.get("publisher"), [core_card.get("canonical_url")])
                 core_search = " ".join(str(original.get(key) or "") for key in
                     ("title", "summary", "canonical_url", "categories", "keywords")).casefold() if original else None
@@ -162,7 +166,11 @@ class RegistryListProjection:
             where += " OR (" + " AND ".join(pdf) + ")"
         total = self.connection.execute(f"SELECT COUNT(*) FROM {self.prefix}articles a WHERE " + where, params).fetchone()[0]
         column = "merged_card" if include_pdf else "core_card"
-        order = "a.last_seen DESC, " + ("" if include_pdf else "a.first_seen DESC, ") + "a.article_id DESC"
+        date = (
+            "COALESCE(NULLIF(json_extract(a." + column + ", '$.publication_date'), ''), "
+            "NULLIF(substr(json_extract(a." + column + ", '$.collected_at'), 1, 10), ''))"
+        )
+        order = f"{date} IS NULL, {date} DESC, a.article_id ASC"
         rows = self.connection.execute(f"SELECT {column} FROM {self.prefix}articles a WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
             (*params, page_size, (page - 1) * page_size))
         return {"items": [json.loads(row[0]) for row in rows], "pagination": _pagination(page, page_size, total)}

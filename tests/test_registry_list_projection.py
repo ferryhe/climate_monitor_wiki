@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 
 import pytest
@@ -132,6 +133,138 @@ def test_optimized_projection_uses_article_paths_and_keeps_host_filtering():
         assert categories["bis"] == "Bank for International Settlements (BIS)"
     finally:
         projection.close()
+
+
+def test_article_lists_use_approved_publication_date_with_unknowns_last():
+    from climate_registry.read_api import filter_article_cards, filter_pdf_articles
+
+    class Reader:
+        def _public_candidates(self, *kinds): return {}
+        def approved_article_cards_all(self):
+            return [
+                {"article_id": "new", "canonical_url": "https://example.org/new", "title": "New",
+                    "source": "example.org", "publisher": "Example", "last_seen": "2026-10-17",
+                    "publication_date": "2026-10-10", "collected_at": "2026-10-25T00:00:00Z", "appearances": []},
+                {"article_id": "old", "canonical_url": "https://example.org/old", "title": "Old",
+                    "source": "example.org", "publisher": "Example", "last_seen": "2026-10-19",
+                    "publication_date": "2026-09-01", "collected_at": "2026-10-24T00:00:00Z", "appearances": []},
+                {"article_id": "unknown", "canonical_url": "https://example.org/unknown", "title": "Unknown",
+                    "source": "example.org", "publisher": "Example", "last_seen": "2026-10-18",
+                    "publication_date": "", "appearances": []},
+                {"article_id": "collected", "canonical_url": "https://example.org/collected", "title": "Collected",
+                    "source": "example.org", "publisher": "Example", "last_seen": "2026-10-01",
+                    "publication_date": None, "collected_at": "2026-10-15T00:00:00Z", "appearances": []},
+            ]
+        def pdf_articles_all(self, **kwargs):
+            return [{"article_id": "pdf-mid", "canonical_url": "https://pdf.example/mid", "title": "PDF",
+                "source": "pdf.example", "publisher": "PDF Example", "source_kind": "pdf",
+                "last_seen": "2026-10-20", "publication_date": "2026-10-05",
+                "collected_at": "2026-10-30T00:00:00Z",
+                "occurrences": [{"report_date": "2026-10-20"}]}]
+        def approved_reports_all(self): return []
+        def pdf_reports_all(self): return []
+        def status(self): return {"available": True}
+        def approved_merged_article_count(self): return 3
+        def publishers(self, **kwargs): return {"items": [], "total": 0, "truncated": False}
+
+    projection = RegistryListProjection(Reader())
+    try:
+        first = projection.articles(page=1, page_size=2, include_pdf=True)["items"]
+        second = projection.articles(page=2, page_size=2, include_pdf=True)["items"]
+        third = projection.articles(page=3, page_size=2, include_pdf=True)["items"]
+        assert [item["article_id"] for item in first + second + third] == ["collected", "new", "pdf-mid", "old", "unknown"]
+        assert first[0]["collected_at"] == "2026-10-15T00:00:00Z"
+        assert first[1]["publication_date"] == "2026-10-10"
+        assert first[1]["collected_at"] == "2026-10-25T00:00:00Z"
+        assert second[0]["publication_date"] == "2026-10-05"
+        assert second[0]["collected_at"] == "2026-10-30T00:00:00Z"
+        assert second[1]["publication_date"] == "2026-09-01"
+        assert third[0]["publication_date"] is None
+        assert third[0]["collected_at"] is None
+        category_ids = [item["article_id"] for item in json.loads(projection.category_body)["items"]]
+        assert category_ids == ["pdf-mid", "old", "unknown", "new", "collected"]
+        core = projection.articles(page=1, page_size=10)["items"]
+        assert [item["article_id"] for item in core] == ["collected", "new", "old", "unknown"]
+        assert core[0]["collected_at"][:10] > core[1]["publication_date"]
+        direct = filter_article_cards([
+            {"article_id": "new", "publication_date": "2026-10-10", "last_seen": "2026-10-17"},
+            {"article_id": "tie-z", "publication_date": "2026-10-10", "last_seen": "2026-10-01"},
+            {"article_id": "tie-a", "publication_date": "2026-10-10", "last_seen": "2026-10-20"},
+            {"article_id": "old", "publication_date": "2026-09-01", "last_seen": "2026-10-19"},
+            {"article_id": "collected", "publication_date": None, "collected_at": "2026-10-05T00:00:00Z", "last_seen": "2026-10-18"},
+            {"article_id": "unknown", "last_seen": "2026-10-18"},
+        ])
+        assert [item["article_id"] for item in direct] == ["new", "tie-a", "tie-z", "collected", "old", "unknown"]
+        direct_pdf = filter_pdf_articles([
+            {"article_id": "pdf-old", "publication_date": "2026-09-01", "last_seen": "2026-10-19", "occurrences": []},
+            {"article_id": "pdf-new", "publication_date": "2026-10-10", "last_seen": "2026-10-17", "occurrences": []},
+            {"article_id": "pdf-collected", "collected_at": "2026-10-05T00:00:00Z", "last_seen": "2026-10-18", "occurrences": []},
+            {"article_id": "pdf-unknown", "last_seen": "2026-10-18", "occurrences": []},
+        ])
+        assert [item["article_id"] for item in direct_pdf] == ["pdf-new", "pdf-collected", "pdf-old", "pdf-unknown"]
+    finally:
+        projection.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="API management imports require POSIX fcntl")
+def test_static_export_article_api_orders_before_core_and_merged_pagination(monkeypatch):
+    import api_server
+    from climate_registry.read_api import RegistryReader
+
+    reader = RegistryReader.__new__(RegistryReader)
+    reader.database = None
+    reader.public = True
+    reader.source_dir = reader.metadata_dir = None
+    reader.static_snapshot = {"articles": [
+        {"article_id": "older", "canonical_url": "https://example.org/older", "title": "Older",
+            "source": "example.org", "publisher": "Example", "first_seen": "2026-01-01",
+            "last_seen": "2026-10-17", "publication_date": "2026-01-01", "collected_at": "2026-10-20T00:00:00Z", "publication_eligible": True,
+            "document_kind": "article", "appearances": []},
+        {"article_id": "newer", "canonical_url": "https://example.org/newer", "title": "Newer",
+            "source": "example.org", "publisher": "Example", "first_seen": "2026-10-10",
+            "last_seen": "2026-10-10", "publication_date": "2026-10-10", "collected_at": "2026-10-25T00:00:00Z", "publication_eligible": True,
+            "document_kind": "article", "appearances": []},
+        {"article_id": "collected", "canonical_url": "https://example.org/collected", "title": "Collected",
+            "source": "example.org", "publisher": "Example", "first_seen": "2026-10-15",
+            "last_seen": "2026-10-15", "publication_date": None, "collected_at": "2026-10-05T00:00:00Z",
+            "publication_eligible": True, "document_kind": "article", "appearances": []},
+        {"article_id": "unknown", "canonical_url": "https://example.org/unknown", "title": "Unknown",
+            "source": "example.org", "publisher": "Example", "first_seen": "2026-10-18",
+            "last_seen": "2026-10-18", "publication_date": None, "publication_eligible": True,
+            "document_kind": "article", "appearances": []},
+    ], "pdf_articles": [
+        {"article_id": "pdf-collected", "canonical_url": "https://pdf.example/collected", "title": "PDF collected",
+            "source": "pdf.example", "publisher": "PDF Example", "first_seen": "2026-10-17",
+            "last_seen": "2026-10-17", "publication_date": None, "publication_eligible": True,
+            "document_kind": "pdf_article", "occurrence_count": 1,
+            "occurrences": [{"occurrence_id": "occ-collected", "imported_at": "2026-10-20T12:00:00Z",
+                "report_date": "2026-10-17", "display_summary": "PDF collection summary"}]},
+        {"article_id": "pdf-published", "canonical_url": "https://pdf.example/published", "title": "PDF published",
+            "source": "pdf.example", "publisher": "PDF Example", "first_seen": "2026-10-17",
+            "last_seen": "2026-10-17", "publication_date": "2026-10-11", "publication_eligible": True,
+            "document_kind": "pdf_article", "occurrence_count": 1,
+            "occurrences": [{"occurrence_id": "occ-published", "imported_at": "2026-10-30T12:00:00Z",
+                "report_date": "2026-10-17", "display_summary": "PDF published summary"}]},
+    ]}
+    reader._published_candidate_sha = lambda snapshot: "a" * 64
+    assert next(item for item in reader.approved_article_cards_all() if item["article_id"] == "collected")["collected_at"] == "2026-10-05T00:00:00Z"
+    assert [item["article_id"] for item in reader.articles(page=1, page_size=4)["items"]] == [
+        "newer", "collected", "older", "unknown"]
+    pdf_cards = reader.pdf_articles(page=1, page_size=10)["items"]
+    assert [item["article_id"] for item in pdf_cards] == ["pdf-collected", "pdf-published"]
+    assert pdf_cards[0]["collected_at"] == "2026-10-20T12:00:00Z"
+    assert reader.pdf_article("pdf-collected")["collected_at"] == pdf_cards[0]["collected_at"]
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: reader)
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+
+    for include_pdf, expected in (
+        (False, ["newer", "collected", "older", "unknown"]),
+        (True, ["pdf-collected", "pdf-published", "newer", "collected", "older", "unknown"]),
+    ):
+        pages = [api_server.registry_articles(page=str(page), page_size="1", include_pdf=include_pdf)
+            for page in range(1, len(expected) + 1)]
+        assert [item["article_id"] for payload in pages for item in payload["items"]] == expected
+        assert all(payload["pagination"]["total"] == len(expected) for payload in pages)
 
 
 @pytest.mark.parametrize("damage", ["deleted", "schema", "approval", "binding"])

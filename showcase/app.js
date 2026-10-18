@@ -3256,8 +3256,8 @@ async function loadRegistryArticles() {
           "span",
           "registry-card__meta",
           pdfSource
-            ? `${article.publisher} · PDF import · ${article.occurrence_count} PDF ${article.occurrence_count === 1 ? "mention" : "mentions"} · last seen ${article.last_seen || "—"}`
-            : `${article.publisher} · ${article.source_label || "Registry"} · last seen ${article.last_seen}${article.pdf_occurrence_count ? ` · ${article.pdf_occurrence_count} PDF ${article.pdf_occurrence_count === 1 ? "mention" : "mentions"}` : ""}`,
+            ? `${article.publisher} · PDF import · ${article.occurrence_count} PDF ${article.occurrence_count === 1 ? "mention" : "mentions"} · ${article.publication_date ? `Published ${article.publication_date}` : article.collected_at ? `Collected ${article.collected_at.slice(0, 10)}` : "Date unknown"}`
+            : `${article.publisher} · ${article.source_label || "Registry"} · ${article.publication_date ? `Published ${article.publication_date}` : article.collected_at ? `Collected ${article.collected_at.slice(0, 10)}` : "Date unknown"}${article.pdf_occurrence_count ? ` · ${article.pdf_occurrence_count} PDF ${article.pdf_occurrence_count === 1 ? "mention" : "mentions"}` : ""}`,
         ),
       );
       els.registryArticles.append(button);
@@ -3595,13 +3595,17 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
       (!article.date_basis ? article.content?.fetched_at : null);
     if (collectedAt) {
       metrics.push(registryMetric("Collected at", collectedAt));
-    } else if (article.information_date) {
+    }
+    if (article.information_date) {
       metrics.push(registryMetric("Information date", article.information_date));
-    } else if (article.publication_date) {
+    }
+    if (article.publication_date) {
       metrics.push(registryMetric("Publication date", article.publication_date));
-    } else if (article.report_date) {
+    }
+    if (!article.publication_date && article.report_date) {
       metrics.push(registryMetric("Report date (publication unconfirmed)", article.report_date));
-    } else {
+    }
+    if (!collectedAt && !article.information_date && !article.publication_date && !article.report_date) {
       metrics.push(registryMetric("Date basis", "Unconfirmed"));
     }
     els.registryArticleMeta.append(...metrics);

@@ -234,6 +234,9 @@ def _manual_public_facts(snapshot, target, row, packet, reviews):
 
 def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_binding=None):
     """Only evidence frozen in this exact version can establish its public facts."""
+    from .owner_dates import OVERLAY, date_verdict
+    if OVERLAY in snapshot:
+        return date_verdict(snapshot, reviews)
     tables, dependencies = snapshot.get("tables", {}), snapshot.get("dependencies", {})
     results = {}
     for target in frozen_targets(snapshot):
@@ -357,6 +360,9 @@ def _owner_article_date(owner, article):
 
 def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None):
     """A derived read projection; original candidate JSON and SHA never change."""
+    from .owner_dates import OVERLAY, date_public_view
+    if OVERLAY in snapshot:
+        return date_public_view(snapshot, verdict)
     view = deepcopy(snapshot)
     view["_approved_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or digest(snapshot)
     reference = {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"],

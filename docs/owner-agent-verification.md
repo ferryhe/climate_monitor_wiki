@@ -138,3 +138,43 @@ separate from activation: use the existing writer `refresh_checks(run_id)` only
 after approval. Its expected-generation reload protocol preserves the prior
 active projection on reload failure; verify the actual API/corpus and report
 membership after a successful activation. Original PDF downloads remain independent.
+
+## Publication date only
+
+For an already visible approved article, `plan-owner-check --publication-date-only`
+selects `owner-agent-publication-date-check.v1`. It inherits the complete approved
+public scope, including its original classifier metadata and keyword count. It
+does not run a new taxonomy review. The existing ingest, review-template and
+approval commands, locks, backup requirement and bounded atomic batches apply.
+
+Use exactly one observation with `public_fields: {"publication_date": "YYYY-MM-DD"}`,
+`excluded_fields: []`, and `original_comparisons` for the old publication date only
+(empty when absent). Its literal date evidence includes `date_kind: "updated"`
+or `"published"`; prefer the source's Updated/Last Updated date, otherwise its
+publication date. An unknown date remains unknown; collection time is not imported
+as publication date. Ordinal dates such as `23rd September 2026` retain that exact
+excerpt while parsing to an ISO calendar day.
+Year-first slash dates such as `2026/09/21` are unambiguous. Other slash dates
+require the date evidence's explicit `date_format: "MM/DD/YYYY"` or
+`"DD/MM/YYYY"`, determined by the retained source research and inspected by the
+independent reviewer. The complete evidence, including this format, is frozen
+in `source_checks.date_evidence_sha256`; missing, invalid or mismatched formats
+and calendar dates are rejected. No locale is inferred. Month abbreviations
+such as `AUG. 24, 2026` retain their literal evidence.
+
+The capture retains its real requested/final URL and bytes/hash. Include
+`source_identity: {"article_url": TARGET_SOURCE_URL, "excerpt": LITERAL_IDENTITY_TEXT,
+"reason": SAME_ARTICLE_EXPLANATION}`. An official directory/API may be the captured
+URL; the independent reviewer must verify that its identity text and date refer
+to this exact article. Never relabel a directory capture as a fetched article page.
+
+The independent `owner-agent-publication-date-review.v1` receipt binds the new
+candidate, date evidence, approved baseline and non-date scope. Approval rechecks
+live publication/latest/visibility and source state, verifies frozen inherited
+receipts and projection, and refuses any non-date public DTO change. Unapproved
+checks retain the prior public version. The date is applied after inherited source
+validation and reaches native, PDF and linked article readers plus display refresh.
+
+This scope requires these application changes on the writer and all public
+readers before use. An older application ignores the overlay and continues to
+show baseline dates; rebuilding its display cache does not make the new date public.

@@ -28,6 +28,7 @@ from .schema import apply_migrations
 from .capture import deterministic_enrichment, GENERATOR_NAME, GENERATOR_VERSION
 
 CHECK_VERSION = "information-check.v2"
+DATE_ONLY_CHECK_VERSION = "owner-agent-publication-date-check.v1"
 KINDS = {"meetings": "meeting", "articles": "article"}
 
 
@@ -37,6 +38,26 @@ def _json(value: Any) -> str:
 
 def _sha(value: Any) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+
+
+def _packet_cache_key(row, candidate_binding):
+    return ("verified_packet", candidate_binding, row.get("attempt_id"),
+        row.get("source_revision_sha256"), row.get("packet_sha256"), row.get("packet_json"))
+
+
+def is_publication_date_only_attempt(row, *, packet_cache=None, candidate_binding=None):
+    """Date supplements cannot replace an original source-information check."""
+    key = _packet_cache_key(row, candidate_binding) if packet_cache is not None else None
+    decoded_key = ("decoded_packet", *key[1:]) if key is not None else None
+    packet = packet_cache.get(key, packet_cache.get(decoded_key)) if key is not None else None
+    try:
+        if packet is None:
+            packet = json.loads(row["packet_json"])
+            if decoded_key is not None:
+                packet_cache[decoded_key] = packet
+    except (ValueError, TypeError, KeyError):
+        return False
+    return isinstance(packet, dict) and packet.get("schema_version") == DATE_ONLY_CHECK_VERSION
 
 
 def _now() -> str:
@@ -434,8 +455,9 @@ def latest_checks(connection: sqlite3.Connection, kind: str, item: dict[str, Any
     urls = item.get("source_urls") if kind == "meetings" else [item.get("raw_url")]
     checks = []
     for url in dict.fromkeys(urls or [""]):
-        row = connection.execute(f"SELECT * FROM {prefix}_check_attempts WHERE occurrence_id=? AND source_url=? ORDER BY checked_at DESC, rowid DESC LIMIT 1",
-            (item["occurrence_id"], url or "")).fetchone()
+        rows = connection.execute(f"SELECT * FROM {prefix}_check_attempts WHERE occurrence_id=? AND source_url=? ORDER BY checked_at DESC, rowid DESC",
+            (item["occurrence_id"], url or ""))
+        row = next((row for row in rows if not is_publication_date_only_attempt(row)), None)
         if row is None or row["source_revision_sha256"] != revision:
             continue
         packet = json.loads(row["packet_json"])
@@ -452,13 +474,15 @@ def latest_checks(connection: sqlite3.Connection, kind: str, item: dict[str, Any
 def verified_packet_from_attempt(row: dict[str, Any], *, packet_cache: dict | None = None,
     candidate_binding: str | None = None) -> dict[str, Any]:
     """Decode and verify one frozen attempt packet once per candidate binding."""
-    cache_key = ("verified_packet", candidate_binding, row.get("attempt_id"),
-        row.get("source_revision_sha256"), row.get("packet_sha256"), row.get("packet_json"))
+    cache_key = _packet_cache_key(row, candidate_binding)
     cached = packet_cache.get(cache_key) if packet_cache is not None else None
     if cached is not None:
         return cached
     try:
-        packet = json.loads(row["packet_json"])
+        decoded_key = ("decoded_packet", *cache_key[1:])
+        packet = packet_cache.pop(decoded_key, None) if packet_cache is not None else None
+        if packet is None:
+            packet = json.loads(row["packet_json"])
     except (json.JSONDecodeError, TypeError, KeyError) as exc:
         raise ValueError("invalid information check packet") from exc
     if not isinstance(packet, dict):
@@ -483,7 +507,8 @@ def latest_checks_from_attempts(kind: str, item: dict[str, Any], attempts: list[
     checks = []
     for url in dict.fromkeys(urls or [""]):
         row = max((row for row in attempts if row.get("occurrence_id") == item["occurrence_id"]
-            and row.get("source_url") == (url or "")),
+            and row.get("source_url") == (url or "") and not is_publication_date_only_attempt(row,
+                packet_cache=packet_cache, candidate_binding=candidate_binding)),
             key=lambda row: (row.get("checked_at") or "", row.get("attempt_id") or ""), default=None)
         if row is None or row.get("source_revision_sha256") != revision:
             continue
@@ -563,6 +588,8 @@ def _latest_target_attempts(connection, prefix: str, targets: list[dict[str, Any
                 "ORDER BY checked_at DESC, rowid DESC", parameters)
             for row in rows:
                 attempt = dict(row)
+                if is_publication_date_only_attempt(attempt):
+                    continue
                 key = (attempt_identity(attempt, prefix), attempt["source_url"])
                 latest.setdefault(key, attempt)
 
