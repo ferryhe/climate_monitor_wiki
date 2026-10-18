@@ -301,6 +301,84 @@ def test_date_only_retains_literal_ordinal_byline_date(tmp_path, literal, expect
     assert item["publication_date_evidence"]["text"] == literal
 
 
+@pytest.mark.skipif(__import__('os').name == 'nt', reason='Actual API imports POSIX management')
+def test_date_only_month_midpoint_provenance_is_visible_in_api_and_article_list(tmp_path, monkeypatch):
+    import api_server
+    from fastapi.testclient import TestClient
+    database = _seed(tmp_path, source="pdf")
+    manifest = _date_manifest(database, source="pdf", date="2026-09-15", date_kind="published")
+    entry = manifest["observations"][0]
+    literal = "Sep 2026"
+    raw = entry["capture"]["text"].replace("2026-09-15", literal).encode()
+    entry["capture"].update(text=raw.decode(), bytes_base64=base64.b64encode(raw).decode(), sha256=hashlib.sha256(raw).hexdigest())
+    entry["field_evidence"]["publication_date"].update(
+        excerpt=literal, date_normalization="month_midpoint", source_date_precision="month")
+    staged = _ingest(database, tmp_path, manifest)
+    _approve(database, tmp_path, _date_review(database, tmp_path, staged["candidate_sha256"]))
+    monkeypatch.setattr(api_server, "_registry_reader", lambda: _reader(database, tmp_path))
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    api_server._clear_registry_list_cache()
+    client = TestClient(api_server.app)
+    detail = client.get("/api/registry/pdf-intake/articles/pdf-good").json()
+    assert detail["publication_date"] == "2026-09-15"
+    assert detail["publication_date_evidence"]["text"] == literal
+    assert detail["publication_date_evidence"]["date_normalization"] == "month_midpoint"
+    listed = client.get("/api/registry/articles?include_pdf=true&page_size=100").json()["items"]
+    card = next(item for item in listed if item["article_id"] == "pdf-good")
+    assert card["publication_date"] == "2026-09-15"
+    assert card["publication_date_evidence"]["source_date_precision"] == "month"
+
+
+@pytest.mark.parametrize("literal", ["Sep 2026", "September 2026", "2026-09"])
+def test_date_only_normalizes_month_precision_to_midpoint_and_preserves_provenance(tmp_path, literal):
+    database = _seed(tmp_path)
+    manifest = _date_manifest(database, date="2026-09-15", date_kind="published")
+    entry = manifest["observations"][0]
+    raw = entry["capture"]["text"].replace("2026-09-15", literal).encode()
+    entry["capture"].update(text=raw.decode(), bytes_base64=base64.b64encode(raw).decode(), sha256=hashlib.sha256(raw).hexdigest())
+    evidence = entry["field_evidence"]["publication_date"]
+    evidence.update(excerpt=literal, date_normalization="month_midpoint", source_date_precision="month")
+    staged = _ingest(database, tmp_path, manifest)
+    _approve(database, tmp_path, _date_review(database, tmp_path, staged["candidate_sha256"]))
+    item = _reader(database, tmp_path).article("good")
+    assert item["publication_date"] == "2026-09-15"
+    assert item["publication_date_evidence"]["text"] == literal
+    assert item["publication_date_evidence"]["source_date_precision"] == "month"
+    assert item["publication_date_evidence"]["date_normalization"] == "month_midpoint"
+
+
+@pytest.mark.parametrize("literal", ["September-October 2026", "Sep 2026-Oct 2026"])
+def test_date_only_rejects_month_midpoint_for_month_range(tmp_path, literal):
+    database = _seed(tmp_path)
+    manifest = _date_manifest(database, date="2026-09-15", date_kind="published")
+    entry = manifest["observations"][0]
+    raw = entry["capture"]["text"].replace("2026-09-15", literal).encode()
+    entry["capture"].update(text=raw.decode(), bytes_base64=base64.b64encode(raw).decode(), sha256=hashlib.sha256(raw).hexdigest())
+    entry["field_evidence"]["publication_date"].update(
+        excerpt=literal, date_normalization="month_midpoint", source_date_precision="month")
+    with pytest.raises(RegistryInputError):
+        _ingest(database, tmp_path, manifest)
+
+
+@pytest.mark.parametrize(("normalization", "source_precision"), [
+    (None, None), ("month_midpoint", None), ("month_midpoint", "day"), ("other", "month")])
+def test_date_only_rejects_unjustified_month_midpoint(tmp_path, normalization, source_precision):
+    database = _seed(tmp_path)
+    manifest = _date_manifest(database, date="2026-09-15", date_kind="published")
+    entry = manifest["observations"][0]
+    literal = "Sep 2026"
+    raw = entry["capture"]["text"].replace("2026-09-15", literal).encode()
+    entry["capture"].update(text=raw.decode(), bytes_base64=base64.b64encode(raw).decode(), sha256=hashlib.sha256(raw).hexdigest())
+    evidence = entry["field_evidence"]["publication_date"]
+    evidence["excerpt"] = literal
+    if normalization is not None:
+        evidence["date_normalization"] = normalization
+    if source_precision is not None:
+        evidence["source_date_precision"] = source_precision
+    with pytest.raises(RegistryInputError):
+        _ingest(database, tmp_path, manifest)
+
+
 @pytest.mark.parametrize("source", ["native", "pdf", "linked"])
 def test_newer_date_check_never_replaces_t1_terminal_or_requeues_content(tmp_path, monkeypatch, source):
     from climate_registry import information_checks as checks

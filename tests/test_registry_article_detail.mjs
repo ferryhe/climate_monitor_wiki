@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
 const extract = (name) => source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
-const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfAppearances', 'registryMetric', 'registryArticleDateSummary', 'registrySummaryPresentation', 'loadRegistryArticle'];
+const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfAppearances', 'registryMetric', 'registryPublicationDateLabel', 'registryArticleDateSummary', 'registrySummaryPresentation', 'loadRegistryArticle'];
 const created = [];
 const document = { createElement(tag) {
   const element = { tag, children: [], append(...items) { this.children.push(...items); },
@@ -87,6 +87,14 @@ assert.doesNotMatch(text(enrichment), /Website-only category|website-only keywor
 assert.doesNotMatch(text(enrichment), /Verified information/);
 assert.equal(rootTags(enrichment, 'Categories').length, 1, 'current article categories render once');
 assert.equal(rootTags(enrichment, 'Keywords').length, 1);
+
+const monthOnlyPdf = { ...reviewedPdf, publication_date: '2026-09-15',
+  publication_date_evidence: { text: 'Sep 2026', source_date_precision: 'month', date_normalization: 'month_midpoint' } };
+assert.equal(context.registryArticleDateSummary(monthOnlyPdf),
+  'Published 2026-09-15 (source: Sep 2026; normalized to the 15th) · Updated 2026-02-10 · Version revised 2026-02');
+context.registryFetch = async () => monthOnlyPdf;
+await context.loadRegistryArticle('month-only-pdf', 'pdf');
+assert.match(text(articleMeta), /Publication date 2026-09-15 \(source: Sep 2026; normalized to the 15th\)/);
 
 enrichment.replaceChildren();
 context.registryFetch = async () => ({ ...reviewedPdf, categories: ['Adaptation & Resilience'], keywords: [],
