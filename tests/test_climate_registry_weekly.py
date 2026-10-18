@@ -761,6 +761,7 @@ def test_legacy_public_view_requires_explicit_migration_before_weekly_promotion(
         connection.execute("DROP TABLE article_check_runs")
         connection.execute("DROP TABLE meeting_check_attempts")
         connection.execute("DROP TABLE meeting_check_runs")
+        connection.execute("DROP TABLE pdf_article_date_observations")
         connection.execute("DROP TABLE article_date_observations")
         connection.execute("DROP TABLE meeting_snapshots")
         connection.execute("DROP TABLE climate_event_sources")
@@ -879,11 +880,11 @@ def test_legacy_public_view_requires_explicit_migration_before_weekly_promotion(
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 24
+    ).status()["schema_version"] == 25
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 24
+    ).status()["schema_version"] == 25
     assert backup.read_bytes() == migrated_bytes
 
 

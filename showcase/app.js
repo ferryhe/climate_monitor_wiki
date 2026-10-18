@@ -2394,6 +2394,15 @@ function registryMetric(label, value) {
   return wrapper;
 }
 
+function registryArticleDateSummary(article) {
+  const summary = [article.publication_date
+    ? `Published ${article.publication_date}`
+    : article.collected_at ? `Collected ${article.collected_at.slice(0, 10)}` : "Date unknown"];
+  if (article.updated_date) summary.push(`Updated ${article.updated_date}`);
+  if (article.revision_date) summary.push(`Version revised ${article.revision_date}`);
+  return summary.join(" · ");
+}
+
 const REGISTRY_SUMMARY_PRESENTATION = {
   owner_agent_verified_source: {
     sourceLabel: "Owner-agent verified source",
@@ -3243,6 +3252,7 @@ async function loadRegistryArticles() {
       button.type = "button";
       button.dataset.articleId = article.article_id;
       const pdfSource = article.source_kind === "pdf";
+      const dateSummary = registryArticleDateSummary(article);
       button.dataset.articleSource = pdfSource ? "pdf" : "registry";
       const roles = reviewedSourceRoles(article);
       if (roles) {
@@ -3256,8 +3266,8 @@ async function loadRegistryArticles() {
           "span",
           "registry-card__meta",
           pdfSource
-            ? `${article.publisher} · PDF import · ${article.occurrence_count} PDF ${article.occurrence_count === 1 ? "mention" : "mentions"} · ${article.publication_date ? `Published ${article.publication_date}` : article.collected_at ? `Collected ${article.collected_at.slice(0, 10)}` : "Date unknown"}`
-            : `${article.publisher} · ${article.source_label || "Registry"} · ${article.publication_date ? `Published ${article.publication_date}` : article.collected_at ? `Collected ${article.collected_at.slice(0, 10)}` : "Date unknown"}${article.pdf_occurrence_count ? ` · ${article.pdf_occurrence_count} PDF ${article.pdf_occurrence_count === 1 ? "mention" : "mentions"}` : ""}`,
+            ? `${article.publisher} · PDF import · ${article.occurrence_count} PDF ${article.occurrence_count === 1 ? "mention" : "mentions"} · ${dateSummary}`
+            : `${article.publisher} · ${article.source_label || "Registry"} · ${dateSummary}${article.pdf_occurrence_count ? ` · ${article.pdf_occurrence_count} PDF ${article.pdf_occurrence_count === 1 ? "mention" : "mentions"}` : ""}`,
         ),
       );
       els.registryArticles.append(button);
@@ -3596,11 +3606,17 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
     if (collectedAt) {
       metrics.push(registryMetric("Collected at", collectedAt));
     }
-    if (article.information_date) {
+    if (article.information_date && ![article.updated_date, article.revision_date].includes(article.information_date)) {
       metrics.push(registryMetric("Information date", article.information_date));
     }
     if (article.publication_date) {
       metrics.push(registryMetric("Publication date", article.publication_date));
+    }
+    if (article.updated_date) {
+      metrics.push(registryMetric("Updated", article.updated_date));
+    }
+    if (article.revision_date) {
+      metrics.push(registryMetric("Version revised", article.revision_date));
     }
     if (!article.publication_date && article.report_date) {
       metrics.push(registryMetric("Report date (publication unconfirmed)", article.report_date));

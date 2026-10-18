@@ -212,10 +212,17 @@ REQUIRED_TABLE_COLUMNS.update({
     "display_meetings": {"start_date", "include_unknown", "position", "verification_status", "search", "dto"},
 })
 V24_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24)
+REQUIRED_TABLE_COLUMNS["pdf_article_date_observations"] = {
+    "observation_id", "article_id", "canonical_url", "observation_kind", "observed_at",
+    "source_system", "source_database", "source_table", "source_record_id", "evidence_json", "recorded_at",
+}
+V25_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25)
 
 
 def _required_tables(version: int) -> frozenset[str]:
+    if version >= 25:
+        return V25_TABLES
     if version >= 24:
         return V24_TABLES
     if version >= 23:
@@ -369,6 +376,9 @@ REQUIRED_FOREIGN_KEYS = {
     "article_date_observations": {
         ("articles", ("article_id",), ("article_id",)),
     },
+    "pdf_article_date_observations": {
+        ("pdf_intake_articles", ("article_id",), ("article_id",)),
+    },
 }
 
 REQUIRED_TRIGGERS = frozenset(
@@ -411,6 +421,11 @@ REQUIRED_TRIGGERS = frozenset(
         "pdf_intake_articles_confirmed_link_is_immutable",
         "article_date_observations_are_append_only_update",
         "article_date_observations_are_append_only_delete",
+        "pdf_article_date_observations_are_append_only_update",
+        "pdf_article_date_observations_are_append_only_delete",
+        "display_dirty_pdf_article_date_observations_insert",
+        "display_dirty_pdf_article_date_observations_update",
+        "display_dirty_pdf_article_date_observations_delete",
     }
 )
 
@@ -444,6 +459,7 @@ REQUIRED_INDEXES = frozenset(
         "idx_pdf_calendar_document",
         "idx_pdf_articles_core",
         "idx_article_date_observations_article_kind_time",
+        "idx_pdf_article_date_observations_article_kind_time",
     }
 )
 
@@ -583,6 +599,14 @@ def _required_triggers(version: int) -> frozenset[str]:
             "article_date_observations_are_append_only_update",
             "article_date_observations_are_append_only_delete",
         }
+    if version < 25:
+        names -= {
+            "pdf_article_date_observations_are_append_only_update",
+            "pdf_article_date_observations_are_append_only_delete",
+            "display_dirty_pdf_article_date_observations_insert",
+            "display_dirty_pdf_article_date_observations_update",
+            "display_dirty_pdf_article_date_observations_delete",
+        }
     if version < 17:
         names -= _CHECK_TRIGGERS
     if version < 11:
@@ -639,6 +663,8 @@ def _required_indexes(version: int) -> frozenset[str]:
         names |= {"idx_knowledge_entity"}
     if version < 18:
         names -= {"idx_article_date_observations_article_kind_time"}
+    if version < 25:
+        names -= {"idx_pdf_article_date_observations_article_kind_time"}
     if version < 17:
         names -= _CHECK_INDEXES
     if version < 11:

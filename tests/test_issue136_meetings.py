@@ -93,7 +93,7 @@ def test_schema_v12_keeps_meeting_reads_and_rejects_writes(tmp_path):
 
     assert query_events(database, base_date="2026-01-01", timezone_name="UTC")["records"] == []
     assert load_snapshot(database, "snapshot-v12")["records"] == []
-    with pytest.raises(ValueError, match="schema 24 for writes"):
+    with pytest.raises(ValueError, match="schema 25 for writes"):
         freeze_snapshot(database, base_date="2026-01-01", timezone_name="UTC")
 
 
@@ -1227,8 +1227,8 @@ def test_schema_10_upgrades_to_exact_versioned_meeting_contract():
     connection = sqlite3.connect(":memory:")
     apply_migrations(connection, target_version=10)
     assert validate_registry_contract(connection) == 10
-    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
-    assert validate_registry_contract(connection) == 24
+    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+    assert validate_registry_contract(connection) == 25
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"meeting_runs", "meeting_run_items", "climate_events", "climate_event_sources",
             "climate_event_versions", "meeting_snapshots"} <= tables
@@ -1239,8 +1239,8 @@ def test_schema_11_upgrades_existing_meeting_sources_without_losing_evidence(tmp
     connection = sqlite3.connect(database)
     apply_migrations(connection, target_version=11)
     assert validate_registry_contract(connection) == 11
-    assert apply_migrations(connection) == [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
-    assert validate_registry_contract(connection) == 24
+    assert apply_migrations(connection) == [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+    assert validate_registry_contract(connection) == 25
     columns = {row[1] for row in connection.execute("PRAGMA table_info(climate_event_sources)")}
     assert {"candidate_ordinal", "interpretation_seq"} <= columns
     connection.close()
@@ -1657,7 +1657,8 @@ def test_direct_meetings_all_assembles_native_and_pdf_sets_once_at_scale(tmp_pat
     assert len(all_records) == 2 * count
     assert len({item.get("event_id", item.get("occurrence_id")) for item in all_records}) == 2 * count
     assert page_calls == 0
-    assert len(publication_calls) == 1
+    assert [call[0] for call in publication_calls] == [
+        ("meeting", "pdf_meeting"), ("article", "pdf_article")]
 
     publication_calls.clear()
     paged = []
@@ -1667,7 +1668,10 @@ def test_direct_meetings_all_assembles_native_and_pdf_sets_once_at_scale(tmp_pat
         paged.extend(reader.meetings(base_date="2027-01-01", page=page, page_size=100)["items"])
     assert len(paged) == 2 * count
     assert len({item.get("event_id", item.get("occurrence_id")) for item in paged}) == 2 * count
-    assert len(publication_calls) == first["pagination"]["pages"]
+    assert len(publication_calls) == 2 * first["pagination"]["pages"]
+    assert all(publication_calls[index][0] == ("meeting", "pdf_meeting")
+        and publication_calls[index + 1][0] == ("article", "pdf_article")
+        for index in range(0, len(publication_calls), 2))
 
 
 def test_retry_confirmation_summary_includes_reused_success_lineage(tmp_path):

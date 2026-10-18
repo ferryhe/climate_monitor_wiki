@@ -45,7 +45,8 @@ ARTICLE_TABLES = {
     "article_semantics": "article_id", "article_capture_resolutions": "article_id",
     "acquisition_items": "article_id", "article_date_observations": "article_id",
 }
-PDF_TABLES = {"pdf_intake_articles": "article_id", "pdf_intake_article_occurrences": "article_id"}
+PDF_TABLES = {"pdf_intake_articles": "article_id", "pdf_intake_article_occurrences": "article_id",
+    "pdf_article_date_observations": "article_id"}
 MEETING_TABLES = {"climate_events": "event_id", "climate_event_versions": "event_id",
     "climate_event_sources": "event_id"}
 PDF_MEETING_TABLES = {"pdf_intake_calendar_items": "event_id"}
@@ -263,6 +264,8 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
     kind, entity_id = canonical_entity(connection, kind, entity_id)
     tables = {}
     for table, column in ENTITY_TABLES[kind].items():
+        if table == "pdf_article_date_observations" and connection.execute("PRAGMA user_version").fetchone()[0] < 25:
+            continue
         predicate, params = f"{column}=?", (entity_id,)
         if table == "article_enrichments":
             predicate = "article_id=? OR content_version_id IN (SELECT content_version_id FROM article_content_versions WHERE article_id=?)"
@@ -295,6 +298,9 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
             "canonical_url IN (SELECT canonical_url FROM articles WHERE article_id=?) OR core_article_id=?", (entity_id, entity_id))
         pdf_ids = [row["article_id"] for row in tables["pdf_intake_articles"]]
         tables["pdf_intake_article_occurrences"] = [row for key in pdf_ids for row in _rows(connection, "pdf_intake_article_occurrences", "article_id=?", (key,))]
+        if connection.execute("PRAGMA user_version").fetchone()[0] >= 25:
+            tables["pdf_article_date_observations"] = [row for key in pdf_ids for row in _rows(
+                connection, "pdf_article_date_observations", "article_id=?", (key,))]
         tables["article_check_attempts"] = [row for key in pdf_ids for row in _rows(connection, "article_check_attempts",
             "occurrence_id IN (SELECT occurrence_id FROM pdf_intake_article_occurrences WHERE article_id=?)", (key,))]
         batch_ids = sorted({row["batch_id"] for row in tables.get("acquisition_items", [])})
@@ -485,7 +491,7 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
     return sha
 
 
-def stage_entities(connection, *, article_ids=None, annotations=None, source_dir=None):
+def stage_entities(connection, *, article_ids=None, pdf_article_ids=None, annotations=None, source_dir=None):
     if not enabled(connection):
         return []
     staged = []
@@ -500,8 +506,15 @@ def stage_entities(connection, *, article_ids=None, annotations=None, source_dir
         for (entity_id,) in connection.execute(f"SELECT DISTINCT {column} FROM {table} ORDER BY {column}").fetchall():
             if canonical_entity(connection, kind, entity_id) != (kind, entity_id):
                 continue
-            if article_ids is not None and kind == "article" and entity_id not in article_ids:
-                continue
+            if article_ids is not None or pdf_article_ids is not None:
+                if kind == "article" and article_ids is not None:
+                    if entity_id not in article_ids:
+                        continue
+                elif kind == "pdf_article" and pdf_article_ids is not None:
+                    if entity_id not in pdf_article_ids:
+                        continue
+                else:
+                    continue
             staged.append(stage_snapshot(connection, snapshot_entity(connection, kind, entity_id, annotations=annotations,source_dir=source_dir,report_cache=report_cache,information_groups=information_groups)))
     return staged
 
@@ -1187,7 +1200,7 @@ def export_public_snapshot(database, output, *, reader=None, source_dir=None):
         from .verification import PUBLICATION_POLICY
         value = {"schema_version": "climate-public-snapshot.v1", "publication_policy": PUBLICATION_POLICY,
             "knowledge_chronology": reader.knowledge_chronology(),
-            "articles": [_public_dto(reader.article(identity)) for identity in ids],
+            "articles": [_public_article_dto(reader.article(identity)) for identity in ids],
             "pdf_articles": [_pdf_dto(item) for item in reader.pdf_articles_all(include_linked=True)],
             "meetings": [_calendar_dto(item) for item in reader.pdf_calendar_items_all()], "meeting_records": [_calendar_dto(item) for item in reader.meetings_all(base_date="1900-01-01")],
             "meeting_coverage": public_meeting_coverage(reader.meetings(base_date="1900-01-01", page_size=1)["coverage"]),
@@ -1278,12 +1291,22 @@ def _public_dto(payload):
     return value
 
 
+def _public_article_dto(payload):
+    """Keep top-level article detail keys consistent across direct and static reads."""
+    value = dict(payload)
+    value.setdefault("activity_dates", [])
+    value.setdefault("is_activity", bool(value["activity_dates"]))
+    return _public_dto(value)
+
+
 def _date_evidence_dto(value):
     if not isinstance(value, dict):
         return value
     return {key:item for key,item in value.items() if key in {
-        "kind","url","date_kind","match_basis","source_url","field","label","text","source_system",
-        "table","record_id","date_basis","report_filename","report_date","note","acquisition_item_id"}}
+        "kind","url","date_kind","match_basis","source_url","target_url","field","label","text","source_system",
+        "table","record_id","date_basis","date_precision","date_text","report_filename","report_date","note","acquisition_item_id",
+        "event_name","event_type","event_status","event_start_date","event_end_date","event_organizer",
+        "event_location","event_timezone","event_url","event_summary","review_status"}}
 
 
 def _manual_dto(value):
@@ -1314,6 +1337,11 @@ def _pdf_dto(item):
         payload["manual_enrichment"] = {key: value for key, value in manual.items() if key in {"generator", "categories", "keywords", "summary_basis", "source_row_sha256"}}
     if "occurrences" in item:
         payload["occurrences"] = [_occurrence_dto(row) for row in item["occurrences"]]
+    if "date_observations" in payload:
+        payload["date_observations"] = [{key: value for key, value in row.items()
+            if key in {"observation_id", "kind", "observed_at", "recorded_at"}} | {
+                "evidence": _date_evidence_dto(row.get("evidence", {}))}
+            for row in payload["date_observations"]]
     if isinstance(item.get("latest_occurrence"), dict):
         payload["latest_occurrence"] = _occurrence_dto(item["latest_occurrence"])
     return payload

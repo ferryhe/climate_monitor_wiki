@@ -18,6 +18,7 @@ def test_sql_projection_filters_core_and_pdf_independently_and_returns_only_card
             return [{"article_id": "core", "canonical_url": "https://example.org/a", "title": "Straße",
                 "summary": "core summary", "categories": ["Flood"], "keywords": ["tail risk"],
                 "source": "example.org", "publisher": "Publisher", "source_id": "source-1",
+                "publication_date": "2026-09-02", "updated_date": "2026-10-01", "revision_date": "2026-09",
                 "last_seen": "2026-09-02", "appearances": [
                     {"report_date": "2026-09-01", "pillar": "A"},
                     {"report_date": "2026-09-02", "pillar": "B"}]}]
@@ -42,6 +43,8 @@ def test_sql_projection_filters_core_and_pdf_independently_and_returns_only_card
             assert result["pagination"]["total"] == 1
             assert result["items"][0]["article_id"] == "core"
             assert set(result["items"][0]) <= ARTICLE_FIELDS
+            assert result["items"][0]["updated_date"] == "2026-10-01"
+            assert result["items"][0]["revision_date"] == "2026-09"
         for source in ("source-1", "Publisher", "example.org", "WWW.example.org"):
             assert page(source=source)["pagination"]["total"] == 1
         assert page(query="PDF only hit", pillar="A")["items"] == []
@@ -378,3 +381,30 @@ def test_continuously_changing_source_cannot_publish_or_cache_a_generation(tmp_p
     for projection in builds:
         with pytest.raises(sqlite3.ProgrammingError):
             projection.connection.execute("SELECT 1")
+
+
+def test_activity_pages_are_removed_from_article_projection():
+    import json
+    import sqlite3
+    from climate_registry.list_projection import RegistryListProjection
+
+    projection = object.__new__(RegistryListProjection)
+    projection.prefix = ""
+    projection.connection = sqlite3.connect(":memory:")
+    projection.connection.executescript("""
+        CREATE TABLE articles (url TEXT, article_id TEXT, last_seen TEXT, first_seen TEXT,
+            core_card TEXT, merged_card TEXT, core_search TEXT, core_source TEXT, publisher TEXT,
+            source_id TEXT, pdf_search TEXT, pdf_source TEXT);
+        CREATE TABLE appearances (url TEXT, kind TEXT, report_date TEXT, pillar TEXT);
+    """)
+    for article_id, activity in (("article-news", False), ("article-event", True)):
+        card = {"article_id": article_id, "title": article_id, "canonical_url": f"https://example.org/{article_id}",
+            "publication_date": "2026-10-01", "collected_at": "2026-10-02T00:00:00Z", "is_activity": activity}
+        projection.connection.execute("INSERT INTO articles VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
+            card["canonical_url"], article_id, "2026-10-02", "2026-10-01", json.dumps(card), json.dumps(card),
+            article_id, "registry", "Example", "source", article_id, "example.org"))
+    projection.connection.commit()
+    result = projection.articles(page=1, page_size=20, include_pdf=True)
+    assert [item["article_id"] for item in result["items"]] == ["article-news"]
+    assert result["pagination"]["total"] == 1
+    projection.close()

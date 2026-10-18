@@ -18,11 +18,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", required=True, help="absolute path to a migrated Registry database copy")
     parser.add_argument("--observations", required=True, help="article-date-observations.v1 JSON file")
+    parser.add_argument("--entity-kind", choices=("article", "pdf_article"), default="article")
     parser.add_argument("--write", action="store_true", help="append observations; default is read-only dry run")
     args = parser.parse_args(argv)
     try:
         payload = json.loads(Path(args.observations).read_text(encoding="utf-8"))
-        result = import_observations(args.database, payload, write=args.write)
+        result = import_observations(args.database, payload, entity_kind=args.entity_kind, write=args.write)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RegistryError, sqlite3.Error) as exc:
         print(f"article date backfill failed: {exc}", file=sys.stderr)
         return 2

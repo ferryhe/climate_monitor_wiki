@@ -12,7 +12,7 @@ from pathlib import Path
 from .list_projection import RegistryListProjection
 from .read_api import RegistryReader, RegistryContractError, RegistryNotFoundError, RegistryQueryError, _pagination, validate_page, validate_report_date, validate_article_id, filter_pdf_articles, _pdf_article_search_text
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 
 def _json(value):
@@ -55,6 +55,10 @@ def _boundaries(reader):
                         ends.add(_date_bounds(item[field], precision, end=True))
                 if item.get("deadline_date"):
                     ends.add(date.fromisoformat(item["deadline_date"]))
+    for item in reader._reviewed_article_activity_events():
+        end = _calendar_end_date(item)
+        if end is not None:
+            ends.add(end)
     # Include both individual observations and their resolved/merged representations.
     imported = reader.pdf_calendar_items_all()
     for item in imported + reader.resolve_pdf_meeting_identities(imported):
@@ -322,8 +326,6 @@ def display_snapshot(reader):
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version < 24:
             yield None
-        elif version != 24:
-            raise RegistryContractError("unsupported display schema")
         else:
             yield DisplayReader(connection)
 

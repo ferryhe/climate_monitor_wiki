@@ -11,7 +11,7 @@ from .read_api import RegistryQueryError, _pagination, _pdf_article_search_text,
 
 ARTICLE_FIELDS = {
     "article_id", "canonical_url", "title", "publisher", "source", "source_kind", "source_label",
-    "publication_date", "collected_at", "first_seen", "last_seen", "pdf_occurrence_count", "occurrence_count", "checked_source_url",
+    "publication_date", "updated_date", "revision_date", "is_activity", "collected_at", "first_seen", "last_seen", "pdf_occurrence_count", "occurrence_count", "checked_source_url",
     "original_source_url", "owner_agent_verification",
 }
 REPORT_FIELDS = {
@@ -76,10 +76,12 @@ class RegistryListProjection:
                     merged = dict(core_item, source_kind="registry")
                     if imported:
                         merged.update(source_label="Registry · PDF import", pdf_occurrence_count=len(imported["occurrences"]))
-                    category_items.append(merged)
+                    if not merged.get("is_activity"):
+                        category_items.append(merged)
                 else:
                     merged = filter_pdf_articles([imported])[0]
-                    category_items.append(merged)
+                    if not merged.get("is_activity"):
+                        category_items.append(merged)
                 card = {key: value for key, value in merged.items() if key in ARTICLE_FIELDS}
                 card["publication_date"] = card.get("publication_date") or None
                 card["collected_at"] = card.get("collected_at") or None
@@ -134,7 +136,7 @@ class RegistryListProjection:
             raise RegistryQueryError("invalid pillar")
         if report_date:
             validate_report_date(report_date)
-        core = ["a.core_card IS NOT NULL"]
+        core = ["a.core_card IS NOT NULL", "COALESCE(json_extract(a.core_card, '$.is_activity'), 0) != 1"]
         params = []
         if query.strip():
             core.append("instr(a.core_search, ?) > 0")
@@ -153,7 +155,7 @@ class RegistryListProjection:
             core.append(f"EXISTS (SELECT 1 FROM {self.prefix}appearances x WHERE " + " AND ".join(appearance) + ")")
         where = "(" + " AND ".join(core) + ")"
         if include_pdf and not pillar:
-            pdf = ["a.pdf_search IS NOT NULL"]
+            pdf = ["a.pdf_search IS NOT NULL", "COALESCE(json_extract(a.merged_card, '$.is_activity'), 0) != 1"]
             if query:
                 pdf.append("instr(a.pdf_search, ?) > 0")
                 params.append(query.casefold())
