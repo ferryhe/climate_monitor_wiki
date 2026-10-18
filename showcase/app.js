@@ -2394,9 +2394,18 @@ function registryMetric(label, value) {
   return wrapper;
 }
 
+function registryPublicationDateLabel(article) {
+  const date = article?.publication_date;
+  const evidence = article?.publication_date_evidence;
+  if (evidence?.date_normalization === "month_midpoint" && evidence.source_date_precision === "month") {
+    return `${date} (source: ${evidence.text}; normalized to the 15th)`;
+  }
+  return date;
+}
+
 function registryArticleDateSummary(article) {
   const summary = [article.publication_date
-    ? `Published ${article.publication_date}`
+    ? `Published ${registryPublicationDateLabel(article)}`
     : article.collected_at ? `Collected ${article.collected_at.slice(0, 10)}` : "Date unknown"];
   if (article.updated_date) summary.push(`Updated ${article.updated_date}`);
   if (article.revision_date) summary.push(`Version revised ${article.revision_date}`);
@@ -3610,7 +3619,7 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
       metrics.push(registryMetric("Information date", article.information_date));
     }
     if (article.publication_date) {
-      metrics.push(registryMetric("Publication date", article.publication_date));
+      metrics.push(registryMetric("Publication date", registryPublicationDateLabel(article)));
     }
     if (article.updated_date) {
       metrics.push(registryMetric("Updated", article.updated_date));

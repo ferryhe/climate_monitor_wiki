@@ -232,13 +232,16 @@ def date_public_view(snapshot, verdict):
     manifest = overlay["manifest"]
     entry = manifest["observations"][0]
     date = entry["public_fields"]["publication_date"]
-    evidence = {"text": entry["field_evidence"]["publication_date"]["excerpt"],
-        "date_kind": entry["field_evidence"]["publication_date"]["date_kind"],
+    date_proof = entry["field_evidence"]["publication_date"]
+    evidence = {"text": date_proof["excerpt"], "date_kind": date_proof["date_kind"],
         "source_url": entry["capture"]["requested_url"], "final_url": entry["capture"]["final_url"],
         "capture_sha256": entry["capture"]["sha256"], "source_identity": entry["source_identity"],
         "source_system": "owner_agent", "table": "registry_reviews", "record_id": proof["review_id"]}
-    if entry["field_evidence"]["publication_date"].get("date_format") is not None:
-        evidence["date_format"] = entry["field_evidence"]["publication_date"]["date_format"]
+    if date_proof.get("date_format") is not None:
+        evidence["date_format"] = date_proof["date_format"]
+    if date_proof.get("date_normalization") == "month_midpoint":
+        evidence["source_date_precision"] = "month"
+        evidence["date_normalization"] = "month_midpoint"
     date_verification = {"verification_basis": DATE_CHECK_VERSION, "review_scope": "article_publication_date_only",
         "baseline_candidate_sha256": overlay["baseline_candidate_sha256"], "review_id": proof["review_id"],
         "reviewer": proof["receipt"]["actor"], "actor": manifest["actor"], "checked_at": manifest["checked_at"],

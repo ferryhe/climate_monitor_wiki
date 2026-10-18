@@ -83,7 +83,7 @@ async function checkRegistryLoading() {
     updateRegistryPagination: (...args) => pagination.push(args),
     loadRegistryArticles: () => { articleCalls += 1; },
   });
-  for (const name of ['registryElement', 'registryArticleDateSummary', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles',
+  for (const name of ['registryElement', 'registryPublicationDateLabel', 'registryArticleDateSummary', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles',
     'registryErrorMessage', 'renderRegistryNotice',
     'clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'loadRegistryReports', 'loadRegistryPublishers', 'loadRegistryOnce', 'setRegistryMode']) {
     vm.runInContext(functionSource(name), context);
@@ -173,7 +173,7 @@ async function checkReportFailureDoesNotBlockArticles() {
     },
     updateRegistryPagination() {},
   });
-  for (const name of ['registryElement', 'registryArticleDateSummary', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles',
+  for (const name of ['registryElement', 'registryPublicationDateLabel', 'registryArticleDateSummary', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles',
     'registryErrorMessage', 'renderRegistryNotice',
     'clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'loadRegistryReports', 'loadRegistryPublishers', 'loadRegistryOnce', 'loadRegistryArticles', 'setRegistryMode']) {
     vm.runInContext(functionSource(name), context);

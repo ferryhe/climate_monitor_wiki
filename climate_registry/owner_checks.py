@@ -121,6 +121,12 @@ def _validate_editorial_metadata(value, *, taxonomy_identity, public_fields, cap
 def _dates(text):
     from climate_monitor.pdf_intake import _parse_calendar_date
     value = re.sub(r"\s+to\s+", "-", text.strip(), flags=re.I)
+    iso_month = re.fullmatch(r"(\d{4})-(\d{2})", value)
+    if iso_month:
+        from datetime import date
+        year, month = map(int, iso_month.groups())
+        date(year, month, 1)
+        return {"start_date": value, "end_date": None, "date_precision": "month"}
     if re.fullmatch(r"\d{1,2}-[A-Za-z]+-\d{4}", value):
         value = value.replace("-", " ")
     interval = re.fullmatch(r"([A-Za-z]+)\s+(\d{1,2})\s*[-–—]\s*([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})", value)
@@ -223,8 +229,20 @@ def validate_observation(target, entry, *, publication_date_only=False):
                 elif date_format is not None:
                     raise ValueError("explicit date_format differs from literal publication date")
             dates = _dates(date_text)
-            expected = dates["start_date"] if key in {"deadline_date", "publication_date"} else dates[key]
-            if value != expected or dates["date_precision"] == "unknown" or key in {"publication_date", "deadline_date"} and dates["date_precision"] != "day":
+            normalization = proof.get("date_normalization") if publication_date_only and key == "publication_date" else None
+            if normalization == "month_midpoint":
+                if (dates["date_precision"] != "month" or dates["end_date"] is not None
+                        or proof.get("source_date_precision") != "month"):
+                    raise ValueError("month midpoint requires a month-precision source")
+                expected = dates["start_date"] + "-15"
+            elif normalization is not None or publication_date_only and proof.get("source_date_precision") is not None:
+                raise ValueError("unsupported publication date normalization")
+            else:
+                expected = dates["start_date"] if key in {"deadline_date", "publication_date"} else dates[key]
+            invalid_precision = dates["date_precision"] == "unknown" or (
+                key in {"publication_date", "deadline_date"}
+                and dates["date_precision"] != ("month" if normalization == "month_midpoint" else "day"))
+            if value != expected or invalid_precision:
                 raise ValueError("public date exceeds explicit source precision: " + key)
         elif key == "summary":
             if not _nonempty(value) or proof.get("support") != "complete":

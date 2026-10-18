@@ -11,7 +11,7 @@ from .read_api import RegistryQueryError, _pagination, _pdf_article_search_text,
 
 ARTICLE_FIELDS = {
     "article_id", "canonical_url", "title", "publisher", "source", "source_kind", "source_label",
-    "publication_date", "updated_date", "revision_date", "is_activity", "collected_at", "first_seen", "last_seen", "pdf_occurrence_count", "occurrence_count", "checked_source_url",
+    "publication_date", "publication_date_evidence", "updated_date", "revision_date", "is_activity", "collected_at", "first_seen", "last_seen", "pdf_occurrence_count", "occurrence_count", "checked_source_url",
     "original_source_url", "owner_agent_verification",
 }
 REPORT_FIELDS = {
