@@ -174,10 +174,11 @@ def _pagination(page: int, page_size: int, total: int) -> dict[str, int]:
 
 def page_pdf_articles(
     items: list[dict[str, Any]], *, page: int, page_size: int, query: str = "",
-    source: str = "", report_date: str = "",
+    source: str = "", report_date: str = "", date_order: bool = True,
 ) -> dict[str, Any]:
     page, page_size = validate_page(page, page_size)
-    selected = filter_pdf_articles(items, query=query, source=source, report_date=report_date)
+    selected = filter_pdf_articles(items, query=query, source=source, report_date=report_date,
+        date_order=date_order)
     total = len(selected)
     offset = (page - 1) * page_size
     return {"items": selected[offset:offset + page_size], "pagination": _pagination(page, page_size, total)}
@@ -190,8 +191,18 @@ def _pdf_article_search_text(item: dict[str, Any]) -> str:
     return " ".join(parts).casefold()
 
 
+def sort_articles_by_publication_date(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort by approved publication day, then recorded collection day, with stable ties."""
+    items.sort(key=lambda item: item["article_id"])
+    items.sort(key=lambda item: (item.get("publication_date") or
+        (item.get("collected_at") or "")[:10]), reverse=True)
+    items.sort(key=lambda item: not (item.get("publication_date") or item.get("collected_at")))
+    return items
+
+
 def filter_pdf_articles(
     items: list[dict[str, Any]], *, query: str = "", source: str = "", report_date: str = "",
+    date_order: bool = True,
 ) -> list[dict[str, Any]]:
     """Filter an already assembled PDF article collection without paging it repeatedly."""
     if len(query) > 200 or len(source) > 253:
@@ -209,10 +220,10 @@ def filter_pdf_articles(
             continue
         latest = item["occurrences"][0] if item["occurrences"] else {}
         selected.append({key: value for key, value in item.items() if key != "occurrences"} | {
+            "publication_date": item.get("publication_date") or None,
             "occurrence_count": len(item["occurrences"]), "latest_occurrence": latest,
         })
-    selected.sort(key=lambda item: (item["last_seen"] or "", item["article_id"]), reverse=True)
-    return selected
+    return sort_articles_by_publication_date(selected) if date_order else selected
 
 
 def filter_article_cards(
@@ -240,11 +251,12 @@ def filter_article_cards(
             and (not pillar or row.get("pillar") == pillar) for row in appearances
         ):
             continue
-        selected.append(dict(item) if include_internal else {
+        card = dict(item) if include_internal else {
             key: value for key, value in item.items() if key not in {"appearances", "source_id"}
-        })
-    selected.sort(key=lambda item: (item.get("last_seen") or "", item.get("first_seen") or "", item["article_id"]), reverse=True)
-    return selected
+        }
+        card["publication_date"] = card.get("publication_date") or None
+        selected.append(card)
+    return sort_articles_by_publication_date(selected)
 
 
 def page_pdf_calendar_items(
@@ -1668,6 +1680,7 @@ class RegistryReader:
                 and (not source or source in {item.get("source"), item.get("publisher")})
                 and (not report_date or any(row.get("report_date") == report_date for row in item.get("appearances", [])))
                 and (not pillar or any(row.get("pillar") == pillar for row in item.get("appearances", [])))]
+            sort_articles_by_publication_date(items)
             offset = (page - 1) * page_size
             return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, len(items))}
         if getattr(self, "_snapshot_direct", False):
@@ -1697,10 +1710,11 @@ class RegistryReader:
                         continue
                     item = {key: detail[key] for key in ("article_id", "canonical_url", "first_seen", "last_seen", "document_kind", "publication_eligible", "display_policy", "source", "publisher", "title", "report_summary")}
                     item.update(summary=detail["summary"], categories=detail["categories"], keywords=detail["keywords"],
+                        publication_date=detail.get("publication_date"), collected_at=detail.get("collected_at"),
                         pdf_occurrence_count=len(detail.get("pdf_occurrences", [])), is_visible=True,
                         published_candidate_sha256=detail["published_candidate_sha256"])
                     items.append(item)
-            items.sort(key=lambda item: (item["last_seen"], item["first_seen"], item["article_id"]), reverse=True)
+            sort_articles_by_publication_date(items)
             offset = (page - 1) * page_size
             return {"items": items[offset:offset+page_size], "pagination": _pagination(page, page_size, len(items))}
         clauses: list[str] = []
@@ -1869,6 +1883,14 @@ class RegistryReader:
                 value["display_summary_provenance"] = display["summary_provenance"]
 
     @staticmethod
+    def _apply_pdf_publication_date(value, snapshot):
+        if snapshot is not None and not value.get("metadata_only"):
+            display = snapshot.get("derived_display", {})
+            if display.get("publication_date_verification", {}).get("review_scope") == "article_publication_date_only":
+                value.update(publication_date=display["publication_date"],
+                    publication_date_evidence=display["publication_date_evidence"])
+
+    @staticmethod
     def _pdf_occurrences(
         connection: sqlite3.Connection, article_id: str, canonical_url: str,
         *, pdf_article_id: str | None = None,
@@ -1927,9 +1949,14 @@ class RegistryReader:
                 value.update(source_filename=document["filename"],period_start=document["period_start"],period_end=document["period_end"],imported_at=document["imported_at"],
                     report_fields=None if value.get("metadata_only") else value.get("report_fields"),structured_report=any("IN WINDOW" in page["text"] for page in parsed.get("pages",[])))
         from .information_checks import latest_checks
-        return [dict(value, **latest_checks(connection, "articles", value)) for value in values
+        result = [dict(value, **latest_checks(connection, "articles", value)) for value in values
             if value.get("summary_basis") != "verbatim_pdf_calendar_row"
             and (allowed_occurrence_ids is None or value["occurrence_id"] in allowed_occurrence_ids)]
+        if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
+            for value in result:
+                snapshot = snapshot_metadata(connection, "article", article_id) or snapshot_metadata(connection, "pdf_article", pdf_article_id or article_id)
+                RegistryReader._apply_pdf_publication_date(value, snapshot)
+        return result
 
     @classmethod
     def _pdf_article_payload(cls, connection: sqlite3.Connection, row: sqlite3.Row,
@@ -1959,6 +1986,8 @@ class RegistryReader:
             "publisher": host,
             "first_seen": min(dates) if dates else None,
             "last_seen": max(dates) if dates else None,
+            "collected_at": max((item.get("imported_at") for item in occurrences if item.get("imported_at")),
+                key=cls._timestamp_key, default=None),
             "source_kind": "pdf",
             "type_safe_classification": classification,
             "occurrences": occurrences,
@@ -2000,6 +2029,7 @@ class RegistryReader:
         return page_pdf_articles(
             self.pdf_articles_all(allowed_occurrence_ids=allowed_occurrence_ids),
             page=page, page_size=page_size, query=query, source=source, report_date=report_date,
+            date_order=self.public,
         )
 
     @_direct_public_read
@@ -2008,7 +2038,18 @@ class RegistryReader:
         """Read full PDF article observations before a caller merges and paginates."""
         if self.static_snapshot:
             core_urls = {item["canonical_url"] for item in self.static_snapshot["articles"] if item["publication_eligible"] and item["document_kind"] == "article"}
-            return [item for item in self.static_snapshot["pdf_articles"] if include_linked or item["canonical_url"] not in core_urls]
+            items = []
+            for original in self.static_snapshot["pdf_articles"]:
+                if not include_linked and original["canonical_url"] in core_urls:
+                    continue
+                item = deepcopy(original)
+                imported_at = [row.get("imported_at") for row in item.get("occurrences", []) if row.get("imported_at")]
+                if imported_at:
+                    item["collected_at"] = max(imported_at, key=self._timestamp_key)
+                else:
+                    item.setdefault("collected_at", None)
+                items.append(item)
+            return items
 
         with self.connect() as connection:
             if self.public and getattr(self, "_snapshot_direct", False) and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
@@ -3099,6 +3140,7 @@ class RegistryReader:
     def _article_card_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         if snapshot.get("static_payload"):
             payload = dict(snapshot["static_payload"])
+            payload.update(self._article_date_fields_for_snapshot(snapshot, payload=payload))
             from .publication import approved_display
             payload.update(approved_display(snapshot))
             if not payload.get("content_version_id"):
@@ -3188,8 +3230,54 @@ class RegistryReader:
                 "candidate_sha256": self._published_candidate_sha(snapshot), "version_id": article.get("current_version_id")},
             "appearances": appearances,
         }
+        payload.update(self._article_date_fields_for_snapshot(snapshot, article_id=article_id,
+            current_version_id=article.get("current_content_version_id")))
         payload.update(approved_display(snapshot))
         return payload
+
+    def _article_date_fields_for_snapshot(self, snapshot, *, article_id=None,
+        current_version_id=None, payload=None):
+        """Select the same approved date fields as detail reads without rendering content."""
+        if payload is not None:
+            observations = payload.get("date_observations", [])
+            acquisitions = payload.get("acquisition_observations", [])
+            collection_times = [payload.get("collected_at"),
+                (payload.get("available_content") or {}).get("collected_at")]
+        else:
+            tables = snapshot.get("tables", {})
+            observations = []
+            for row in tables.get("article_date_observations", []):
+                if row.get("article_id") != article_id:
+                    continue
+                try:
+                    evidence = json.loads(row["evidence_json"])
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise RegistryContractError("invalid article date observation data") from exc
+                observations.append({"kind": row["observation_kind"], "observed_at": row["observed_at"],
+                    "evidence": evidence})
+            acquisitions = []
+            for row in tables.get("acquisition_items", []):
+                if row.get("article_id") != article_id:
+                    continue
+                try:
+                    evidence = json.loads(row["publication_date_evidence_json"]) if row.get("publication_date_evidence_json") else None
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise RegistryContractError("invalid acquisition observation data") from exc
+                acquisitions.append({"publication_date": row.get("publication_date"),
+                    "publication_date_evidence": evidence,
+                    "processing_status": row.get("processing_status"),
+                    "selection_status": row.get("selection_status")})
+            selected, content = select_snapshot_article_content(snapshot, article_id, current_version_id)
+            collection_times = [selected.get("fetched_at") if content is not None else None]
+        from .article_dates import ArticleDateImportError, select_article_dates
+        try:
+            selected = select_article_dates(observations, collection_times=collection_times,
+                acquisition_observations=acquisitions)
+            if payload and payload.get("publication_date"):
+                selected["publication_date"] = payload["publication_date"]
+            return selected
+        except ArticleDateImportError as exc:
+            raise RegistryContractError("invalid article date evidence") from exc
 
     def _pdf_article_from_snapshot(self, snapshot: dict[str, Any], *, allowed_occurrence_ids=None) -> dict[str, Any]:
         tables = snapshot.get("tables", {})
@@ -3207,10 +3295,13 @@ class RegistryReader:
             raise RegistryContractError("invalid PDF article classification data") from exc
         host = (urlsplit(canonical_url).hostname or "unknown").removeprefix("www.").lower()
         dates = [item.get("report_date") for item in occurrences if item.get("report_date")]
+        collected_at = max((item.get("imported_at") for item in occurrences if item.get("imported_at")),
+            key=self._timestamp_key, default=None)
         payload = {"article_id": row["article_id"], "canonical_url": canonical_url,
             "title": row.get("title") or occurrences[0].get("anchor_text") or occurrences[0].get("title"),
             "summary": next((item.get("display_summary") or item.get("summary") for item in occurrences if not item.get("metadata_only")), None), "source": host, "publisher": host,
             "first_seen": min(dates) if dates else None, "last_seen": max(dates) if dates else None,
+            "collected_at": collected_at,
             "source_kind": "pdf", "type_safe_classification": classification, "occurrences": occurrences,
             "core_article_id": row.get("core_article_id"), "confirmation_basis": row.get("confirmation_basis")}
         from .publication import approved_display
@@ -3343,6 +3434,7 @@ class RegistryReader:
                 candidate_binding=(snapshot.get("_approved_candidate_sha256")
                     or self._published_candidate_sha(snapshot))))
             self._apply_pdf_display_summary(value, snapshot)
+            self._apply_pdf_publication_date(value, snapshot)
             # report_date is the legacy ordering key, but it was never added
             # to the public occurrence DTO from the storage row.
             values.append(((row.get("report_date") or "", row.get("page") or -1,

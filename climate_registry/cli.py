@@ -155,6 +155,8 @@ def _parser() -> argparse.ArgumentParser:
             owner.add_argument("--id", required=True)
             owner.add_argument("--with-editorial-metadata", action="store_true",
                 help="Plan an explicitly versioned v2 article metadata scope")
+            owner.add_argument("--publication-date-only", action="store_true",
+                help="Inherit approved article facts and independently review only a source publication date")
         elif name == "plan-owner-review":
             owner.add_argument("--candidate-sha256", required=True)
         else:
@@ -203,7 +205,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 if args.command == "plan-owner-check":
                     result = plan_owner_check(args.database, args.kind, args.id,
-                        with_editorial_metadata=args.with_editorial_metadata)
+                        with_editorial_metadata=args.with_editorial_metadata,
+                        publication_date_only=args.publication_date_only)
                 elif args.command == "plan-owner-review":
                     result = owner_review_template(args.database, args.candidate_sha256)
                 else:

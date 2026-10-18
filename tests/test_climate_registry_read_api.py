@@ -1083,8 +1083,11 @@ def test_article_filters_and_deterministic_pagination(registry_client):
 
     first = client.get("/api/registry/articles?page=1&page_size=2").json()
     second = client.get("/api/registry/articles?page=2&page_size=2").json()
-    assert [item["article_id"] for item in first["items"]] == ["article-meta", "article-excerpt"]
-    assert [item["article_id"] for item in second["items"]] == ["article-full"]
+    assert [item["article_id"] for item in first["items"]] == ["article-excerpt", "article-full"]
+    assert [item["article_id"] for item in second["items"]] == ["article-meta"]
+    cards = [item for payload in (first, second) for item in payload["items"]]
+    assert all(item["publication_date"] is None for item in cards)
+    assert all(item["collected_at"] == "2026-08-13T12:00:00Z" for item in cards)
 
 
 def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core_lineage(registry_client):

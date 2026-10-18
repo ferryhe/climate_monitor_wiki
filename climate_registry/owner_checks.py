@@ -58,13 +58,18 @@ def _plan(connection, database, kind, identity):
         "source_snapshot_sha256": digest(snapshot), "targets": snapshot["information_targets"]}
 
 
-def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False):
+def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False, publication_date_only=False):
     """Read-only live binding; observations are templates, never a factual PASS."""
     database = resolve_database(database)
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as connection:
         require_publication_migration(connection)
         connection.execute("BEGIN")
         plan = _plan(connection, database, kind, identity)
+        if publication_date_only:
+            if with_editorial_metadata:
+                raise ValueError("publication date scope cannot include editorial metadata")
+            from .owner_dates import date_plan
+            return date_plan(connection, plan)
     if with_editorial_metadata:
         if kind not in {"article", "pdf_article"}:
             raise ValueError("editorial metadata is available only for article sources")
@@ -136,7 +141,7 @@ def _dates(text):
     return _parse_calendar_date(value)
 
 
-def validate_observation(target, entry):
+def validate_observation(target, entry, *, publication_date_only=False):
     """Validate actual archived UTF-8 tool output and literal public field scope.
 
     Semantic record association is the checker's and independent reviewer's job.
@@ -150,7 +155,7 @@ def validate_observation(target, entry):
     for key in ("requested_url", "final_url", "title", "captured_at", "tool", "text"):
         if not _nonempty(capture.get(key)):
             raise ValueError("source capture is incomplete: " + key)
-    if capture["requested_url"] != target["source_url"]:
+    if capture["requested_url"] != target["source_url"] and not publication_date_only:
         raise ValueError("capture requested URL differs from observation")
     _url(capture["requested_url"]); _url(capture["final_url"])
     timestamp(capture["captured_at"])
@@ -158,17 +163,33 @@ def validate_observation(target, entry):
     text = raw.decode("utf-8")
     if text != capture["text"] or hashlib.sha256(raw).hexdigest() != capture["sha256"]:
         raise ValueError("captured bytes, text or SHA differ")
+    if publication_date_only:
+        identity = entry.get("source_identity")
+        if (not isinstance(identity, dict) or set(identity) != {"article_url", "excerpt", "reason"}
+                or identity["article_url"] != target["source_url"]
+                or not _nonempty(identity["excerpt"]) or identity["excerpt"] not in text
+                or not _nonempty(identity["reason"])):
+            raise ValueError("date-only capture needs literal same-article source identity for independent review")
     fields = entry["public_fields"]
     evidence = entry["field_evidence"]
     comparisons = entry["original_comparisons"]
     if not isinstance(comparisons, dict) or any(not isinstance(value, dict) for value in comparisons.values()):
         raise ValueError("original field dispositions must be objects")
     required = {key for key, value in target["fields"].items() if value is not None and value != "" and key != "source_document_sha256"}
+    if publication_date_only:
+        required &= {"publication_date"}
     if set(comparisons) != required or any(value.get("status") not in {"supported", "missing", "conflict"} for value in comparisons.values()):
         raise ValueError("every original field needs an honest disposition")
     original = "conflict" if any(v["status"] == "conflict" for v in comparisons.values()) else "partial" if any(v["status"] == "missing" for v in comparisons.values()) else "verified"
     kind = target["check_kind"]
     allowed = ({"title", "summary", "publication_date"} if kind == "articles" else set(MEETING_FIELDS) - {"source_urls", "relevance_reason"})
+    if publication_date_only:
+        allowed = {"publication_date"}
+        if kind != "articles" or not isinstance(fields, dict) or set(fields) != allowed:
+            raise ValueError("date-only scope requires exactly an article publication_date")
+        proof = evidence.get("publication_date") if isinstance(evidence, dict) else None
+        if not isinstance(proof, dict) or proof.get("date_kind") not in {"updated", "published"}:
+            raise ValueError("date-only evidence must identify updated or published date")
     if not isinstance(fields, dict) or set(fields) - allowed or set(evidence) != set(fields):
         raise ValueError("unsupported public field scope")
     access = entry.get("access_status")
@@ -182,7 +203,26 @@ def validate_observation(target, entry):
         if not _nonempty(excerpt) or excerpt not in text or proof.get("value") != value or not _nonempty(proof.get("record_context")) or proof["record_context"] not in text:
             raise ValueError("public field lacks literal record-specific capture evidence: " + key)
         if key in {"start_date", "end_date", "date_precision", "deadline_date", "publication_date"}:
-            dates = _dates(excerpt)
+            date_text = re.sub(r"(?<=\d)(?:st|nd|rd|th)\b", "", excerpt, flags=re.I) if publication_date_only else excerpt
+            if publication_date_only:
+                date_text = re.sub(r"(?<=\d)\s+of\s+", " ", date_text, flags=re.I).replace(",", "")
+                date_text = re.sub(r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.(?=\s)",
+                    lambda match: "Sep" if match[1].casefold() == "sept" else match[1], date_text, flags=re.I)
+                date_format = proof.get("date_format")
+                if date_format is not None and date_format not in {"MM/DD/YYYY", "DD/MM/YYYY"}:
+                    raise ValueError("unsupported explicit date-only date_format")
+                if "/" in date_text:
+                    from datetime import datetime
+                    if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", date_text) and date_format is None:
+                        pattern = "%Y/%m/%d"
+                    elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", date_text) and date_format:
+                        pattern = "%m/%d/%Y" if date_format == "MM/DD/YYYY" else "%d/%m/%Y"
+                    else:
+                        raise ValueError("slash publication date requires an explicit matching date_format")
+                    date_text = datetime.strptime(date_text, pattern).date().isoformat()
+                elif date_format is not None:
+                    raise ValueError("explicit date_format differs from literal publication date")
+            dates = _dates(date_text)
             expected = dates["start_date"] if key in {"deadline_date", "publication_date"} else dates[key]
             if value != expected or dates["date_precision"] == "unknown" or key in {"publication_date", "deadline_date"} and dates["date_precision"] != "day":
                 raise ValueError("public date exceeds explicit source precision: " + key)
@@ -192,10 +232,10 @@ def validate_observation(target, entry):
         elif not _nonempty(value) or value.casefold() not in excerpt.casefold():
             raise ValueError("public text must be an exact source excerpt: " + key)
     if fields:
-        if kind == "articles":
+        if kind == "articles" and not publication_date_only:
             if not fields.get("title") or not fields.get("summary") or evidence["summary"].get("section") != "article_body":
                 raise ValueError("article scope needs a useful source-body summary and title")
-        elif not fields.get("name") or not fields.get("date_precision") or not (fields.get("start_date") or fields.get("deadline_date")):
+        elif kind != "articles" and (not fields.get("name") or not fields.get("date_precision") or not (fields.get("start_date") or fields.get("deadline_date"))):
             raise ValueError("meeting scope needs explicit identity and dates")
         if kind == "meetings":
             from climate_monitor.meetings import EVENT_TYPES, EVENT_STATUSES, DEADLINE_TYPES
@@ -209,6 +249,8 @@ def validate_observation(target, entry):
                 if fields.get("end_date") != dates["end_date"] or fields.get("date_precision") != dates["date_precision"]:
                     raise ValueError("public meeting interval must retain the explicit source bounds")
     excluded = sorted(key for key, value in target["fields"].items() if value is not None and value != "" and key != "source_document_sha256" and fields.get(key) != value)
+    if publication_date_only:
+        excluded = []
     if entry.get("excluded_fields") != excluded:
         raise ValueError("excluded original fields must be complete and exact")
     return {"public_fields": fields, "original_verification_status": original, "excluded_fields": excluded,
@@ -216,6 +258,9 @@ def validate_observation(target, entry):
 
 
 def validate_manifest(manifest, *, require_current_taxonomy=True):
+    from .owner_dates import DATE_CHECK_VERSION, validate_date_manifest
+    if isinstance(manifest, dict) and manifest.get("schema_version") == DATE_CHECK_VERSION:
+        return validate_date_manifest(manifest)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("plan"), dict):
         raise ValueError("owner check and plan must be objects")
     version = manifest.get("schema_version")
@@ -287,6 +332,9 @@ def _backup(connection, database, backup_dir):
 
 
 def _ingest_one(connection, database, manifest, apply):
+    from .owner_dates import DATE_CHECK_VERSION, ingest_date_check
+    if manifest["schema_version"] == DATE_CHECK_VERSION:
+        return ingest_date_check(connection, database, manifest, apply)
     run_id = "owner-check-" + digest(manifest)
     plan = manifest["plan"]
     kind = manifest["observations"][0]["target"]["check_kind"]
@@ -511,6 +559,9 @@ def owner_review_template(database, candidate_sha256):
         row = connection.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (candidate_sha256,)).fetchone()
         if row is None or digest(json.loads(row[0])) != candidate_sha256:
             raise RegistryInputError("owner review candidate not found or hash differs")
+        from .owner_dates import OVERLAY, date_review_template
+        if OVERLAY in json.loads(row[0]):
+            return date_review_template(json.loads(row[0]))
         bindings = review_bindings(json.loads(row[0]))
     version = EDITORIAL_REVIEW_VERSION if any(binding.get("check_schema_version") == EDITORIAL_CHECK_VERSION for binding in bindings) else REVIEW_VERSION
     result = {"schema_version": version, "candidate_sha256": candidate_sha256, "source_checks": bindings,
@@ -522,6 +573,9 @@ def owner_review_template(database, candidate_sha256):
 
 
 def validate_review(snapshot, receipt):
+    from .owner_dates import OVERLAY, validate_date_review
+    if OVERLAY in snapshot:
+        return validate_date_review(snapshot, receipt)
     if not isinstance(receipt, dict):
         raise ValueError("owner independent review must be an object")
     version = receipt.get("schema_version")
@@ -554,6 +608,9 @@ def _approve_one(connection, database, receipt, apply):
     snapshot = json.loads(row[0])
     if digest(snapshot) != sha:
         raise ValueError("candidate hash differs")
+    from .owner_dates import OVERLAY, approve_date_check
+    if OVERLAY in snapshot:
+        return approve_date_check(connection, database, snapshot, receipt, apply)
     validate_review(snapshot, receipt)
     plan = _plan(connection, database, snapshot["entity_kind"], snapshot["entity_id"])
     if plan["expected_state"]["latest_candidate_sha256"] != sha:

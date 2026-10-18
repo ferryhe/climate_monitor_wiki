@@ -361,6 +361,18 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
                 evidence = json.loads(row["evidence_json"])
                 if evidence.get("pending_enrichment"):
                     supplement.append(row)
+    # Date-only checks inherit the approved verification; they never replace T1.
+    from .information_checks import is_publication_date_only_attempt
+    date_run_ids = set()
+    for row in tables.get("article_check_attempts", []):
+        if is_publication_date_only_attempt(row):
+            date_run_ids.add(row["run_id"])
+    if date_run_ids:
+        tables["article_check_attempts"] = [row for row in tables.get("article_check_attempts", [])
+            if row["run_id"] not in date_run_ids]
+        if "article_check_runs" in dependencies:
+            dependencies["article_check_runs"] = [row for row in dependencies["article_check_runs"]
+                if row["run_id"] not in date_run_ids]
     return {"schema_version": "registry-public-candidate.v1", "entity_kind": kind,
         "entity_id": entity_id, "tables": tables, "sources": sources,
         "fallback_annotations": metadata, "report_fallbacks": report_fallbacks, "supplements": supplement, "dependencies": dependencies,
@@ -417,7 +429,12 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
     previous = connection.execute("""SELECT c.snapshot_json FROM registry_publication p JOIN registry_candidates c
         ON c.candidate_sha256=p.latest_candidate_sha256 WHERE p.entity_kind=? AND p.entity_id=?""",
         (snapshot["entity_kind"], snapshot["entity_id"])).fetchone()
-    if previous and "derived_display" not in snapshot:
+    from .owner_dates import OVERLAY
+    if previous and OVERLAY not in snapshot:
+        prior = json.loads(previous[0])
+        if OVERLAY in prior and digest(snapshot) == prior[OVERLAY]["manifest"]["plan"]["source_snapshot_sha256"]:
+            snapshot = prior
+    if previous and "derived_display" not in snapshot and OVERLAY not in snapshot:
         old = json.loads(previous[0])
         display = old.pop("derived_display", None)
         def business_rows(value):
@@ -493,6 +510,9 @@ def information_ready(connection, snapshot, *, information_groups=None):
     """T10 consumes real terminal T1 results for this exact current source/version."""
     from .information_checks import _sha, attempt_identity, CHECK_VERSION
     from .acquisition_review import timestamp
+    from .owner_dates import OVERLAY
+    if OVERLAY in snapshot:
+        return False  # This scope has its own independent receipt, not native T10.
     targets = snapshot.get("information_targets",[])
     current = (information_groups if information_groups is not None else _information_groups(connection)).get(
         (snapshot["entity_kind"],snapshot["entity_id"]),[])
@@ -575,7 +595,14 @@ def _approve(connection, sha, receipt, *, status="pass", information_groups=None
     latest = connection.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", row[:2]).fetchone()
     if latest is None or (status in {"pass", "accepted_legacy"} and latest[0] != sha):
         raise ValueError("changed candidate requires another final review")
-    if status == "pass" and not information_ready(connection,json.loads(row[2]),information_groups=information_groups):
+    snapshot = json.loads(row[2])
+    from .owner_dates import OVERLAY, validate_date_review, _current_binding
+    if OVERLAY in snapshot and status in {"pass", "accepted_legacy"}:
+        if status != "pass":
+            raise ValueError("date-only publication requires its independent date review receipt")
+        validate_date_review(snapshot, receipt)
+        _current_binding(connection, snapshot, allow_published=True)
+    elif status == "pass" and not information_ready(connection,snapshot,information_groups=information_groups):
         raise ValueError("candidate awaits completed source-bound T1 information improvement")
     review_id = digest([sha, status, receipt])
     connection.execute("INSERT OR IGNORE INTO registry_reviews VALUES(?,?,?,?,?)",

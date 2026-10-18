@@ -76,6 +76,7 @@ from climate_registry.read_api import (
     validate_article_id,
     validate_page,
     validate_report_date,
+    sort_articles_by_publication_date,
     _pagination,
     _publisher_label,
 )
@@ -1087,7 +1088,7 @@ def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pil
             core = core_by_url.get(item["canonical_url"])
             by_url[item["canonical_url"]] = core or item
     items = list(by_url.values())
-    items.sort(key=lambda item: (item.get("last_seen") or "", item["article_id"]), reverse=True)
+    sort_articles_by_publication_date(items)
     offset = (parsed_page - 1) * parsed_size
     return {"items": [(_pdf_dto(item) if item.get("source_kind") == "pdf" else _public_dto(item)) for item in items[offset:offset + parsed_size]], "pagination": _pagination(parsed_page, parsed_size, len(items))}
 

@@ -60,6 +60,7 @@ assert.doesNotMatch(source.match(/async function loadRegistryArticle\([\s\S]*?\n
 
 const reviewedPdf = {
   title: 'Reviewed PDF article', publisher: 'Example', first_seen: '2026-01-01', last_seen: '2026-02-01',
+  publication_date: '2026-01-15', collected_at: '2026-02-01T00:00:00Z',
   source_kind: 'pdf', categories: ['Capital & Solvency', 'Supervision & Disclosure'], keywords: ['solvency', 'climate risk'],
   metadata_provenance: { categories: 'manual_category_standardization', keywords: 'manual_supplement' },
   occurrences: [{ verification_status: 'verified', verified_information: { categories: ['Website-only category'], keywords: ['website-only keyword'] } }],
@@ -68,6 +69,8 @@ const reviewedPdf = {
 context.registryFetch = async () => reviewedPdf;
 await context.loadRegistryArticle('reviewed-pdf', 'pdf');
 assert.equal(articleInfo.hidden, false);
+assert.match(text(articleMeta), /Publication date 2026-01-15/);
+assert.match(text(articleMeta), /Collected at 2026-02-01T00:00:00Z/);
 articleInfo.open = true;
 context.resetRegistryArticleDetail('Loading another article…');
 assert.equal(articleInfo.hidden, true);

@@ -12,7 +12,7 @@ from pathlib import Path
 from .list_projection import RegistryListProjection
 from .read_api import RegistryReader, RegistryContractError, RegistryNotFoundError, RegistryQueryError, _pagination, validate_page, validate_report_date, validate_article_id, filter_pdf_articles, _pdf_article_search_text
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 
 def _json(value):
@@ -227,7 +227,8 @@ class DisplayReader(RegistryListProjection):
             params.append(report_date)
         clause = " AND ".join(where)
         total = self.connection.execute("SELECT count(*) FROM display_pdf_articles a WHERE " + clause, params).fetchone()[0]
-        rows = self.connection.execute("SELECT dto FROM display_pdf_articles a WHERE " + clause + " ORDER BY last_seen DESC,article_id DESC LIMIT ? OFFSET ?", (*params, page_size, (page - 1) * page_size))
+        date = "COALESCE(NULLIF(json_extract(dto,'$.publication_date'),''),NULLIF(substr(json_extract(dto,'$.collected_at'),1,10),''))"
+        rows = self.connection.execute("SELECT dto FROM display_pdf_articles a WHERE " + clause + f" ORDER BY {date} IS NULL,{date} DESC,article_id ASC LIMIT ? OFFSET ?", (*params, page_size, (page - 1) * page_size))
         return {"items": [json.loads(row[0]) for row in rows], "pagination": _pagination(page, page_size, total)}
 
     def pdf_calendar(self, *, page, page_size, query="", kind=""):
