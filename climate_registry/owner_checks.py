@@ -58,15 +58,20 @@ def _plan(connection, database, kind, identity):
         "source_snapshot_sha256": digest(snapshot), "targets": snapshot["information_targets"]}
 
 
-def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False, publication_date_only=False, date_fields=None):
+def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False, publication_date_only=False, date_fields=None, activity_dates_only=False):
     """Read-only live binding; observations are templates, never a factual PASS."""
     database = resolve_database(database)
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as connection:
         require_publication_migration(connection)
         connection.execute("BEGIN")
         plan = _plan(connection, database, kind, identity)
-        if publication_date_only and date_fields:
-            raise ValueError("publication date and selected date-field scopes cannot be combined")
+        if sum(bool(value) for value in (publication_date_only, date_fields, activity_dates_only)) > 1:
+            raise ValueError("article date scopes cannot be combined")
+        if activity_dates_only:
+            if with_editorial_metadata:
+                raise ValueError("activity date scope cannot include editorial metadata")
+            from .owner_dates import date_plan
+            return date_plan(connection, plan, activity_dates_only=True)
         if publication_date_only:
             if with_editorial_metadata:
                 raise ValueError("publication date scope cannot include editorial metadata")
@@ -154,7 +159,7 @@ def _dates(text):
     return _parse_calendar_date(value)
 
 
-def validate_observation(target, entry, *, publication_date_only=False, date_fields_only=False):
+def validate_observation(target, entry, *, publication_date_only=False, date_fields_only=False, activity_dates_only=False):
     """Validate actual archived UTF-8 tool output and literal public field scope.
 
     Semantic record association is the checker's and independent reviewer's job.
@@ -168,7 +173,7 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
     for key in ("requested_url", "final_url", "title", "captured_at", "tool", "text"):
         if not _nonempty(capture.get(key)):
             raise ValueError("source capture is incomplete: " + key)
-    date_only = publication_date_only or date_fields_only
+    date_only = publication_date_only or date_fields_only or activity_dates_only
     if capture["requested_url"] != target["source_url"] and not date_only:
         raise ValueError("capture requested URL differs from observation")
     _url(capture["requested_url"]); _url(capture["final_url"])
@@ -193,7 +198,7 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
     required = {key for key, value in target["fields"].items() if value is not None and value != "" and key != "source_document_sha256"}
     if publication_date_only:
         required &= {"publication_date"}
-    elif date_fields_only:
+    elif date_fields_only or activity_dates_only:
         required &= requested_fields
     if set(comparisons) != required or any(value.get("status") not in {"supported", "missing", "conflict"} for value in comparisons.values()):
         raise ValueError("every original field needs an honest disposition")
@@ -216,6 +221,10 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
         if any(not isinstance(evidence.get(key), dict)
                 or evidence[key].get("date_kind") not in expected_kinds[key] for key in fields):
             raise ValueError("date-field evidence must match each selected field")
+    if activity_dates_only:
+        allowed = {"activity_dates"}
+        if kind != "articles" or not isinstance(fields, dict) or set(fields) != allowed:
+            raise ValueError("activity date scope requires exactly activity_dates")
     if not isinstance(fields, dict) or set(fields) - allowed or set(evidence) != set(fields):
         raise ValueError("unsupported public field scope")
     access = entry.get("access_status")
@@ -228,7 +237,10 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
         excerpt = proof.get("excerpt")
         if not _nonempty(excerpt) or excerpt not in text or proof.get("value") != value or not _nonempty(proof.get("record_context")) or proof["record_context"] not in text:
             raise ValueError("public field lacks literal record-specific capture evidence: " + key)
-        if key in {"start_date", "end_date", "date_precision", "deadline_date", "publication_date", "updated_date", "revision_date"}:
+        if key == "activity_dates" and activity_dates_only:
+            from .owner_dates import validate_activity_dates
+            validate_activity_dates(value, entry)
+        elif key in {"start_date", "end_date", "date_precision", "deadline_date", "publication_date", "updated_date", "revision_date"}:
             date_text = re.sub(r"(?<=\d)(?:st|nd|rd|th)\b", "", excerpt, flags=re.I) if date_only else excerpt
             if date_only:
                 date_text = re.sub(r"(?<=\d)\s+of\s+", " ", date_text, flags=re.I).replace(",", "")

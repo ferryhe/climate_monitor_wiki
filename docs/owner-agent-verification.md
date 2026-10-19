@@ -178,3 +178,58 @@ validation and reaches native, PDF and linked article readers plus display refre
 This scope requires these application changes on the writer and all public
 readers before use. An older application ignores the overlay and continues to
 show baseline dates; rebuilding its display cache does not make the new date public.
+
+## Selective article dates and activity dates
+
+Repeat `--date-field publication_date`, `--date-field updated_date` or
+`--date-field revision_date` to select one or several article date fields. This
+uses `article_date_fields_only` and its exact field evidence; it preserves all
+other approved fields. These options do not select summary, category or keyword
+updates. The separate `--with-editorial-metadata` workflow above reviews source
+content and its frozen taxonomy together.
+
+For an already visible approved `article` or `pdf_article`, use
+`plan-owner-check --activity-dates-only` to add one or more source-backed events
+without replacing its approved content. It cannot be combined with publication,
+selected-date-field or editorial scopes. The existing ingest, review-template,
+approval, backup and activation commands apply. The independent receipt is
+`owner-agent-article-activity-dates-review.v1`, with scope
+`article_activity_dates_only`.
+
+Use one captured observation, `original_comparisons: {}`, `excluded_fields: []`,
+and `public_fields: {"activity_dates": [EVENT_OBSERVATION, ...]}`. Each event
+observation has exactly `observed_at` and `evidence`, for example:
+
+```json
+{
+  "observed_at": "2026-10-21",
+  "evidence": {
+    "date_kind": "event", "date_precision": "day",
+    "event_name": "Climate risk conference", "event_type": "conference",
+    "event_status": "scheduled", "event_start_date": "2026-10-21",
+    "event_end_date": "2026-10-24", "date_text": "21–24 October 2026",
+    "review_status": "pass", "source_url": "EXACT_TARGET_SOURCE_URL",
+    "target_url": "EXACT_TARGET_SOURCE_URL", "field": "Conference schedule",
+    "text": "21–24 October 2026"
+  }
+}
+```
+
+`field_evidence.activity_dates` contains `value` equal to the complete event list,
+a literal `excerpt`, and literal `record_context`. Preserve the source identity,
+capture bytes/hash, actual final URL and capture time as in the date-only scope.
+The requested capture URL and each event's source/target URLs must equal the
+frozen target source URL. Event identity, date text and any optional organizer,
+location, URL, timezone, time or summary must occur literally in the same capture.
+Date bounds retain the source's day, month or year precision. Event dates never
+replace the article's publication, update or revision dates.
+This scope rejects cancelled or retrospective events because Dates excludes them.
+
+The source evidence's `review_status: "pass"` is required but does not publish
+anything by itself. A different actor/task must review the exact new candidate,
+event evidence, published baseline and inherited public scope. Approval rechecks
+the current source, latest/published candidate and visibility, and rejects any
+non-event public DTO change. Existing `derived_display`, summary, categories,
+keywords and event observations are inherited. Only the reviewed event observations
+and their `activity_dates`/`is_activity` projection are added. The existing Dates
+projection displays them; the Articles list projection excludes activity records.
