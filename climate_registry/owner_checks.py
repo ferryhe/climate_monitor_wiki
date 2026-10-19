@@ -58,18 +58,25 @@ def _plan(connection, database, kind, identity):
         "source_snapshot_sha256": digest(snapshot), "targets": snapshot["information_targets"]}
 
 
-def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False, publication_date_only=False):
+def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False, publication_date_only=False, date_fields=None):
     """Read-only live binding; observations are templates, never a factual PASS."""
     database = resolve_database(database)
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as connection:
         require_publication_migration(connection)
         connection.execute("BEGIN")
         plan = _plan(connection, database, kind, identity)
+        if publication_date_only and date_fields:
+            raise ValueError("publication date and selected date-field scopes cannot be combined")
         if publication_date_only:
             if with_editorial_metadata:
                 raise ValueError("publication date scope cannot include editorial metadata")
             from .owner_dates import date_plan
             return date_plan(connection, plan)
+        if date_fields:
+            if with_editorial_metadata:
+                raise ValueError("selected date fields cannot include editorial metadata")
+            from .owner_dates import date_plan
+            return date_plan(connection, plan, fields=date_fields)
     if with_editorial_metadata:
         if kind not in {"article", "pdf_article"}:
             raise ValueError("editorial metadata is available only for article sources")
@@ -147,7 +154,7 @@ def _dates(text):
     return _parse_calendar_date(value)
 
 
-def validate_observation(target, entry, *, publication_date_only=False):
+def validate_observation(target, entry, *, publication_date_only=False, date_fields_only=False):
     """Validate actual archived UTF-8 tool output and literal public field scope.
 
     Semantic record association is the checker's and independent reviewer's job.
@@ -161,7 +168,8 @@ def validate_observation(target, entry, *, publication_date_only=False):
     for key in ("requested_url", "final_url", "title", "captured_at", "tool", "text"):
         if not _nonempty(capture.get(key)):
             raise ValueError("source capture is incomplete: " + key)
-    if capture["requested_url"] != target["source_url"] and not publication_date_only:
+    date_only = publication_date_only or date_fields_only
+    if capture["requested_url"] != target["source_url"] and not date_only:
         raise ValueError("capture requested URL differs from observation")
     _url(capture["requested_url"]); _url(capture["final_url"])
     timestamp(capture["captured_at"])
@@ -169,7 +177,7 @@ def validate_observation(target, entry, *, publication_date_only=False):
     text = raw.decode("utf-8")
     if text != capture["text"] or hashlib.sha256(raw).hexdigest() != capture["sha256"]:
         raise ValueError("captured bytes, text or SHA differ")
-    if publication_date_only:
+    if date_only:
         identity = entry.get("source_identity")
         if (not isinstance(identity, dict) or set(identity) != {"article_url", "excerpt", "reason"}
                 or identity["article_url"] != target["source_url"]
@@ -181,9 +189,12 @@ def validate_observation(target, entry, *, publication_date_only=False):
     comparisons = entry["original_comparisons"]
     if not isinstance(comparisons, dict) or any(not isinstance(value, dict) for value in comparisons.values()):
         raise ValueError("original field dispositions must be objects")
+    requested_fields = set(entry.get("public_fields", {})) if isinstance(entry.get("public_fields"), dict) else set()
     required = {key for key, value in target["fields"].items() if value is not None and value != "" and key != "source_document_sha256"}
     if publication_date_only:
         required &= {"publication_date"}
+    elif date_fields_only:
+        required &= requested_fields
     if set(comparisons) != required or any(value.get("status") not in {"supported", "missing", "conflict"} for value in comparisons.values()):
         raise ValueError("every original field needs an honest disposition")
     original = "conflict" if any(v["status"] == "conflict" for v in comparisons.values()) else "partial" if any(v["status"] == "missing" for v in comparisons.values()) else "verified"
@@ -196,6 +207,15 @@ def validate_observation(target, entry, *, publication_date_only=False):
         proof = evidence.get("publication_date") if isinstance(evidence, dict) else None
         if not isinstance(proof, dict) or proof.get("date_kind") not in {"updated", "published"}:
             raise ValueError("date-only evidence must identify updated or published date")
+    if date_fields_only:
+        allowed = {"publication_date", "updated_date", "revision_date"}
+        if kind != "articles" or not isinstance(fields, dict) or not fields or set(fields) - allowed:
+            raise ValueError("date-field scope requires one or more supported article date fields")
+        expected_kinds = {"publication_date": {"published", "updated"},
+            "updated_date": {"updated"}, "revision_date": {"revision"}}
+        if any(not isinstance(evidence.get(key), dict)
+                or evidence[key].get("date_kind") not in expected_kinds[key] for key in fields):
+            raise ValueError("date-field evidence must match each selected field")
     if not isinstance(fields, dict) or set(fields) - allowed or set(evidence) != set(fields):
         raise ValueError("unsupported public field scope")
     access = entry.get("access_status")
@@ -208,9 +228,9 @@ def validate_observation(target, entry, *, publication_date_only=False):
         excerpt = proof.get("excerpt")
         if not _nonempty(excerpt) or excerpt not in text or proof.get("value") != value or not _nonempty(proof.get("record_context")) or proof["record_context"] not in text:
             raise ValueError("public field lacks literal record-specific capture evidence: " + key)
-        if key in {"start_date", "end_date", "date_precision", "deadline_date", "publication_date"}:
-            date_text = re.sub(r"(?<=\d)(?:st|nd|rd|th)\b", "", excerpt, flags=re.I) if publication_date_only else excerpt
-            if publication_date_only:
+        if key in {"start_date", "end_date", "date_precision", "deadline_date", "publication_date", "updated_date", "revision_date"}:
+            date_text = re.sub(r"(?<=\d)(?:st|nd|rd|th)\b", "", excerpt, flags=re.I) if date_only else excerpt
+            if date_only:
                 date_text = re.sub(r"(?<=\d)\s+of\s+", " ", date_text, flags=re.I).replace(",", "")
                 date_text = re.sub(r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.(?=\s)",
                     lambda match: "Sep" if match[1].casefold() == "sept" else match[1], date_text, flags=re.I)
@@ -229,7 +249,7 @@ def validate_observation(target, entry, *, publication_date_only=False):
                 elif date_format is not None:
                     raise ValueError("explicit date_format differs from literal publication date")
             dates = _dates(date_text)
-            normalization = proof.get("date_normalization") if publication_date_only and key == "publication_date" else None
+            normalization = proof.get("date_normalization") if date_only else None
             if normalization == "month_midpoint":
                 if (dates["date_precision"] != "month" or dates["end_date"] is not None
                         or proof.get("source_date_precision") != "month"):
@@ -238,9 +258,9 @@ def validate_observation(target, entry, *, publication_date_only=False):
             elif normalization is not None or publication_date_only and proof.get("source_date_precision") is not None:
                 raise ValueError("unsupported publication date normalization")
             else:
-                expected = dates["start_date"] if key in {"deadline_date", "publication_date"} else dates[key]
+                expected = dates["start_date"] if key in {"deadline_date", "publication_date", "updated_date", "revision_date"} else dates[key]
             invalid_precision = dates["date_precision"] == "unknown" or (
-                key in {"publication_date", "deadline_date"}
+                key in {"publication_date", "deadline_date", "updated_date", "revision_date"}
                 and dates["date_precision"] != ("month" if normalization == "month_midpoint" else "day"))
             if value != expected or invalid_precision:
                 raise ValueError("public date exceeds explicit source precision: " + key)
@@ -250,7 +270,7 @@ def validate_observation(target, entry, *, publication_date_only=False):
         elif not _nonempty(value) or value.casefold() not in excerpt.casefold():
             raise ValueError("public text must be an exact source excerpt: " + key)
     if fields:
-        if kind == "articles" and not publication_date_only:
+        if kind == "articles" and not date_only:
             if not fields.get("title") or not fields.get("summary") or evidence["summary"].get("section") != "article_body":
                 raise ValueError("article scope needs a useful source-body summary and title")
         elif kind != "articles" and (not fields.get("name") or not fields.get("date_precision") or not (fields.get("start_date") or fields.get("deadline_date"))):
@@ -267,7 +287,7 @@ def validate_observation(target, entry, *, publication_date_only=False):
                 if fields.get("end_date") != dates["end_date"] or fields.get("date_precision") != dates["date_precision"]:
                     raise ValueError("public meeting interval must retain the explicit source bounds")
     excluded = sorted(key for key, value in target["fields"].items() if value is not None and value != "" and key != "source_document_sha256" and fields.get(key) != value)
-    if publication_date_only:
+    if date_only:
         excluded = []
     if entry.get("excluded_fields") != excluded:
         raise ValueError("excluded original fields must be complete and exact")

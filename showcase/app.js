@@ -2394,22 +2394,42 @@ function registryMetric(label, value) {
   return wrapper;
 }
 
-function registryPublicationDateLabel(article) {
-  const date = article?.publication_date;
-  const evidence = article?.publication_date_evidence;
+function registryArticleDateLabel(article, field) {
+  const date = article?.[field];
+  const evidence = article?.[`${field}_evidence`];
   if (evidence?.date_normalization === "month_midpoint" && evidence.source_date_precision === "month") {
-    return `${date} (source: ${evidence.text}; normalized to the 15th)`;
+    return `${evidence.text || date} (normalized to ${date} for sorting)`;
   }
   return date;
 }
 
+function registryDateEndBound(date, precision) {
+  if (typeof date !== "string") return null;
+  if (precision === "year" && /^\d{4}/.test(date)) return `${date.slice(0, 4)}-12-31`;
+  if (precision === "month" && /^\d{4}-\d{2}/.test(date)) {
+    const [year, month] = date.slice(0, 7).split("-").map(Number);
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    return `${date.slice(0, 7)}-${String(lastDay).padStart(2, "0")}`;
+  }
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+}
+
 function registryArticleDateSummary(article) {
   const summary = [article.publication_date
-    ? `Published ${registryPublicationDateLabel(article)}`
+    ? `Published ${registryArticleDateLabel(article, "publication_date")}`
     : article.collected_at ? `Collected ${article.collected_at.slice(0, 10)}` : "Date unknown"];
-  if (article.updated_date) summary.push(`Updated ${article.updated_date}`);
-  if (article.revision_date) summary.push(`Version revised ${article.revision_date}`);
+  if (article.updated_date) summary.push(`Updated ${registryArticleDateLabel(article, "updated_date")}`);
+  if (article.revision_date) summary.push(`Version revised ${registryArticleDateLabel(article, "revision_date")}`);
   return summary.join(" · ");
+}
+
+function registryOccurrenceDateSummary(occurrence) {
+  return [
+    occurrence.report_date ? `Report date ${occurrence.report_date}` : "",
+    occurrence.publication_date ? `Publication date ${registryArticleDateLabel(occurrence, "publication_date")}` : "",
+    occurrence.updated_date ? `Updated ${registryArticleDateLabel(occurrence, "updated_date")}` : "",
+    occurrence.revision_date ? `Version revised ${registryArticleDateLabel(occurrence, "revision_date")}` : "",
+  ].filter(Boolean).join(" · ");
 }
 
 const REGISTRY_SUMMARY_PRESENTATION = {
@@ -2581,8 +2601,11 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
   const params = new URLSearchParams({ page: String(state.registry.meetingPage), page_size: "20" });
   const query = focusName || els.registryMeetingSearch.value.trim();
   if (query) params.set("query", query);
-  if (focusId || focusName) {
+  const includeHistory = Boolean(focusId || focusName || query);
+  if (includeHistory) {
     params.set("base_date", "1900-01-01");
+  }
+  if (focusId || focusName) {
     params.set("include_unknown", "true");
   }
   if (els.registryMeetingVerification.value) params.set("verification_status", els.registryMeetingVerification.value);
@@ -2608,7 +2631,10 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
     const counts = payload.verification_counts || {};
     els.registryMeetingCounts.textContent = focusId || focusName
       ? "Selected evidence record"
-      : `As of ${payload.base_date} (UTC) · ${payload.pagination.total} current / upcoming · ${counts.verified || 0} verified · ` +
+      : includeHistory
+        ? `Matching date records · ${payload.pagination.total} · ${counts.verified || 0} verified · ` +
+          `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`
+        : `As of ${payload.base_date} (UTC) · ${payload.pagination.total} current / upcoming · ${counts.verified || 0} verified · ` +
         `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`;
     const groups = new Map();
     payload.items.forEach((item) => {
@@ -2632,10 +2658,14 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
         const body = registryElement("div", "meeting-entry__body");
         const fields = registryElement("dl", "detail-meta");
         const partialDateText = item.date_precision && item.date_precision !== "day" ? item.raw_time_text : "";
+        const eventEnd = item.end_date || item.start_date || item.deadline_date;
+        const eventEndBound = registryDateEndBound(eventEnd, item.date_precision);
+        const isPast = eventEndBound && eventEndBound < new Date().toISOString().slice(0, 10);
+        const displayStatus = isPast && item.status === "scheduled" ? "Past" : item.status;
         const values = { "Date(s)": item.raw_date || partialDateText || [item.start_date, item.end_date].filter(Boolean).join(" through ") || item.deadline_date,
           "Time": item.raw_time_text === partialDateText ? "" : item.raw_time_text,
           "Timezone": item.event_timezone || item.timezone, "Host": item.organizer,
-          "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
+          "Status": displayStatus, "Relevance": item.relevance || item.relevance_reason,
           "Deadline": item.deadline_date ? `${item.deadline_type || "Deadline"}: ${item.deadline_date}` : "" };
         Object.entries(values).forEach(([label, value]) => {
           if (value) fields.append(registryElement("dt", "", label), registryElement("dd", "", value));
@@ -3301,7 +3331,7 @@ function appendPdfAppearances(container, occurrences) {
     const documentRef = [filename, occurrence.page ? `page ${occurrence.page}` : ""].filter(Boolean).join(" · ");
     if (documentRef) item.append(registryElement("strong", "", documentRef));
     const appearanceMeta = [
-      occurrence.report_date || occurrence.publication_date,
+      registryOccurrenceDateSummary(occurrence),
       occurrence.verification_status ? `Verification: ${occurrence.verification_status}` : "",
     ].filter(Boolean).join(" · ");
     if (appearanceMeta) item.append(registryElement("span", "registry-card__meta", appearanceMeta));
@@ -3488,11 +3518,7 @@ function appendRegistryPdfOccurrences(container, article) {
   occurrences.forEach((occurrence) => {
     const item = registryElement("li", "registry-pdf-history__item");
     const sourceName = occurrence.source_document || occurrence.source_observations?.[0]?.filename || "Imported PDF";
-    const date = occurrence.report_date
-      ? `Report date ${occurrence.report_date}`
-      : occurrence.publication_date
-        ? `Publication date ${occurrence.publication_date}`
-        : "Date unavailable";
+    const date = registryOccurrenceDateSummary(occurrence) || "Date unavailable";
     const page = occurrence.page ? ` · page ${occurrence.page}` : "";
     const information = registryElement("details", "registry-report-info");
     information.append(
@@ -3619,13 +3645,13 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
       metrics.push(registryMetric("Information date", article.information_date));
     }
     if (article.publication_date) {
-      metrics.push(registryMetric("Publication date", registryPublicationDateLabel(article)));
+      metrics.push(registryMetric("Publication date", registryArticleDateLabel(article, "publication_date")));
     }
     if (article.updated_date) {
-      metrics.push(registryMetric("Updated", article.updated_date));
+      metrics.push(registryMetric("Updated", registryArticleDateLabel(article, "updated_date")));
     }
     if (article.revision_date) {
-      metrics.push(registryMetric("Version revised", article.revision_date));
+      metrics.push(registryMetric("Version revised", registryArticleDateLabel(article, "revision_date")));
     }
     if (!article.publication_date && article.report_date) {
       metrics.push(registryMetric("Report date (publication unconfirmed)", article.report_date));

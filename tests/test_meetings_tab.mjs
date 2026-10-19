@@ -52,7 +52,7 @@ const context = vm.createContext({ state, els, URL, URLSearchParams,
   },
 });
 for (const name of ['clearRegistryPageCache', 'registryPageFetch', 'prefetchRegistryPage', 'closeNavigation', 'setWorkspaceView',
-  'safeSourceUrl', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles', 'meetingDateGroup', 'meetingInstitution', 'loadRegistryMeetings', 'loadRegistryArticles']) {
+  'safeSourceUrl', 'reviewedCheckedSourceUrl', 'reviewedSourceRoles', 'meetingDateGroup', 'meetingInstitution', 'registryDateEndBound', 'loadRegistryMeetings', 'loadRegistryArticles']) {
   const fn = source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
   assert.ok(fn, name);
   vm.runInContext(fn, context);
@@ -115,8 +115,7 @@ assert.equal(calls.at(-1), 'registry');
 els.registryMeetingSearch.value = 'COP31';
 els.registryMeetingVerification.value = 'unchecked';
 await context.loadRegistryMeetings();
-assert.match(calls.at(-1), /query=COP31&verification_status=unchecked$/);
-assert.doesNotMatch(calls.at(-1), /base_date/);
+assert.match(calls.at(-1), /query=COP31&base_date=1900-01-01&verification_status=unchecked$/);
 
 const input = (value = '') => ({ value, listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; } });
 const form = input();
@@ -165,8 +164,8 @@ assert.equal(state.registry.meetingPage, 1);
 verification.value = 'partial';
 verification.listeners.change();
 assert.equal(pending.length, 2);
-assert.match(pending[0].url, /page=1&page_size=20&query=COP31&verification_status=verified/);
-assert.match(pending[1].url, /page=1&page_size=20&query=COP31&verification_status=partial/);
+assert.match(pending[0].url, /page=1&page_size=20&query=COP31&base_date=1900-01-01&verification_status=verified/);
+assert.match(pending[1].url, /page=1&page_size=20&query=COP31&base_date=1900-01-01&verification_status=partial/);
 pending[1].resolve({ items: [], pagination: { tag: 'latest', page: 1, pages: 1, total: 0 }, base_date: '2026-10-04', verification_counts: {} });
 await new Promise((resolve) => setImmediate(resolve));
 pending[0].resolve({ items: [], pagination: { tag: 'stale', page: 1, pages: 1, total: 0 }, base_date: '2026-10-04', verification_counts: {} });
@@ -191,7 +190,7 @@ assert.deepEqual(paginationUpdates.filter(([name]) => name === 'articles'), [['a
 state.registry.meetingPage = 3;
 form.listeners.submit({ preventDefault() {} });
 assert.equal(state.registry.meetingPage, 1);
-assert.match(pending.at(-1).url, /page=1&page_size=20&query=COP31&verification_status=partial/);
+assert.match(pending.at(-1).url, /page=1&page_size=20&query=COP31&base_date=1900-01-01&verification_status=partial/);
 pending.at(-1).resolve({ items: [], pagination: { tag: 'search', page: 1, pages: 1, total: 0 }, base_date: '2026-10-04', verification_counts: {} });
 state.registry.articlePage = 3;
 els.registrySearch.value = 'flood risk';
@@ -219,17 +218,36 @@ context.registryElement = (tag, className = '', textContent = '') => {
 };
 context.registryFetch = async url => {
   assert.match(url, /api\/registry\/meetings/);
-  return { items: [{ event_id: 'native-1', name: 'World Climate Summit', origin: 'web_collection',
-    verification_status: 'verified', access_status: 'accessible', start_date: '2027-06-10', date_precision: 'day',
+  return { items: [{ event_id: 'native-1', name: 'World Climate Summit', origin: 'web_collection', status: 'scheduled',
+    verification_status: 'verified', access_status: 'accessible', start_date: '2027-06-10', date_precision: 'day', deadline_date: '2000-01-01',
     checked_source_url: checked, original_source_url: original, source_urls: [checked],
     sources: [{ source_url: original }], owner_agent_verification: receipt }],
     pagination: { total: 1, pages: 1 }, base_date: '2026-10-04', verification_counts: { verified: 1 } };
 };
 await context.loadRegistryMeetings();
+const meetingValues = [];
+const collectDetails = node => { if (node.tag === 'dd') meetingValues.push(node.textContent); (node.children || []).forEach(collectDetails); };
+collectDetails(els.registryMeetings);
+assert.ok(meetingValues.includes('scheduled'), 'a future event remains scheduled after its registration deadline');
+assert.ok(!meetingValues.includes('Past'));
 const links = [];
 const collectLinks = node => { if (node.tag === 'a') links.push(node); (node.children || []).forEach(collectLinks); };
 collectLinks(els.registryMeetings);
 assert.deepEqual(links.map(link => [link.textContent, link.href]), [
   ['Open checked source', checked], ['Original source link (provenance)', original],
 ]);
+assert.match(source, /function registryDateEndBound\(date, precision\)/,
+  'month and year dates have a calendar-period end bound');
+context.registryFetch = async () => ({ items: [
+  { event_id: 'past-month', name: 'Past month event', status: 'scheduled', start_date: '2000-01-15', date_precision: 'month' },
+  { event_id: 'past-year', name: 'Past year event', status: 'scheduled', start_date: '2000', date_precision: 'year' },
+  { event_id: 'future-month', name: 'Future month event', status: 'scheduled', start_date: '2099-12', date_precision: 'month' },
+], pagination: { total: 3, pages: 1 }, base_date: '2026-10-04', verification_counts: {} });
+await context.loadRegistryMeetings();
+meetingValues.length = 0;
+collectDetails(els.registryMeetings);
+assert.equal(meetingValues.filter(value => value === 'Past').length, 2,
+  'completed month- and year-precision dates are labeled Past');
+assert.equal(meetingValues.filter(value => value === 'scheduled').length, 1,
+  'a future month-precision event remains scheduled');
 console.log('PASS: default Chat, Dates copy, concise status, immediate page-one filters, stale response guard and search forms');

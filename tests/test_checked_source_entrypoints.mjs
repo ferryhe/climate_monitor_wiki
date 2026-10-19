@@ -55,7 +55,7 @@ const makeContext = (reportPayload, pdfListPayload = null) => {
       throw new Error("Independent simulated detail outage");
     },
   });
-  for (const name of ["escapeHtml", "safeSourceUrl", "safeReportSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "registryElement",
+  for (const name of ["escapeHtml", "safeSourceUrl", "safeReportSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "registryElement", "registryArticleDateLabel", "registryOccurrenceDateSummary",
     "showMobileDetail", "resetRegistryArticleDetail", "loadRegistryArticle", "appendRegistryPdfOccurrences",
     "loadImportedRegistryReport", "beginEvidenceNavigation", "sourceNavigationTarget", "sourceNavigationAttributes",
     "sourceNavigationHref", "sourceNavigationFromHash", "openPdfObservationEvidence", "attachSourceCardClickHandler"]) {

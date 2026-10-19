@@ -24,6 +24,15 @@ from climate_registry.weekly import (
 import climate_registry.cli as registry_cli
 
 
+def test_plan_owner_check_cli_accepts_multiple_selected_date_fields():
+    args = registry_cli._parser().parse_args([
+        "plan-owner-check", "--database", "registry.sqlite3", "--kind", "article", "--id", "article-1",
+        "--date-field", "updated_date", "--date-field", "revision_date",
+    ])
+
+    assert args.date_field == ["updated_date", "revision_date"]
+
+
 NONCANONICAL_CANDIDATE_URLS = (
     "https://example.com/%2fstory",
     "https://example.com/%41",
