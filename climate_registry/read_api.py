@@ -1714,6 +1714,11 @@ class RegistryReader:
                         revision_date=detail.get("revision_date"), collected_at=detail.get("collected_at"),
                         pdf_occurrence_count=len(detail.get("pdf_occurrences", [])), is_visible=True,
                         published_candidate_sha256=detail["published_candidate_sha256"])
+                    for field in ("publication_date", "updated_date", "revision_date"):
+                        for suffix in ("_evidence", "_verification"):
+                            key = field + suffix
+                            if detail.get(key) is not None:
+                                item[key] = detail[key]
                     items.append(item)
             sort_articles_by_publication_date(items)
             offset = (page - 1) * page_size
@@ -1884,16 +1889,8 @@ class RegistryReader:
                 value["display_summary_provenance"] = display["summary_provenance"]
 
     @staticmethod
-    def _apply_pdf_publication_date(value, snapshot):
-        if snapshot is not None and not value.get("metadata_only"):
-            display = snapshot.get("derived_display", {})
-            if display.get("publication_date_verification", {}).get("review_scope") == "article_publication_date_only":
-                value.update(publication_date=display["publication_date"],
-                    publication_date_evidence=display["publication_date_evidence"])
-
-    @staticmethod
     def _apply_reviewed_date_fields(value, snapshot):
-        display = snapshot.get("derived_display", {}) if snapshot else {}
+        display = (snapshot.get("derived_display") or snapshot.get("static_payload") or {}) if snapshot else {}
         for field in ("publication_date", "updated_date", "revision_date"):
             verification = display.get(field + "_verification", {})
             if (verification.get("review_scope") not in {"article_publication_date_only", "article_date_fields_only"}
@@ -1969,7 +1966,7 @@ class RegistryReader:
         if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
             for value in result:
                 snapshot = snapshot_metadata(connection, "article", article_id) or snapshot_metadata(connection, "pdf_article", pdf_article_id or article_id)
-                RegistryReader._apply_pdf_publication_date(value, snapshot)
+                RegistryReader._apply_reviewed_date_fields(value, snapshot)
         return result
 
     @classmethod
@@ -3304,6 +3301,7 @@ class RegistryReader:
             payload.update(self._article_date_fields_for_snapshot(snapshot, payload=payload))
             from .publication import approved_display
             payload.update(approved_display(snapshot))
+            self._apply_reviewed_date_fields(payload, snapshot)
             if not payload.get("content_version_id"):
                 enrichment = payload.get("enrichment") or {}
                 content = payload.get("content") or {}
@@ -3632,7 +3630,7 @@ class RegistryReader:
                 candidate_binding=(snapshot.get("_approved_candidate_sha256")
                     or self._published_candidate_sha(snapshot))))
             self._apply_pdf_display_summary(value, snapshot)
-            self._apply_pdf_publication_date(value, snapshot)
+            self._apply_reviewed_date_fields(value, snapshot)
             # report_date is the legacy ordering key, but it was never added
             # to the public occurrence DTO from the storage row.
             values.append(((row.get("report_date") or "", row.get("page") or -1,

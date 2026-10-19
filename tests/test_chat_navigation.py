@@ -805,7 +805,7 @@ def test_focused_dates_load_unknown_precision_record_by_stable_id():
         pytest.skip("Node.js is unavailable")
     source = (ROOT / "showcase/app.js").read_text(encoding="utf-8")
     functions = []
-    for name in ("reviewedCheckedSourceUrl", "meetingDateGroup", "loadRegistryMeetings"):
+    for name in ("reviewedCheckedSourceUrl", "registryDateEndBound", "meetingDateGroup", "loadRegistryMeetings"):
         start = source.index(f"async function {name}(" if name == "loadRegistryMeetings" else f"function {name}(")
         end = source.index("\n}", start) + 2
         functions.append(source[start:end])

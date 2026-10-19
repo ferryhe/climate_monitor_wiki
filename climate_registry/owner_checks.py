@@ -260,7 +260,7 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
             else:
                 expected = dates["start_date"] if key in {"deadline_date", "publication_date", "updated_date", "revision_date"} else dates[key]
             invalid_precision = dates["date_precision"] == "unknown" or (
-                key in {"publication_date", "deadline_date"}
+                key in {"publication_date", "deadline_date", "updated_date", "revision_date"}
                 and dates["date_precision"] != ("month" if normalization == "month_midpoint" else "day"))
             if value != expected or invalid_precision:
                 raise ValueError("public date exceeds explicit source precision: " + key)

@@ -1306,7 +1306,8 @@ def _date_evidence_dto(value):
         "kind","url","date_kind","match_basis","source_url","target_url","field","label","text","source_system",
         "table","record_id","date_basis","date_precision","date_text","report_filename","report_date","note","acquisition_item_id",
         "event_name","event_type","event_status","event_start_date","event_end_date","event_organizer",
-        "event_location","event_timezone","event_url","event_summary","review_status"}}
+        "event_location","event_timezone","event_url","event_summary","review_status",
+        "date_normalization","source_date_precision"}}
 
 
 def _manual_dto(value):

@@ -12,7 +12,9 @@ from climate_registry.acquisition_review import digest
 from climate_registry.errors import RegistryInputError
 from climate_registry.owner_checks import plan_owner_check, ingest_owner_check, approve_owner_check, owner_review_template
 from climate_registry.owner_dates import OVERLAY, DATE_CHECK_VERSION, date_public_view
-from climate_registry.publication import stage_entities, export_public_snapshot, snapshot_entity, stage_snapshot
+from climate_registry.publication import (
+    export_public_snapshot, public_wiki_pages, snapshot_entity, stage_entities, stage_snapshot,
+)
 from climate_registry.verification import evaluate_snapshot, permitted_view
 from climate_registry.read_api import RegistryReader
 from test_verified_publication import _database, _reader, _approve_all, _check
@@ -70,27 +72,34 @@ def _date_manifest(database, *, source="native", date="2026-10-02", date_kind="u
     return manifest
 
 
-def _date_fields_manifest(database, *, source="native"):
+def _date_fields_manifest(database, *, source="native", fields=("updated_date", "revision_date")):
     kind = "article" if source == "native" else "pdf_article"
     identity = "good" if source == "native" else "pdf-good"
     manifest = plan_owner_check(database, kind, identity,
-        date_fields=["updated_date", "revision_date"])
+        date_fields=list(fields))
     target = next(item for item in manifest["plan"]["targets"]
         if item["occurrence_id"] == ("core:good" if source == "native" else "occurrence"))
     context = "Official record for " + target["source_url"]
-    body = context + "\nLast update: 15 November 2025\nVersion revised: 14 September 2026"
+    evidence = {
+        "publication_date": {"value": "2026-10-02", "excerpt": "2 October 2026", "date_kind": "published"},
+        "updated_date": {"value": "2025-11-15", "excerpt": "15 November 2025", "date_kind": "updated"},
+        "revision_date": {"value": "2026-09-14", "excerpt": "14 September 2026", "date_kind": "revision"},
+    }
+    date_text = {
+        "publication_date": "Published: 2 October 2026",
+        "updated_date": "Last update: 15 November 2025",
+        "revision_date": "Version revised: 14 September 2026",
+    }
+    body = context + "\n" + "\n".join(date_text[field] for field in fields)
     raw = body.encode()
     manifest.update(actor={"id": "date-checker", "task_id": "date-check-task"},
         authorization_reference="owner-authorized-date-field-correction", audit_reference="audit/source",
         checked_at="2026-10-16T12:00:00Z", observations=[{
             "target": target, "access_status": "accessible",
-            "public_fields": {"updated_date": "2025-11-15", "revision_date": "2026-09-14"},
+            "public_fields": {field: evidence[field]["value"] for field in fields},
             "original_comparisons": {}, "excluded_fields": [],
-            "field_evidence": {
-                "updated_date": {"value": "2025-11-15", "excerpt": "15 November 2025",
-                    "record_context": context, "date_kind": "updated", "date_precision": "day"},
-                "revision_date": {"value": "2026-09-14", "excerpt": "14 September 2026",
-                    "record_context": context, "date_kind": "revision", "date_precision": "day"}},
+            "field_evidence": {field: {**evidence[field], "record_context": context, "date_precision": "day"}
+                for field in fields},
             "source_identity": {"article_url": target["source_url"], "excerpt": context,
                 "reason": "Official record identifies the exact canonical article."},
             "capture": {"requested_url": target["source_url"], "final_url": target["source_url"],
@@ -163,34 +172,130 @@ def test_date_only_inherits_all_approved_facts_and_every_public_reader(tmp_path,
         assert stage_snapshot(db, snapshot_entity(db, manifest["plan"]["entity_kind"], manifest["plan"]["entity_id"])) == latest
 
 
-@pytest.mark.parametrize("source", ["native", "pdf", "linked"])
-def test_selected_date_fields_publish_together_and_preserve_every_other_field(tmp_path, source):
+@pytest.mark.parametrize(("source", "fields"), [
+    ("native", ("updated_date", "revision_date")),
+    ("pdf", ("updated_date", "revision_date")),
+    ("linked", ("updated_date", "revision_date")),
+    ("pdf", ("publication_date",)),
+], ids=["native-multiple", "pdf-multiple", "linked-multiple", "pdf-single-publication"])
+def test_selected_date_fields_publish_together_and_preserve_every_other_field(tmp_path, source, fields):
     database = _seed(tmp_path, source)
     reader = _reader(database, tmp_path)
     before = _item(reader, source)
-    manifest = _date_fields_manifest(database, source=source)
+    manifest = _date_fields_manifest(database, source=source, fields=fields)
     staged = _ingest(database, tmp_path, manifest)
     receipt = _date_review(database, tmp_path, staged["candidate_sha256"])
     assert receipt["review_scope"] == "article_date_fields_only"
     assert receipt["schema_version"] == "owner-agent-article-date-fields-review.v1"
     _approve(database, tmp_path, receipt)
 
+    expected = {"publication_date": "2026-10-02", "updated_date": "2025-11-15", "revision_date": "2026-09-14"}
     def check(current):
         item = _item(current, source)
-        assert item["updated_date"] == "2025-11-15"
-        assert item["revision_date"] == "2026-09-14"
-        for key in ("title", "summary", "publication_date", "categories", "keywords",
+        for field in fields:
+            assert item[field] == expected[field]
+        for field in set(expected) - set(fields):
+            assert item.get(field) == before.get(field), field
+        for key in ("title", "summary", "categories", "keywords",
                 "type_safe_classification", "enrichment", "metadata_provenance"):
             assert item.get(key) == before.get(key), key
+        if source == "native":
+            cards = current.articles(page_size=100)["items"]
+            card = next(article for article in cards if article["article_id"] == "good")
+            for field in fields:
+                assert card[field] == expected[field]
+                assert card.get(field + "_evidence") == item.get(field + "_evidence")
+                assert card.get(field + "_verification") == item.get(field + "_verification")
+        if source != "native":
+            pdf = current.pdf_article("pdf-good")
+            for field in fields:
+                assert pdf[field] == expected[field]
+                assert pdf["occurrences"][0][field] == expected[field]
 
     check(reader)
     with reader.public_snapshot(direct=True):
         check(reader)
     with reader.public_snapshot():
         check(reader)
+    page_name = ("registry-source-observation-occurrence.md" if source == "pdf" else "article-good.md")
+    page = public_wiki_pages(database, reader=reader, page=page_name)[page_name]
+    for field in fields:
+        date_value = expected[field]
+        if source == "pdf":
+            label = {"publication_date": "Source publication date", "updated_date": "Source updated date",
+                "revision_date": "Source version revised date"}[field]
+        else:
+            label = {"publication_date": "Publication date", "updated_date": "Updated",
+                "revision_date": "Version revised"}[field]
+        assert f"{label}: {date_value}" in page
     root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
     export_public_snapshot(database, root/"wiki/public-registry.json")
+    static_pages = json.loads((root/"wiki/public-registry.json").read_text(encoding="utf-8"))["wiki_pages"]
+    page_name = ("registry-source-observation-occurrence.md" if source == "pdf" else "article-good.md")
+    for field in fields:
+        label = ({"publication_date": "Source publication date", "updated_date": "Source updated date",
+            "revision_date": "Source version revised date"} if source == "pdf" else
+            {"publication_date": "Publication date", "updated_date": "Updated",
+                "revision_date": "Version revised"})[field]
+        assert f"{label}: {expected[field]}" in static_pages[page_name]
     check(RegistryReader.from_public_export(root))
+
+
+def test_selected_month_update_evidence_survives_materialized_lists_and_static_export(tmp_path):
+    database = _seed(tmp_path)
+    reader = _reader(database, tmp_path)
+    manifest = _date_fields_manifest(database, fields=("updated_date",))
+    entry = manifest["observations"][0]
+    entry["capture"]["text"] = entry["capture"]["text"].replace(
+        "Last update: 15 November 2025", "Last update: November 2025")
+    raw = entry["capture"]["text"].encode()
+    entry["capture"].update(bytes_base64=base64.b64encode(raw).decode(), sha256=hashlib.sha256(raw).hexdigest())
+    entry["field_evidence"]["updated_date"].update(excerpt="November 2025", date_precision="month",
+        source_date_precision="month", date_normalization="month_midpoint")
+    staged = _ingest(database, tmp_path, manifest)
+    _approve(database, tmp_path, _date_review(database, tmp_path, staged["candidate_sha256"]))
+
+    def check(current):
+        item = current.article("good")
+        assert item["updated_date"] == "2025-11-15"
+        assert item["updated_date_evidence"]["date_normalization"] == "month_midpoint"
+        assert item["updated_date_evidence"]["source_date_precision"] == "month"
+        assert item["updated_date_verification"]["review_scope"] == "article_date_fields_only"
+        cards = current.articles(page_size=100)["items"]
+        card = next(article for article in cards if article["article_id"] == "good")
+        assert card["updated_date"] == "2025-11-15"
+        assert card["updated_date_evidence"]["text"] == "November 2025"
+        assert card["updated_date_evidence"]["date_normalization"] == "month_midpoint"
+        assert card["updated_date_verification"]["review_scope"] == "article_date_fields_only"
+
+    check(reader)
+    with reader.public_snapshot():
+        check(reader)
+    page = public_wiki_pages(database, reader=reader, page="article-good.md")["article-good.md"]
+    assert "Updated: November 2025 (normalized to 2025-11-15 for sorting)" in page
+    root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
+    export_public_snapshot(database, root/"wiki/public-registry.json")
+    static_pages = json.loads((root/"wiki/public-registry.json").read_text(encoding="utf-8"))["wiki_pages"]
+    assert "Updated: November 2025 (normalized to 2025-11-15 for sorting)" in static_pages["article-good.md"]
+    check(RegistryReader.from_public_export(root))
+
+
+@pytest.mark.parametrize(("field", "literal", "value", "source_excerpt"), [
+    ("updated_date", "November 2025", "2025-11", "Last update: 15 November 2025"),
+    ("revision_date", "September 2026", "2026-09", "Version revised: 14 September 2026"),
+])
+def test_selected_month_dates_require_midpoint_normalization(tmp_path, field, literal, value, source_excerpt):
+    database = _seed(tmp_path)
+    manifest = _date_fields_manifest(database, fields=(field,))
+    entry = manifest["observations"][0]
+    entry["public_fields"][field] = value
+    evidence = entry["field_evidence"][field]
+    evidence.update(value=value, excerpt=literal, date_precision="month")
+    entry["capture"]["text"] = entry["capture"]["text"].replace(source_excerpt, source_excerpt.split(": ")[0] + ": " + literal)
+    raw = entry["capture"]["text"].encode()
+    entry["capture"].update(bytes_base64=base64.b64encode(raw).decode(), sha256=hashlib.sha256(raw).hexdigest())
+    with pytest.raises(RegistryInputError, match="date exceeds explicit source precision"):
+        _ingest(database, tmp_path, manifest)
 
 
 def test_selected_date_fields_require_exact_fields_and_matching_date_kinds(tmp_path):

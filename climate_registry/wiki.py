@@ -103,6 +103,25 @@ def _registry_article_has_renderable_content(article: dict) -> bool:
     )
 
 
+def _article_date_text(value, evidence: dict | None = None) -> str:
+    evidence = evidence or {}
+    if (evidence.get("date_normalization") == "month_midpoint"
+            and evidence.get("source_date_precision") == "month"):
+        source_text = evidence.get("text") or evidence.get("date_text")
+        if source_text:
+            return f"{source_text} (normalized to {value} for sorting)"
+    return str(value)
+
+
+def _reviewed_date_text(record: dict, field: str) -> str | None:
+    value = record.get(field)
+    verification = record.get(field + "_verification") or {}
+    if (not value or verification.get("review_scope") not in
+            {"article_publication_date_only", "article_date_fields_only"}):
+        return None
+    return _article_date_text(value, record.get(field + "_evidence"))
+
+
 def _render_registry_article(article: dict) -> str | None:
     content = article.get("available_content") or article.get("content", {})
     report_summary = article.get("report_summary")
@@ -134,14 +153,22 @@ def _render_registry_article(article: dict) -> str | None:
         blocks.append(f"Original canonical/PDF source link (provenance): "
             f"{_source_provenance_value(original_url, checked_source_url)}")
         blocks.append("Source verification: owner_agent_verified_source; independently reviewed.")
-    if article.get("collected_at"):
-        blocks.append(f"Collected at: {article['collected_at']}")
+    publication_date = article.get("publication_date")
+    if publication_date:
+        blocks.append("Publication date: " + _article_date_text(
+            publication_date, article.get("publication_date_evidence")))
+    elif article.get("collected_at"):
+        blocks.append(f"Publication date fallback (collection date): {article['collected_at'][:10]}")
     elif article.get("information_date"):
         blocks.append(f"Information date: {article['information_date']}")
-    elif article.get("publication_date"):
-        blocks.append(f"Publication date: {article['publication_date']}")
     elif article.get("report_date"):
         blocks.append(f"Report date: {article['report_date']} (article publication date unconfirmed)")
+    if article.get("collected_at"):
+        blocks.append(f"Collected at: {article['collected_at']}")
+    for field, label in (("updated_date", "Updated"), ("revision_date", "Version revised")):
+        value = _reviewed_date_text(article, field)
+        if value:
+            blocks.append(f"{label}: {value}")
     if date_observations:
         blocks.extend(["", "## Date observations", ""])
         for observation in date_observations:
@@ -330,9 +357,22 @@ def _registry_source_observation_pages(items: list[dict]) -> dict[str, str]:
         blocks = [f"# {title}", "",
             f"## {_pdf_heading(occurrence)}", "", occurrence.get("display_summary") or occurrence["summary"], ""]
         owner = occurrence.get("owner_agent_verification") or {}
-        publication_date = owner.get("public_fields", {}).get("publication_date")
-        if publication_date:
-            blocks += ["Source publication date: " + publication_date, ""]
+        date_labels = (
+            ("publication_date", "Source publication date"),
+            ("updated_date", "Source updated date"),
+            ("revision_date", "Source version revised date"),
+        )
+        rendered_dates = []
+        for field, label in date_labels:
+            value = _reviewed_date_text(occurrence, field)
+            if value:
+                rendered_dates.append(f"{label}: {value}")
+        if not any(line.startswith("Source publication date:") for line in rendered_dates):
+            legacy_publication_date = owner.get("public_fields", {}).get("publication_date")
+            if legacy_publication_date:
+                rendered_dates.insert(0, "Source publication date: " + legacy_publication_date)
+        if rendered_dates:
+            blocks.extend([*rendered_dates, ""])
         blocks += [
             "Approved reviewed summary." if occurrence.get("display_summary") else
             "Owner-agent source-supported public summary; independently reviewed. Original PDF claims retain their separate disposition." if occurrence.get("owner_agent_verification") else

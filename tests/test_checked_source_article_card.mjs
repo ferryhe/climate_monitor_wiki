@@ -51,8 +51,8 @@ async function run(list, detail = null) {
     setWorkspaceView(value) { state.activeView = value; }, setRegistryMode() {}, showMobileDetail() {},
     console, requestAnimationFrame() {},
   });
-  for (const name of ["registryElement", "registryMetric", "registryPublicationDateLabel", "registryArticleDateSummary", "registrySummaryPresentation", "appendRegistryTags",
-    "appendPdfAppearances", "safeSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "loadRegistryArticles",
+  for (const name of ["registryElement", "registryMetric", "registryArticleDateLabel", "registryArticleDateSummary", "registryOccurrenceDateSummary", "registrySummaryPresentation", "appendRegistryTags",
+    "appendPdfAppearances", "appendRegistryPdfOccurrences", "safeSourceUrl", "reviewedCheckedSourceUrl", "reviewedSourceRoles", "loadRegistryArticles",
     "sourceNavigationTarget", "sourceNavigationHref", "sourceNavigationFromHash", "resetRegistryArticleDetail", "loadRegistryArticle"])
     vm.runInContext(extract(name), context);
   const summaryPresentationStart = source.indexOf("const REGISTRY_SUMMARY_PRESENTATION = {");
@@ -75,6 +75,47 @@ const approved = approvedList.items[0];
 assert.equal(approved.owner_agent_verification?.verification_status, "verified");
 assert.equal(approved.checked_source_url, approved.owner_agent_verification.final_url);
 const checked = await run(approvedList);
+const monthEvidence = { date_normalization: "month_midpoint", source_date_precision: "month", text: "November 2025" };
+const monthArticle = { publication_date: "2025-11-15", publication_date_evidence: monthEvidence,
+  updated_date: "2025-11-15", updated_date_evidence: monthEvidence,
+  revision_date: "2025-11-15", revision_date_evidence: monthEvidence };
+assert.equal(checked.context.registryArticleDateLabel(monthArticle, "updated_date"),
+  "November 2025 (normalized to 2025-11-15 for sorting)");
+assert.equal(checked.context.registryArticleDateSummary(monthArticle),
+  "Published November 2025 (normalized to 2025-11-15 for sorting) · " +
+  "Updated November 2025 (normalized to 2025-11-15 for sorting) · " +
+  "Version revised November 2025 (normalized to 2025-11-15 for sorting)");
+const metricsStart = source.indexOf('    const metrics = [\n      registryMetric("Publisher", article.publisher)');
+const metricsEnd = source.indexOf("\n    const summaryPresentation =", metricsStart);
+assert.ok(metricsStart >= 0 && metricsEnd > metricsStart);
+const metricsSeen = [];
+const metricsContext = vm.createContext({ article: monthArticle, pdfSource: false,
+  els: { registryArticleMeta: { append(...items) { metricsSeen.push(...items); } } },
+  registryMetric: (label, value) => ({ label, value }),
+  registryArticleDateLabel: checked.context.registryArticleDateLabel });
+vm.runInContext(source.slice(metricsStart, metricsEnd), metricsContext);
+assert.deepEqual(metricsSeen.filter(item => ["Publication date", "Updated", "Version revised"].includes(item.label)), [
+  { label: "Publication date", value: "November 2025 (normalized to 2025-11-15 for sorting)" },
+  { label: "Updated", value: "November 2025 (normalized to 2025-11-15 for sorting)" },
+  { label: "Version revised", value: "November 2025 (normalized to 2025-11-15 for sorting)" },
+]);
+const pdfOccurrence = { publication_date: "2025-11-15", publication_date_evidence: monthEvidence,
+  source_document: "climate-report.pdf", page: 4 };
+const pdfAppearances = new Element();
+checked.context.appendPdfAppearances(pdfAppearances, [pdfOccurrence]);
+const pdfAppearanceText = [];
+const collectAppearanceText = node => { if (node.textContent) pdfAppearanceText.push(node.textContent); (node.children || []).forEach(collectAppearanceText); };
+collectAppearanceText(pdfAppearances);
+assert.ok(pdfAppearanceText.includes("Publication date November 2025 (normalized to 2025-11-15 for sorting)"),
+"PDF article cards preserve month-only publication precision");
+checked.context.appendInformationCheck = () => {};
+const pdfHistory = new Element();
+checked.context.appendRegistryPdfOccurrences(pdfHistory, { occurrences: [pdfOccurrence] });
+const pdfHistoryText = [];
+const collectText = node => { if (node.textContent) pdfHistoryText.push(node.textContent); (node.children || []).forEach(collectText); };
+collectText(pdfHistory);
+assert.ok(pdfHistoryText.includes("climate-report.pdf · Publication date November 2025 (normalized to 2025-11-15 for sorting) · page 4"),
+"PDF occurrence detail preserves month-only publication precision");
   const checkedTarget = checked.context.sourceNavigationTarget(approved);
   assert.equal(checkedTarget.kind, "article");
   assert.equal(checkedTarget.checkedSourceUrl, approved.checked_source_url);

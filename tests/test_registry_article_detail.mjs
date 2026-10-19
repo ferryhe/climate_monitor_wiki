@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
 const extract = (name) => source.match(new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
-const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfAppearances', 'registryMetric', 'registryPublicationDateLabel', 'registryArticleDateSummary', 'registrySummaryPresentation', 'loadRegistryArticle'];
+const names = ['showMobileDetail', 'registryElement', 'safeSourceUrl', 'reviewedCheckedSourceUrl', 'resetRegistryArticleDetail', 'appendRegistryTags', 'appendPdfAppearances', 'appendRegistryPdfOccurrences', 'registryMetric', 'registryArticleDateLabel', 'registryArticleDateSummary', 'registryOccurrenceDateSummary', 'registrySummaryPresentation', 'loadRegistryArticle'];
 const created = [];
 const document = { createElement(tag) {
   const element = { tag, children: [], append(...items) { this.children.push(...items); },
@@ -31,6 +31,7 @@ const context = vm.createContext({ document, URL, console,
     registryContentSection: contentSection, registryOriginalLink: originalLink,
     registryContentTitle: document.createElement('h3'), registryMarkdown: document.createElement('div') },
   registryErrorMessage: (error) => String(error),
+  appendInformationCheck: () => {},
 });
 vm.runInContext(source.match(/const REGISTRY_SUMMARY_PRESENTATION = \{[\s\S]*?\n\};/)?.[0], context);
 for (const name of names) {
@@ -47,14 +48,23 @@ context.appendPdfAppearances(appearances, [
   { source_document: 'climate.pdf', page: 22, raw_url: 'https://example.org/a' },
   { source_document: 'climate.pdf', page: 22, raw_url: 'https://example.org/a' },
   { page: 3 },
+  { source_document: 'climate.pdf', page: 4, report_date: '2026-01-10', publication_date: '2026-01-15',
+    updated_date: '2026-02-10', revision_date: '2026-02-15',
+    revision_date_evidence: { text: 'February 2026', source_date_precision: 'month', date_normalization: 'month_midpoint' } },
 ]);
-assert.equal(appearances.children.length, 3);
+assert.equal(appearances.children.length, 4);
 assert.deepEqual(appearances.children.map(text), [
   'climate.pdf · page 22 Open original source',
   'climate.pdf · page 22 Open original source',
   'page 3',
+  'climate.pdf · page 4 Report date 2026-01-10 · Publication date 2026-01-15 · Updated 2026-02-10 · Version revised February 2026 (normalized to 2026-02-15 for sorting)',
 ]);
 assert.equal(appearances.children[0].children[1].href, 'https://example.org/a');
+const registryPdfHistory = { children: [], append(...items) { this.children.push(...items); } };
+context.appendRegistryPdfOccurrences(registryPdfHistory, { occurrences: [{ source_document: 'climate.pdf', page: 4,
+  report_date: '2026-01-10', publication_date: '2026-01-15', updated_date: '2026-02-10', revision_date: '2026-02-15',
+  revision_date_evidence: { text: 'February 2026', source_date_precision: 'month', date_normalization: 'month_midpoint' } }] });
+assert.match(text(registryPdfHistory), /Report date 2026-01-10 · Publication date 2026-01-15 · Updated 2026-02-10 · Version revised February 2026 \(normalized to 2026-02-15 for sorting\)/);
 assert.doesNotMatch(source.match(/async function loadRegistryArticle\([\s\S]*?\n\}/)?.[0] || '',
   /appendRegistryPdfOccurrences|supporting_excerpt/);
 
@@ -91,10 +101,10 @@ assert.equal(rootTags(enrichment, 'Keywords').length, 1);
 const monthOnlyPdf = { ...reviewedPdf, publication_date: '2026-09-15',
   publication_date_evidence: { text: 'Sep 2026', source_date_precision: 'month', date_normalization: 'month_midpoint' } };
 assert.equal(context.registryArticleDateSummary(monthOnlyPdf),
-  'Published 2026-09-15 (source: Sep 2026; normalized to the 15th) · Updated 2026-02-10 · Version revised 2026-02');
+  'Published Sep 2026 (normalized to 2026-09-15 for sorting) · Updated 2026-02-10 · Version revised 2026-02');
 context.registryFetch = async () => monthOnlyPdf;
 await context.loadRegistryArticle('month-only-pdf', 'pdf');
-assert.match(text(articleMeta), /Publication date 2026-09-15 \(source: Sep 2026; normalized to the 15th\)/);
+assert.match(text(articleMeta), /Publication date Sep 2026 \(normalized to 2026-09-15 for sorting\)/);
 
 enrichment.replaceChildren();
 context.registryFetch = async () => ({ ...reviewedPdf, categories: ['Adaptation & Resilience'], keywords: [],
