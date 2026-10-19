@@ -226,6 +226,8 @@ const els = {
   registryMeetings: document.getElementById("registryMeetings"),
   registryMeetingSearchForm: document.getElementById("registryMeetingSearchForm"),
   registryMeetingSearch: document.getElementById("registryMeetingSearch"),
+  registryMeetingDateRange: document.getElementById("registryMeetingDateRange"),
+  registryMeetingTitle: document.getElementById("registryMeetingTitle"),
   registryMeetingVerification: document.getElementById("registryMeetingVerification"),
   registryMeetingCounts: document.getElementById("registryMeetingCounts"),
   meetingsPrevious: document.getElementById("meetingsPrevious"),
@@ -2601,7 +2603,8 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
   const params = new URLSearchParams({ page: String(state.registry.meetingPage), page_size: "20" });
   const query = focusName || els.registryMeetingSearch.value.trim();
   if (query) params.set("query", query);
-  const includeHistory = Boolean(focusId || focusName || query);
+  const allDates = els.registryMeetingDateRange?.value === "all";
+  const includeHistory = Boolean(allDates || focusId || focusName || query);
   if (includeHistory) {
     params.set("base_date", "1900-01-01");
   }
@@ -2629,10 +2632,12 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
           : payload.pagination.total === 1 ? payload.items[0] : null
         : null;
     const counts = payload.verification_counts || {};
+    if (els.registryMeetingTitle) els.registryMeetingTitle.textContent = focusId || focusName
+      ? "Selected date" : query ? "Matching dates" : allDates ? "All dates" : "Upcoming meetings";
     els.registryMeetingCounts.textContent = focusId || focusName
       ? "Selected evidence record"
       : includeHistory
-        ? `Matching date records · ${payload.pagination.total} · ${counts.verified || 0} verified · ` +
+        ? `${query ? "Matching date records" : "All date records"} · ${payload.pagination.total} · ${counts.verified || 0} verified · ` +
           `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`
         : `As of ${payload.base_date} (UTC) · ${payload.pagination.total} current / upcoming · ${counts.verified || 0} verified · ` +
         `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`;
@@ -2696,7 +2701,8 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
       agenda.append(section);
     });
     els.registryMeetings.append(agenda);
-    if (!payload.items.length) renderRegistryNotice(els.registryMeetings, "No current meetings match these filters.");
+    if (!payload.items.length) renderRegistryNotice(els.registryMeetings, includeHistory
+      ? "No date records match these filters." : "No current meetings match these filters.");
     updateRegistryPagination("meetings", payload.pagination);
   } catch (error) {
     if (sequence === state.registry.meetingRequestSequence) renderRegistryNotice(els.registryMeetings, registryErrorMessage(error));
@@ -3844,6 +3850,9 @@ function attachEvents() {
     event.preventDefault(); state.registry.meetingPage = 1; void loadRegistryMeetings();
   });
   els.registryMeetingVerification?.addEventListener("change", () => {
+    state.registry.meetingPage = 1; void loadRegistryMeetings();
+  });
+  els.registryMeetingDateRange?.addEventListener("change", () => {
     state.registry.meetingPage = 1; void loadRegistryMeetings();
   });
   [[els.meetingsPrevious, -1], [els.meetingsNext, 1]].forEach(([button, direction]) => {

@@ -19,6 +19,7 @@ assert.match(html, /id="registrySearchForm"[\s\S]*?>Search<\/button>/);
 assert.match(html, /id="registryMeetingSearchForm"[\s\S]*?>Search<\/button>/);
 assert.match(html, /<label class="sr-only" for="registryPublisherFilter">Publisher<\/label>[\s\S]*?<select id="registryPublisherFilter"/);
 assert.match(html, /<label class="sr-only" for="registryMeetingVerification">Verification<\/label>[\s\S]*?<select id="registryMeetingVerification"/);
+assert.match(html, /<label class="sr-only" for="registryMeetingDateRange">Date range<\/label>[\s\S]*?<select id="registryMeetingDateRange"[\s\S]*?<option value="upcoming" selected>Upcoming<\/option>[\s\S]*?<option value="all">All dates<\/option>/);
 assert.match(styles, /select\.search-input option\s*\{[^}]*background: var\(--bg-elevated\);[^}]*color: var\(--ink\);/);
 assert.match(styles, /\.search-input:focus[\s\S]*?outline: 2px solid/);
 assert.doesNotMatch(html, /data-registry-mode="meetings"/);
@@ -36,6 +37,7 @@ const tabs = ['registryView', 'meetingsView', 'chatView', 'obsidianView'].map((v
 }));
 const els = Object.fromEntries(tabs.map((tab) => [tab.dataset.view, { hidden: false }]));
 Object.assign(els, { workspaceTabs: tabs, registryMeetingSearch: { value: '' }, registryMeetingVerification: { value: '' },
+  registryMeetingTitle: {},
   registryMeetingCounts: {}, registryMeetings: { replaceChildren() {}, append() {} },
   registryArticles: { replaceChildren() {} }, registrySearch: { value: '' }, registryPublisherFilter: { value: '' },
   registryPublisherCustom: { value: '' } });
@@ -120,12 +122,14 @@ assert.match(calls.at(-1), /query=COP31&base_date=1900-01-01&verification_status
 const input = (value = '') => ({ value, listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; } });
 const form = input();
 const verification = input('');
+const dateRange = input('upcoming');
 const publisher = input('');
 const custom = input('old.example');
 const jumpToReports = input();
 Object.assign(els, {
   registryMeetingSearchForm: form,
   registryMeetingVerification: verification,
+  registryMeetingDateRange: dateRange,
   registrySearchForm: input(),
   registryPublisherFilter: publisher,
   registryPublisherCustom: custom,
@@ -250,4 +254,35 @@ assert.equal(meetingValues.filter(value => value === 'Past').length, 2,
   'completed month- and year-precision dates are labeled Past');
 assert.equal(meetingValues.filter(value => value === 'scheduled').length, 1,
   'a future month-precision event remains scheduled');
-console.log('PASS: default Chat, Dates copy, concise status, immediate page-one filters, stale response guard and search forms');
+const rangeRequests = [];
+const rangeNotices = [];
+context.registryFetch = async url => {
+  rangeRequests.push(new URL(url, 'https://local.example').searchParams);
+  return { items: [], pagination: { total: 0, page: 1, pages: 1 }, base_date: '2026-10-04', verification_counts: {} };
+};
+context.renderRegistryNotice = (_container, message) => rangeNotices.push(message);
+els.registryMeetingSearch.value = '';
+verification.value = '';
+state.registry.meetingPage = 4;
+dateRange.value = 'all';
+dateRange.listeners.change();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(state.registry.meetingPage, 1, 'changing date range starts on page one');
+assert.equal(rangeRequests.at(-1).get('base_date'), '1900-01-01');
+assert.equal(rangeRequests.at(-1).has('include_unknown'), false);
+assert.equal(els.registryMeetingTitle.textContent, 'All dates');
+assert.match(els.registryMeetingCounts.textContent, /^All date records · 0/);
+assert.equal(rangeNotices.at(-1), 'No date records match these filters.');
+dateRange.value = 'upcoming';
+dateRange.listeners.change();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(rangeRequests.at(-1).has('base_date'), false, 'Upcoming restores the server default date');
+assert.equal(els.registryMeetingTitle.textContent, 'Upcoming meetings');
+assert.match(els.registryMeetingCounts.textContent, /current \/ upcoming/);
+assert.equal(rangeNotices.at(-1), 'No current meetings match these filters.');
+els.registryMeetingSearch.value = 'past conference';
+await context.loadRegistryMeetings();
+assert.equal(rangeRequests.at(-1).get('base_date'), '1900-01-01', 'search still includes historical evidence in Upcoming mode');
+assert.equal(els.registryMeetingTitle.textContent, 'Matching dates');
+assert.match(els.registryMeetingCounts.textContent, /^Matching date records/);
+console.log('PASS: default Chat, Dates range toggle and copy, concise status, immediate page-one filters, stale response guard and search forms');

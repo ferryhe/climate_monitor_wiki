@@ -33,6 +33,14 @@ def test_plan_owner_check_cli_accepts_multiple_selected_date_fields():
     assert args.date_field == ["updated_date", "revision_date"]
 
 
+def test_plan_owner_check_cli_accepts_activity_dates_scope():
+    args = registry_cli._parser().parse_args([
+        "plan-owner-check", "--database", "registry.sqlite3", "--kind", "article", "--id", "article-1",
+        "--activity-dates-only",
+    ])
+    assert args.activity_dates_only is True
+
+
 NONCANONICAL_CANDIDATE_URLS = (
     "https://example.com/%2fstory",
     "https://example.com/%41",

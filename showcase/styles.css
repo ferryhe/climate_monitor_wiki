@@ -1548,6 +1548,10 @@ select.search-input option {
   width: 100%;
 }
 
+.registry-filters--dates {
+  grid-template-columns: minmax(180px, 1.4fr) repeat(2, minmax(120px, 1fr)) auto;
+}
+
 .registry-source-link {
   display: inline-flex;
   margin: 12px 0 4px;

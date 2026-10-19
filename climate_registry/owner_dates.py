@@ -1,10 +1,11 @@
-"""Publication-date-only owner checks inherit an exact approved factual scope."""
+"""Selective article date checks inherit an exact approved factual scope."""
 from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import re
 
 from .acquisition_review import digest, timestamp
 from .information_checks import _json, _sha, DATE_ONLY_CHECK_VERSION
@@ -12,12 +13,113 @@ from .information_checks import _json, _sha, DATE_ONLY_CHECK_VERSION
 DATE_CHECK_VERSION = DATE_ONLY_CHECK_VERSION
 DATE_REVIEW_VERSION = "owner-agent-publication-date-review.v1"
 DATE_FIELDS_REVIEW_VERSION = "owner-agent-article-date-fields-review.v1"
+ACTIVITY_REVIEW_VERSION = "owner-agent-article-activity-dates-review.v1"
 OVERLAY = "publication_date_only"
 DATE_FIELDS_SCOPE = "article_date_fields_only"
+ACTIVITY_SCOPE = "article_activity_dates_only"
 DATE_PUBLIC_FIELDS = {"publication_date", "updated_date", "revision_date"}
 
 
+def _event_row(row):
+    from .article_dates import _typed_date_kind
+    if not isinstance(row, dict) or row.get("observation_kind", row.get("kind")) != "page_information":
+        return False
+    evidence = row.get("evidence")
+    if evidence is None:
+        evidence = json.loads(row.get("evidence_json") or "null")
+    return _typed_date_kind(evidence) == "event"
+
+
+def validate_activity_dates(values, entry):
+    from .article_dates import select_article_events
+    from .owner_checks import _dates, _nonempty
+    if not isinstance(values, list) or not values:
+        raise ValueError("activity dates require one or more typed event observations")
+    capture, target = entry["capture"], entry["target"]
+    if capture["requested_url"] != target["source_url"]:
+        raise ValueError("activity date capture source URL differs from the exact article source")
+    seen = set()
+    allowed = {"date_kind", "date_precision", "event_name", "event_type", "event_status",
+        "event_start_date", "event_end_date", "date_text", "review_status", "source_url", "target_url",
+        "field", "text", "raw_time_text", "event_timezone", "event_organizer", "event_location", "event_url", "event_summary"}
+    for value in values:
+        if not isinstance(value, dict) or set(value) != {"observed_at", "evidence"}:
+            raise ValueError("activity date must contain only observed_at and evidence")
+        evidence = value["evidence"]
+        if (not isinstance(evidence, dict) or set(evidence) - allowed
+                or evidence.get("date_kind") != "event" or evidence.get("review_status") != "pass"
+                or evidence.get("source_url") != capture["requested_url"]
+                or evidence.get("target_url") != target["source_url"]
+                or not _nonempty(evidence.get("field"))):
+            raise ValueError("activity date needs passing review and exact source and target URLs")
+        if evidence.get("event_status") in {"cancelled", "retrospective"} or evidence.get("event_type") == "retrospective":
+            raise ValueError("activity date scope requires an event eligible for the Dates projection")
+        for key in ("event_name", "date_text", "text", "raw_time_text", "event_timezone",
+                "event_organizer", "event_location", "event_url", "event_summary"):
+            if (key == "text" or key in evidence) and (not _nonempty(evidence.get(key)) or evidence[key] not in capture["text"]):
+                raise ValueError("activity fact lacks literal source capture evidence: " + key)
+        events = select_article_events([{"kind": "page_information", **value}])
+        if len(events) != 1:
+            raise ValueError("activity date must be a reviewed typed event")
+        event = events[0]
+        date_text = evidence["date_text"]
+        if not re.search(r"\b\d{4}\b", date_text):
+            years = set(re.findall(r"\b\d{4}\b", event["name"]))
+            if len(years) != 1:
+                raise ValueError("activity date without a year requires one unambiguous year in the literal event name")
+            date_text = date_text + " " + next(iter(years))
+        dates = _dates(date_text)
+        if (dates["end_date"] is None and re.search(r"[-–—]|\bto\b", date_text, flags=re.I)
+                and not re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?|\d{1,2}-[A-Za-z]+-\d{4}", date_text)):
+            raise ValueError("activity date interval must have a valid explicit end date")
+        if (event["start_date"] != dates["start_date"] or event["end_date"] != (dates["end_date"] or dates["start_date"])
+                or event["date_precision"] != dates["date_precision"]):
+            raise ValueError("activity date bounds must match the literal source precision")
+        if event["event_id"] in seen:
+            raise ValueError("activity dates contain a duplicate event")
+        seen.add(event["event_id"])
+
+
+def _append_activity_rows(view, entry, manifest, proof):
+    from climate_monitor.dedupe import canonical_url
+    from .article_dates import select_article_events
+    tables = view["tables"]
+    url = canonical_url(entry["target"]["source_url"])
+    appended = False
+    for owner_table, date_table in (("articles", "article_date_observations"),
+            ("pdf_intake_articles", "pdf_article_date_observations")):
+        for owner in tables.get(owner_table, []):
+            if canonical_url(owner["canonical_url"]) != url:
+                continue
+            for value in entry["public_fields"]["activity_dates"]:
+                identity = "owner-activity-" + digest([proof["review_id"], owner["article_id"], value])
+                evidence = {**value["evidence"], "source_system": "owner_agent",
+                    "database": manifest["plan"]["registry_database"], "table": "registry_reviews",
+                    "record_id": identity, "review_id": proof["review_id"], "match_basis": "exact_owner_activity_review",
+                    "capture_sha256": entry["capture"]["sha256"], "final_url": entry["capture"]["final_url"],
+                    "captured_at": entry["capture"]["captured_at"]}
+                tables.setdefault(date_table, []).append({"observation_id": identity, "article_id": owner["article_id"],
+                    "canonical_url": owner["canonical_url"], "observation_kind": "page_information",
+                    "observed_at": value["observed_at"], "source_system": "owner_agent",
+                    "source_database": manifest["plan"]["registry_database"], "source_table": "registry_reviews",
+                    "source_record_id": identity, "evidence_json": _json(evidence), "recorded_at": manifest["checked_at"]})
+                appended = True
+    if not appended:
+        raise ValueError("activity date source has no exact inherited article owner")
+    events = {}
+    for table in ("article_date_observations", "pdf_article_date_observations"):
+        for row in tables.get(table, []):
+            if not _event_row(row):
+                continue
+            for event in select_article_events([{"kind": "page_information", "observed_at": row["observed_at"],
+                    "evidence": json.loads(row["evidence_json"])}]):
+                events[event["event_id"]] = event
+    view.setdefault("derived_display", {}).update(activity_dates=list(events.values()), is_activity=bool(events))
+
+
 def _date_fields(plan):
+    if plan.get("scope") == ACTIVITY_SCOPE:
+        return ["activity_dates", "is_activity"]
     if plan.get("scope") == "article_publication_date_only":
         return ["publication_date"]
     fields = plan.get("date_fields")
@@ -62,10 +164,14 @@ def _nondate(value, date_fields=("publication_date",)):
     for field in date_fields:
         for key in (field, field + "_evidence", field + "_verification"):
             display.pop(key, None)
+    if "activity_dates" in date_fields:
+        for table in ("article_date_observations", "pdf_article_date_observations"):
+            rows = value.get("tables", {}).get(table, [])
+            value.get("tables", {})[table] = [row for row in rows if not _event_row(row)]
     return value
 
 
-def date_plan(connection, plan, *, fields=None):
+def date_plan(connection, plan, *, fields=None, activity_dates_only=False):
     if plan["entity_kind"] not in {"article", "pdf_article"}:
         raise ValueError("publication date scope is available only for articles")
     state = plan["expected_state"]
@@ -82,15 +188,15 @@ def date_plan(connection, plan, *, fields=None):
         for row in connection.execute("SELECT * FROM registry_reviews WHERE candidate_sha256=? AND status IN ('pass','accepted_legacy') ORDER BY review_id", (sha,))]
     view, _ = _baseline_view(base, reviews)
     # Targets come from the approved snapshot, never a newer unapproved source.
-    legacy = fields is None
-    selected_fields = ["publication_date"] if legacy else list(dict.fromkeys(fields))
-    if not selected_fields or set(selected_fields) - DATE_PUBLIC_FIELDS:
+    legacy = fields is None and not activity_dates_only
+    selected_fields = ["activity_dates", "is_activity"] if activity_dates_only else ["publication_date"] if legacy else list(dict.fromkeys(fields))
+    if not activity_dates_only and (not selected_fields or set(selected_fields) - DATE_PUBLIC_FIELDS):
         raise ValueError("date-field scope must select one or more supported date fields")
-    scope = "article_publication_date_only" if legacy else DATE_FIELDS_SCOPE
+    scope = ACTIVITY_SCOPE if activity_dates_only else "article_publication_date_only" if legacy else DATE_FIELDS_SCOPE
     plan = {**plan, "targets": base["information_targets"], "scope": scope,
         "baseline_candidate_sha256": sha, "baseline_public_projection_sha256": digest(view),
         "nondate_scope_sha256": digest(_nondate(view, selected_fields)), "baseline_reviews": reviews}
-    if not legacy:
+    if not legacy and not activity_dates_only:
         plan["date_fields"] = selected_fields
     return {"schema_version": DATE_CHECK_VERSION, "plan": plan, "actor": {"id": "", "task_id": ""},
         "authorization_reference": "", "audit_reference": "", "checked_at": "", "observations": []}
@@ -99,7 +205,7 @@ def date_plan(connection, plan, *, fields=None):
 def validate_date_manifest(manifest):
     from .owner_checks import PLAN_VERSION, _actor, _nonempty, validate_observation
     plan = manifest["plan"]
-    if (plan.get("schema_version") != PLAN_VERSION or plan.get("scope") not in {"article_publication_date_only", DATE_FIELDS_SCOPE}
+    if (plan.get("schema_version") != PLAN_VERSION or plan.get("scope") not in {"article_publication_date_only", DATE_FIELDS_SCOPE, ACTIVITY_SCOPE}
             or plan.get("entity_kind") not in {"article", "pdf_article"} or "taxonomy" in manifest):
         raise ValueError("unsupported article date owner scope")
     fields = _date_fields(plan)
@@ -113,11 +219,12 @@ def validate_date_manifest(manifest):
     entry = entries[0]
     if entry["target"] not in plan["targets"] or "editorial_metadata" in entry:
         raise ValueError("date source is outside the inherited approved scope")
-    if set(entry.get("public_fields", {})) != set(fields):
+    if set(entry.get("public_fields", {})) != (set(fields) - {"is_activity"}):
         raise ValueError("date evidence must exactly match the selected date fields")
     validate_observation(entry["target"], entry,
         publication_date_only=plan.get("scope") == "article_publication_date_only",
-        date_fields_only=plan.get("scope") == DATE_FIELDS_SCOPE)
+        date_fields_only=plan.get("scope") == DATE_FIELDS_SCOPE,
+        activity_dates_only=plan.get("scope") == ACTIVITY_SCOPE)
     if timestamp(entry["capture"]["captured_at"]) > timestamp(manifest["checked_at"]):
         raise ValueError("source capture is later than its check")
 
@@ -180,7 +287,8 @@ def ingest_date_check(connection, database, manifest, apply):
         _frozen_scope(snapshot)
         return {"status": "no-op", "run_id": run["run_id"], "candidate_sha256": digest(snapshot)}
     current = date_plan(connection, _plan(connection, database, plan["entity_kind"], plan["entity_id"]),
-        fields=plan.get("date_fields") if plan.get("scope") == DATE_FIELDS_SCOPE else None)["plan"]
+        fields=plan.get("date_fields") if plan.get("scope") == DATE_FIELDS_SCOPE else None,
+        activity_dates_only=plan.get("scope") == ACTIVITY_SCOPE)["plan"]
     if current != plan:
         raise ValueError("date-only owner check plan is stale")
     if not apply:
@@ -198,7 +306,7 @@ def ingest_date_check(connection, database, manifest, apply):
     _frozen_scope(snapshot)
     sha = stage_snapshot(connection, snapshot, basis=DATE_CHECK_VERSION)
     return {"status": "staged", "run_id": run["run_id"], "candidate_sha256": sha,
-        "review_schema_version": DATE_REVIEW_VERSION if plan["scope"] == "article_publication_date_only" else DATE_FIELDS_REVIEW_VERSION,
+        "review_schema_version": _review_version(plan["scope"]),
         "fact_publication": "awaiting_independent_owner_review"}
 
 
@@ -213,10 +321,14 @@ def _bindings(snapshot):
         "attempt_id": overlay["attempt"]["attempt_id"], "packet_sha256": overlay["attempt"]["packet_sha256"]}
 
 
+def _review_version(scope):
+    return ACTIVITY_REVIEW_VERSION if scope == ACTIVITY_SCOPE else DATE_REVIEW_VERSION if scope == "article_publication_date_only" else DATE_FIELDS_REVIEW_VERSION
+
+
 def date_review_template(snapshot):
     plan = snapshot[OVERLAY]["manifest"]["plan"]
     review_scope = plan["scope"]
-    return {"schema_version": DATE_REVIEW_VERSION if review_scope == "article_publication_date_only" else DATE_FIELDS_REVIEW_VERSION,
+    return {"schema_version": _review_version(review_scope),
         "review_scope": review_scope,
         "candidate_sha256": digest(snapshot), "source_checks": _bindings(snapshot),
         "actor": {"id": "", "task_id": ""}, "authorization_reference": "", "audit_reference": "",
@@ -227,7 +339,7 @@ def validate_date_review(snapshot, receipt):
     from .owner_checks import _actor, _nonempty
     plan = snapshot[OVERLAY]["manifest"]["plan"]
     review_scope = plan["scope"]
-    review_version = DATE_REVIEW_VERSION if review_scope == "article_publication_date_only" else DATE_FIELDS_REVIEW_VERSION
+    review_version = _review_version(review_scope)
     if (not isinstance(receipt, dict) or receipt.get("schema_version") != review_version or receipt.get("decision") != "pass"
             or receipt.get("review_scope") != review_scope
             or receipt.get("candidate_sha256") != digest(snapshot)
@@ -268,7 +380,9 @@ def date_public_view(snapshot, verdict):
     entry = manifest["observations"][0]
     fields = _date_fields(manifest["plan"])
     display = view.setdefault("derived_display", {})
-    for field in fields:
+    if manifest["plan"]["scope"] == ACTIVITY_SCOPE:
+        _append_activity_rows(view, entry, manifest, proof)
+    for field in fields if manifest["plan"]["scope"] != ACTIVITY_SCOPE else []:
         date_proof = entry["field_evidence"][field]
         evidence = {"text": date_proof["excerpt"], "date_kind": date_proof["date_kind"],
             "source_url": entry["capture"]["requested_url"], "final_url": entry["capture"]["final_url"],
@@ -343,10 +457,13 @@ def _same_public_dtos(connection, database, baseline, view, *, date_fields=("pub
 
     def nondate(value):
         if isinstance(value, dict):
-            return {key: nondate(item) for key, item in value.items() if key not in date_keys
+            value = {key: nondate(item) for key, item in value.items() if key not in date_keys
                 and key not in {"published_candidate_sha256", "candidate_sha256"}}
+            if "activity_dates" in fields and not value.get("date_observations"):
+                value.pop("date_observations", None)
+            return value
         if isinstance(value, list):
-            return [nondate(item) for item in value]
+            return [nondate(item) for item in value if not ("activity_dates" in fields and _event_row(item))]
         return value
 
     def dtos(snapshot):

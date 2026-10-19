@@ -247,10 +247,15 @@
             </header>
             <section class="panel">
               <div class="panel__head">
-                <h3>Upcoming meetings</h3>
-                <form id="registryMeetingSearchForm" class="registry-filters">
+                <h3 id="registryMeetingTitle">Upcoming meetings</h3>
+                <form id="registryMeetingSearchForm" class="registry-filters registry-filters--dates">
                   <label class="sr-only" for="registryMeetingSearch">Search meetings</label>
                   <input id="registryMeetingSearch" class="search-input" type="search" placeholder="Search meeting or host" />
+                  <label class="sr-only" for="registryMeetingDateRange">Date range</label>
+                  <select id="registryMeetingDateRange" class="search-input">
+                    <option value="upcoming" selected>Upcoming</option>
+                    <option value="all">All dates</option>
+                  </select>
                   <label class="sr-only" for="registryMeetingVerification">Verification</label>
                   <select id="registryMeetingVerification" class="search-input">
                     <option value="">All verification statuses</option>
