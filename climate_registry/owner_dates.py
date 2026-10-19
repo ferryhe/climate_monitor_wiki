@@ -5,6 +5,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import re
 
 from .acquisition_review import digest, timestamp
 from .information_checks import _json, _sha, DATE_ONLY_CHECK_VERSION
@@ -61,7 +62,16 @@ def validate_activity_dates(values, entry):
         if len(events) != 1:
             raise ValueError("activity date must be a reviewed typed event")
         event = events[0]
-        dates = _dates(evidence["date_text"])
+        date_text = evidence["date_text"]
+        if not re.search(r"\b\d{4}\b", date_text):
+            years = set(re.findall(r"\b\d{4}\b", event["name"]))
+            if len(years) != 1:
+                raise ValueError("activity date without a year requires one unambiguous year in the literal event name")
+            date_text = date_text + " " + next(iter(years))
+        dates = _dates(date_text)
+        if (dates["end_date"] is None and re.search(r"[-–—]|\bto\b", date_text, flags=re.I)
+                and not re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?|\d{1,2}-[A-Za-z]+-\d{4}", date_text)):
+            raise ValueError("activity date interval must have a valid explicit end date")
         if (event["start_date"] != dates["start_date"] or event["end_date"] != (dates["end_date"] or dates["start_date"])
                 or event["date_precision"] != dates["date_precision"]):
             raise ValueError("activity date bounds must match the literal source precision")

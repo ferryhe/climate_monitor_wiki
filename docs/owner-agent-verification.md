@@ -223,6 +223,15 @@ frozen target source URL. Event identity, date text and any optional organizer,
 location, URL, timezone, time or summary must occur literally in the same capture.
 Date bounds retain the source's day, month or year precision. Event dates never
 replace the article's publication, update or revision dates.
+When the literal `date_text` omits its year, parsing may use the sole four-digit
+year in the literal `event_name` retained in that same capture. For example,
+`TNFD Climate Week 2026` can supply the year for `September 21 - September 24`.
+The original `date_text` and `text` remain unchanged; no generated date wording
+is recorded as source evidence. A missing or ambiguous event-name year, or date
+bounds that conflict with that year, is rejected. Years elsewhere in the capture
+do not supply this context.
+An explicit interval requires a valid parsed end date; an impossible end such
+as `28–30 February` is rejected rather than reduced to a single-day event.
 This scope rejects cancelled or retrospective events because Dates excludes them.
 
 The source evidence's `review_status: "pass"` is required but does not publish

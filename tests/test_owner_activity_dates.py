@@ -268,6 +268,81 @@ def test_activity_date_retains_literal_bounds_and_precision(tmp_path, literal, s
     assert (event["start_date"], event["end_date"], event["date_precision"], event["raw_date"]) == (start, end, precision, literal)
 
 
+@pytest.mark.parametrize("source", ["native", "pdf", "linked"])
+@pytest.mark.parametrize(("name", "valid"), [
+    ("TNFD Climate Week 2026", True),
+    ("TNFD Climate Week", False),
+    ("TNFD Climate Week 2025 / 2026", False),
+    ("TNFD Climate Week 2025", False),
+])
+def test_activity_date_can_use_only_the_literal_event_names_unique_year(tmp_path, source, name, valid):
+    database = _seed(tmp_path, source)
+    before = _item(_reader(database, tmp_path), source)
+    manifest = _manifest(database, source)
+    entry = manifest["observations"][0]
+    value = entry["public_fields"]["activity_dates"][0]
+    literal = "September 21 - September 24"
+    value["observed_at"] = "2026-09-21"
+    value["evidence"].update(event_name=name, event_start_date="2026-09-21", event_end_date="2026-09-24",
+        date_text=literal, text=literal)
+    body = entry["source_identity"]["excerpt"] + "\n" + name + "\n" + literal + "\nPublished: 2026-01-01"
+    raw = body.encode()
+    entry["capture"].update(text=body, bytes_base64=base64.b64encode(raw).decode(),
+        sha256=hashlib.sha256(raw).hexdigest())
+    entry["field_evidence"]["activity_dates"]["excerpt"] = body
+    if not valid:
+        with pytest.raises(RegistryInputError, match="activity date"):
+            _ingest(database, tmp_path, manifest)
+        assert _item(_reader(database, tmp_path), source) == before
+        return
+    staged = _ingest(database, tmp_path, manifest)
+    _approve(database, tmp_path, _date_review(database, tmp_path, staged["candidate_sha256"]))
+    reader = _reader(database, tmp_path)
+    event = _item(reader, source)["activity_dates"][0]
+    assert (event["start_date"], event["end_date"], event["date_precision"], event["raw_date"]) == (
+        "2026-09-21", "2026-09-24", "day", literal)
+    assert value["evidence"]["date_text"] == literal
+    assert value["evidence"]["text"] == literal
+    projected = next(item for item in reader.meetings(base_date="1900-01-01", page_size=100)["items"] if item["name"] == name)
+    assert projected["raw_date"] == projected["date_evidence_text"] == literal
+
+
+@pytest.mark.parametrize(("literal", "valid"), [
+    ("28–30 February", False),
+    ("February 28 - 30", False),
+    ("28 to 30 February 2026", False),
+    ("28 February", True),
+    ("February 28, 2026", True),
+    ("2026-02-28", True),
+    ("28-February-2026", True),
+])
+def test_activity_date_does_not_collapse_an_impossible_range_to_a_single_day(tmp_path, literal, valid):
+    database = _seed(tmp_path)
+    reader = _reader(database, tmp_path)
+    before = reader.article("good")
+    manifest = _manifest(database)
+    entry = manifest["observations"][0]
+    value = entry["public_fields"]["activity_dates"][0]
+    value["observed_at"] = "2026-02-28"
+    value["evidence"].update(event_name="Climate risk conference 2026", event_start_date="2026-02-28",
+        event_end_date="2026-02-28", date_text=literal, text=literal)
+    body = entry["source_identity"]["excerpt"] + "\nClimate risk conference 2026\n" + literal
+    raw = body.encode()
+    entry["capture"].update(text=body, bytes_base64=base64.b64encode(raw).decode(),
+        sha256=hashlib.sha256(raw).hexdigest())
+    entry["field_evidence"]["activity_dates"]["excerpt"] = body
+    if not valid:
+        with pytest.raises(RegistryInputError, match="valid explicit end date"):
+            _ingest(database, tmp_path, manifest)
+        assert reader.article("good") == before
+        assert not reader.meetings(base_date="1900-01-01", page_size=100)["items"]
+        return
+    staged = _ingest(database, tmp_path, manifest)
+    _approve(database, tmp_path, _date_review(database, tmp_path, staged["candidate_sha256"]))
+    event = reader.article("good")["activity_dates"][0]
+    assert (event["start_date"], event["end_date"], event["raw_date"]) == ("2026-02-28", "2026-02-28", literal)
+
+
 def test_activity_and_date_supplements_keep_the_approved_chain(tmp_path):
     database = _seed(tmp_path)
     first = _ingest(database, tmp_path, _manifest(database))
