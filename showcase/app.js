@@ -2581,8 +2581,11 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
   const params = new URLSearchParams({ page: String(state.registry.meetingPage), page_size: "20" });
   const query = focusName || els.registryMeetingSearch.value.trim();
   if (query) params.set("query", query);
-  if (focusId || focusName) {
+  const includeHistory = Boolean(focusId || focusName || query);
+  if (includeHistory) {
     params.set("base_date", "1900-01-01");
+  }
+  if (focusId || focusName) {
     params.set("include_unknown", "true");
   }
   if (els.registryMeetingVerification.value) params.set("verification_status", els.registryMeetingVerification.value);
@@ -2608,7 +2611,10 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
     const counts = payload.verification_counts || {};
     els.registryMeetingCounts.textContent = focusId || focusName
       ? "Selected evidence record"
-      : `As of ${payload.base_date} (UTC) · ${payload.pagination.total} current / upcoming · ${counts.verified || 0} verified · ` +
+      : includeHistory
+        ? `Matching date records · ${payload.pagination.total} · ${counts.verified || 0} verified · ` +
+          `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`
+        : `As of ${payload.base_date} (UTC) · ${payload.pagination.total} current / upcoming · ${counts.verified || 0} verified · ` +
         `${counts.unchecked || 0} pending · ${counts.partial || 0} partial · ${counts.conflict || 0} conflicting`;
     const groups = new Map();
     payload.items.forEach((item) => {
@@ -2632,10 +2638,13 @@ async function loadRegistryMeetings({ focusId = "", focusName = "" } = {}) {
         const body = registryElement("div", "meeting-entry__body");
         const fields = registryElement("dl", "detail-meta");
         const partialDateText = item.date_precision && item.date_precision !== "day" ? item.raw_time_text : "";
+        const eventEnd = item.end_date || item.deadline_date || item.start_date;
+        const isPast = /^\d{4}-\d{2}-\d{2}$/.test(eventEnd || "") && eventEnd < new Date().toISOString().slice(0, 10);
+        const displayStatus = isPast && item.status === "scheduled" ? "Past" : item.status;
         const values = { "Date(s)": item.raw_date || partialDateText || [item.start_date, item.end_date].filter(Boolean).join(" through ") || item.deadline_date,
           "Time": item.raw_time_text === partialDateText ? "" : item.raw_time_text,
           "Timezone": item.event_timezone || item.timezone, "Host": item.organizer,
-          "Status": item.status, "Relevance": item.relevance || item.relevance_reason,
+          "Status": displayStatus, "Relevance": item.relevance || item.relevance_reason,
           "Deadline": item.deadline_date ? `${item.deadline_type || "Deadline"}: ${item.deadline_date}` : "" };
         Object.entries(values).forEach(([label, value]) => {
           if (value) fields.append(registryElement("dt", "", label), registryElement("dd", "", value));

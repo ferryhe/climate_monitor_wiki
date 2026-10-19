@@ -70,6 +70,36 @@ def _date_manifest(database, *, source="native", date="2026-10-02", date_kind="u
     return manifest
 
 
+def _date_fields_manifest(database, *, source="native"):
+    kind = "article" if source == "native" else "pdf_article"
+    identity = "good" if source == "native" else "pdf-good"
+    manifest = plan_owner_check(database, kind, identity,
+        date_fields=["updated_date", "revision_date"])
+    target = next(item for item in manifest["plan"]["targets"]
+        if item["occurrence_id"] == ("core:good" if source == "native" else "occurrence"))
+    context = "Official record for " + target["source_url"]
+    body = context + "\nLast update: 15 November 2025\nVersion revised: 14 September 2026"
+    raw = body.encode()
+    manifest.update(actor={"id": "date-checker", "task_id": "date-check-task"},
+        authorization_reference="owner-authorized-date-field-correction", audit_reference="audit/source",
+        checked_at="2026-10-16T12:00:00Z", observations=[{
+            "target": target, "access_status": "accessible",
+            "public_fields": {"updated_date": "2025-11-15", "revision_date": "2026-09-14"},
+            "original_comparisons": {}, "excluded_fields": [],
+            "field_evidence": {
+                "updated_date": {"value": "2025-11-15", "excerpt": "15 November 2025",
+                    "record_context": context, "date_kind": "updated", "date_precision": "day"},
+                "revision_date": {"value": "2026-09-14", "excerpt": "14 September 2026",
+                    "record_context": context, "date_kind": "revision", "date_precision": "day"}},
+            "source_identity": {"article_url": target["source_url"], "excerpt": context,
+                "reason": "Official record identifies the exact canonical article."},
+            "capture": {"requested_url": target["source_url"], "final_url": target["source_url"],
+                "title": "Official article record", "captured_at": "2026-10-16T11:59:00Z",
+                "tool": "browser", "text": body, "bytes_base64": base64.b64encode(raw).decode(),
+                "sha256": hashlib.sha256(raw).hexdigest()}}])
+    return manifest
+
+
 def _date_review(database, tmp_path, sha):
     receipt = _review(database, tmp_path, sha)
     receipt["reviewed_at"] = "2026-10-16T12:01:00Z"
@@ -131,6 +161,49 @@ def test_date_only_inherits_all_approved_facts_and_every_public_reader(tmp_path,
         latest = db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?",
             (manifest["plan"]["entity_kind"], manifest["plan"]["entity_id"])).fetchone()[0]
         assert stage_snapshot(db, snapshot_entity(db, manifest["plan"]["entity_kind"], manifest["plan"]["entity_id"])) == latest
+
+
+@pytest.mark.parametrize("source", ["native", "pdf", "linked"])
+def test_selected_date_fields_publish_together_and_preserve_every_other_field(tmp_path, source):
+    database = _seed(tmp_path, source)
+    reader = _reader(database, tmp_path)
+    before = _item(reader, source)
+    manifest = _date_fields_manifest(database, source=source)
+    staged = _ingest(database, tmp_path, manifest)
+    receipt = _date_review(database, tmp_path, staged["candidate_sha256"])
+    assert receipt["review_scope"] == "article_date_fields_only"
+    assert receipt["schema_version"] == "owner-agent-article-date-fields-review.v1"
+    _approve(database, tmp_path, receipt)
+
+    def check(current):
+        item = _item(current, source)
+        assert item["updated_date"] == "2025-11-15"
+        assert item["revision_date"] == "2026-09-14"
+        for key in ("title", "summary", "publication_date", "categories", "keywords",
+                "type_safe_classification", "enrichment", "metadata_provenance"):
+            assert item.get(key) == before.get(key), key
+
+    check(reader)
+    with reader.public_snapshot(direct=True):
+        check(reader)
+    with reader.public_snapshot():
+        check(reader)
+    root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
+    export_public_snapshot(database, root/"wiki/public-registry.json")
+    check(RegistryReader.from_public_export(root))
+
+
+def test_selected_date_fields_require_exact_fields_and_matching_date_kinds(tmp_path):
+    database = _seed(tmp_path)
+    manifest = _date_fields_manifest(database)
+    manifest["observations"][0]["public_fields"].pop("revision_date")
+    with pytest.raises(RegistryInputError, match="exactly match"):
+        _ingest(database, tmp_path, manifest)
+
+    manifest = _date_fields_manifest(database)
+    manifest["observations"][0]["field_evidence"]["updated_date"]["date_kind"] = "revision"
+    with pytest.raises(RegistryInputError, match="match each selected field"):
+        _ingest(database, tmp_path, manifest)
 
 
 @pytest.mark.parametrize("mutation", ["actor", "binding", "publication", "visibility", "latest", "live"])
