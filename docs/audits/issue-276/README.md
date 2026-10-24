@@ -6,18 +6,20 @@
 
 ## 当前环境与证据边界
 
-生产 checkout 为 `/home/ubuntu/climate_monitor_wiki`，clean `main`。应用镜像 `climate-monitor-wiki:pr293-app-305fda2` 正在运行且 healthy；writer 镜像 `climate-monitor-wiki:pr293-writer-305fda2` 已创建。二者 entrypoint 为 `/app/scripts/docker_entrypoint.sh`，应用运行 `uvicorn api_server:app --host 0.0.0.0 --port 8501 --no-access-log`，writer 配置命令为 `python -m scripts.run_pdf_intake_writer`。应用 Python 3.12.15；native Python 探测为 `/opt/hermes-venv/bin/python` 3.11.17、模块 `/opt/hermes-agent/hermes_cli/__init__.py`。模块可导入不等于 author/reviewer 已执行。
+公开副本将主机绝对路径及私有地址／hostname替换为一致占位符／逻辑路径；下表中的占位符不是精确路径本身。完整绝对路径只保留在外部私有原生证据中，原件未改，依现有文件 SHA256、文件名和 JSON 指针取证。`<HOST_HOME>` 表示生产账户 home，`<DOCKER_VOLUMES_DIR>` 表示宿主 volume 根，`<PRIVATE_EVIDENCE_DIR>` 表示授权交接的私有证据目录。容器挂载目的地、API 与仓库相对路径仍作为逻辑接口保留；详细映射说明见 evidence 的 `public_copy_redaction`。AC1 的精确路径核对需访问私有原件，公开占位符只展示映射关系；AC9 的当前／历史与版本时间边界不变。
+
+生产 checkout 为 `<HOST_HOME>/climate_monitor_wiki`，clean `main`。应用镜像 `climate-monitor-wiki:pr293-app-305fda2` 正在运行且 healthy；writer 镜像 `climate-monitor-wiki:pr293-writer-305fda2` 已创建。二者 entrypoint 为 `/app/scripts/docker_entrypoint.sh`，应用运行 `uvicorn api_server:app --host 0.0.0.0 --port 8501 --no-access-log`，writer 配置命令为 `python -m scripts.run_pdf_intake_writer`。应用 Python 3.12.15；native Python 探测为 `/opt/hermes-venv/bin/python` 3.11.17、模块 `/opt/hermes-agent/hermes_cli/__init__.py`。模块可导入不等于 author/reviewer 已执行。
 
 | 身份 | 宿主路径 → 容器路径 | 证据与限制 |
 | --- | --- | --- |
-| 业务 Registry | `/home/ubuntu/climate_monitor_data/registry` → `/registry`，二容器 RW | `CLIMATE_REGISTRY_DB=/registry/article-registry.sqlite3`；不是 runtime 同名 SQLite |
-| queue | `/home/ubuntu/climate_monitor_data/pdf-intake-queue` → `/pdf-intake-queue`，二容器 RW | bundle/status 与 active/pending 指针；存在文件不等于 task-started |
-| runtime | Docker volume `climate_monitor_wiki_climate_runtime`，`/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data` → app `/app/output`、`/pipeline`，writer `/pipeline` | 与业务库分开；源码默认 backup `/pipeline/pdf-intake-backups`、review root `/pipeline/acquisition-runs`，实际变量/现有备份另见证据包，不能仅凭 compose 默认值判定 |
-| runtime Wiki | `/home/ubuntu/climate_monitor_data/runtime-wiki` → `/runtime/wiki` | app RO、writer RW；prepared 与 active 分开 |
+| 业务 Registry | `<HOST_HOME>/climate_monitor_data/registry` → `/registry`，二容器 RW | `CLIMATE_REGISTRY_DB=/registry/article-registry.sqlite3`；不是 runtime 同名 SQLite |
+| queue | `<HOST_HOME>/climate_monitor_data/pdf-intake-queue` → `/pdf-intake-queue`，二容器 RW | bundle/status 与 active/pending 指针；存在文件不等于 task-started |
+| runtime | Docker volume `climate_monitor_wiki_climate_runtime`，`<DOCKER_VOLUMES_DIR>/climate_monitor_wiki_climate_runtime/_data` → app `/app/output`、`/pipeline`，writer `/pipeline` | 与业务库分开；源码默认 backup `/pipeline/pdf-intake-backups`、review root `/pipeline/acquisition-runs`，实际变量/现有备份另见证据包，不能仅凭 compose 默认值判定 |
+| runtime Wiki | `<HOST_HOME>/climate_monitor_data/runtime-wiki` → `/runtime/wiki` | app RO、writer RW；prepared 与 active 分开 |
 | immutable sources/Wiki | checkout `/sources`、`/wiki` → app `/app/sources`、`/app/wiki`，RO | 原件另由 Registry `original_pdf` 持久化及受控下载；未为审计上传或重新导入 |
 | governed reader | volume `climate_web_listening_issue126` → app `/opt/web-listening-data`，RW | 挂载不证明目标源可读、成功抓取或独立上下文可用 |
 
-Compose 原生标签保留完整 override 来源链，最后为 `/home/ubuntu/climate-monitor-ops/releases/pr293-305fda2/compose.yml`，不是只加载仓库基本 yml。详见 evidence 的 `deployment.containers`，不要用旧 D: 部署包作当前部署回执。宿主 `date` 和 `/etc/localtime` 为 UTC，`/etc/timezone` 不存在。19:40:11Z 的 gateway 进程使用 `HERMES_HOME=/home/ubuntu/.hermes`，无 `HERMES_TIMEZONE`；该 profile config SHA 为 `6c029145…`，无顶层 timezone。已安装 Hermes clean HEAD `03544a73…`：`hermes_time.py` 按环境→effective profile config（可能含 managed overlay）→server-local 解析；`cron/jobs.py:1137–1192` 按 `get_timezone() or base_time.tzinfo` 算下一次 cron，没有读取 `schedule.tz`。health 虽声明 ET，当前 next 却为 `2026-10-25T08:00:00Z`。这是有界的部署／配置时区语义差异；未执行所有 due 路径、未核实 managed overlay，不扩写成通用调度缺陷。
+Compose 原生标签保留完整 override 来源链，最后为 `<HOST_HOME>/climate-monitor-ops/releases/pr293-305fda2/compose.yml`，不是只加载仓库基本 yml。详见 evidence 的 `deployment.containers`，不要用旧 D: 部署包作当前部署回执。宿主 `date` 和 `<HOST_LOCALTIME_FILE>` 为 UTC，`<HOST_TIMEZONE_FILE>` 不存在。19:40:11Z 的 gateway 进程使用 `HERMES_HOME=<HOST_HOME>/.hermes`，无 `HERMES_TIMEZONE`；该 profile config SHA 为 `6c029145…`，无顶层 timezone。已安装 Hermes clean HEAD `03544a73…`：`hermes_time.py` 按环境→effective profile config（可能含 managed overlay）→server-local 解析；`cron/jobs.py:1137–1192` 按 `get_timezone() or base_time.tzinfo` 算下一次 cron，没有读取 `schedule.tz`。health 虽声明 ET，当前 next 却为 `2026-10-25T08:00:00Z`。这是有界的部署／配置时区语义差异；未执行所有 due 路径、未核实 managed overlay，不扩写成通用调度缺陷。
 
 ## 排程、真实身份与入口
 

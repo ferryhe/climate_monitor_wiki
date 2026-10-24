@@ -6,7 +6,7 @@
   "utc_offset_on_audit": "-04:00",
   "scope": "Source audit + current native read-only evidence; no production flow execution. Report statuses are audit semantics, not application enums.",
   "source_commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
-  "checkout": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\worktrees\\issue-276",
+  "checkout": "<AUDIT_WORKTREE>",
   "branch": "agent/issue-276",
   "source_inventory": [
     {
@@ -143,7 +143,7 @@
   "native_evidence_inventory": [
     {
       "id": "issue-276-live.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\issue-276-live.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\issue-276-live.json",
       "sha256": "b26f865d3c0719721cb0246ced2cdf415743b6fb6c61389de75f473f64241ee4",
       "bytes": 12720,
       "kind": "issue_contract",
@@ -153,14 +153,14 @@
       "native_json_pointer": "#/body",
       "capture_qualification": "Snapshot acquisition time uses existing local snapshot file mtime in UTC, not the GitHub created_at/updated_at content time; no fresh fetch. The native JSON has no capture field.",
       "capture_time_basis": {
-        "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\issue-276-live.json",
+        "external_path": "<PRIVATE_EVIDENCE_DIR>\\issue-276-live.json",
         "filesystem_attribute": "st_mtime",
         "evidence_json_pointer": "#/native_evidence_inventory/0/captured_at_utc"
       }
     },
     {
       "id": "issue-276-comments.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\issue-276-comments.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\issue-276-comments.json",
       "sha256": "4406735744a883dca0981e1383194c11e4290660c5081c496bdff07bfba1cc1d",
       "bytes": 304,
       "kind": "issue_contract",
@@ -170,14 +170,14 @@
       "native_json_pointer": "#",
       "capture_qualification": "Snapshot acquisition time uses existing local snapshot file mtime in UTC, not the GitHub created_at/updated_at content time; no fresh fetch. The native JSON has no capture field.",
       "capture_time_basis": {
-        "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\issue-276-comments.json",
+        "external_path": "<PRIVATE_EVIDENCE_DIR>\\issue-276-comments.json",
         "filesystem_attribute": "st_mtime",
         "evidence_json_pointer": "#/native_evidence_inventory/1/captured_at_utc"
       }
     },
     {
       "id": "current-server-probe.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-server-probe.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\current-server-probe.json",
       "sha256": "031a3ce105a2e57877de630c984061f53a09baed64fd17889d43f60c1d4990f5",
       "bytes": 4014,
       "kind": "current_native_snapshot",
@@ -188,7 +188,7 @@
     },
     {
       "id": "current-deployment-jobs.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-deployment-jobs.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\current-deployment-jobs.json",
       "sha256": "4b70243d300b3b4267950f76d9fe4a51faed73b4fe9d8af61386d608324ca4e9",
       "bytes": 49050,
       "kind": "current_native_snapshot",
@@ -199,7 +199,7 @@
     },
     {
       "id": "current-hermes-jobs-detail.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-hermes-jobs-detail.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\current-hermes-jobs-detail.json",
       "sha256": "3437d66a2423306f185132b77c24c258497ebc7f25b5c788246c95a197874aba",
       "bytes": 32979,
       "kind": "current_native_snapshot",
@@ -210,7 +210,7 @@
     },
     {
       "id": "current-hermes-runtime.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-hermes-runtime.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\current-hermes-runtime.json",
       "sha256": "50f606dd9d0a9505ad3fc105556f2dc469cfa9c6608b3b0153bc8a4785a1d6e4",
       "bytes": 8000,
       "kind": "current_native_snapshot",
@@ -221,7 +221,7 @@
     },
     {
       "id": "current-cron-active-jobs-1935Z.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-cron-active-jobs-1935Z.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\current-cron-active-jobs-1935Z.json",
       "sha256": "fa6368d23b9a18a480a882c58fb7f4baba6200070399b03d84a956fa1bde0fec",
       "bytes": 3229,
       "kind": "current_native_snapshot",
@@ -232,7 +232,7 @@
     },
     {
       "id": "current-storage-metadata-1936Z.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-storage-metadata-1936Z.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\current-storage-metadata-1936Z.json",
       "sha256": "81cdee13ad0c51476a4b32147d14085918ae403d6b54c0bc557a8595ced3e5f2",
       "bytes": 984552,
       "kind": "current_native_snapshot",
@@ -243,7 +243,7 @@
     },
     {
       "id": "current-hermes-timezone-source-1940Z.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-hermes-timezone-source-1940Z.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\current-hermes-timezone-source-1940Z.json",
       "sha256": "d132f1d458d7e5f8822c6e1fde8420a7dc1542ee53c6d75e8d4ed90677f1dd55",
       "bytes": 13530,
       "kind": "current_native_snapshot",
@@ -254,7 +254,7 @@
     },
     {
       "id": "controller-current-remote-main.json",
-      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\controller-current-remote-main.json",
+      "external_path": "<PRIVATE_EVIDENCE_DIR>\\controller-current-remote-main.json",
       "sha256": "5ba87b95d9afa361a37f795c530e73c99c3813e2f427cea23bef97c984eda3e4",
       "bytes": 352,
       "kind": "later_readonly_remote_ref_snapshot",
@@ -267,7 +267,7 @@
   "provenance": {
     "read_method": "Existing sanitized native snapshots collected via reviewed transport.remote() only; worker reads files and source. No upload()/container(), no initial user-modified checkout script executed by worker. Supplemental data must include its own reviewed query hash.",
     "transport": {
-      "transport_path": "C:\\Project\\climate_monitor_wiki\\tmp\\reviewed_import_20261016\\transport.py",
+      "transport_path": "<INITIAL_CHECKOUT>\\tmp\\reviewed_import_20261016\\transport.py",
       "transport_sha256": "21683dca0e12c204154ae3fc18f63291c6b3b08777660fbe99f6a274860e98c4",
       "query_sha256": "2b49e6e3e7d074ea0be641585bab41c4b4d19206011c5ec584c8b7e2b5d2477f"
     },
@@ -282,7 +282,7 @@
     "captured_at_utc": "2026-10-24T19:26:58.314095Z",
     "native_pointer": "current-deployment-jobs.json#/result",
     "production_checkout": {
-      "path": "/home/ubuntu/climate_monitor_wiki",
+      "path": "<HOST_HOME>/climate_monitor_wiki",
       "head": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
       "branch": "main",
       "origin_main": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
@@ -313,7 +313,7 @@
           "--no-access-log"
         ],
         "compose_project": "climate_monitor_wiki",
-        "compose_config_files": "/home/ubuntu/climate_monitor_wiki/docker-compose.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.delivery.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.update-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.job-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry-import.yml,/home/ubuntu/climate_monitor_data/deploy-configs/issue189-pdf-intake/docker-compose.pdf-glyph.yml,/home/ubuntu/climate_monitor_data/deploy-backups/app-oom-ecdaa31-20261011T134346Z/hotfix-v2/docker-compose.hotfix-v2.yml,/home/ubuntu/climate-monitor-ops/backups/pr233-20261012T144602Z/retained-runtime.yml,/home/ubuntu/climate-monitor-ops/backups/pr236-20261013T023452Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr235-pr236-20261013T042500Z/category-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr237-20261013T193349Z/chat-report-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr238-20261013T204726Z/report-memory-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr239-20261014T062032Z/citation-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr241-20261014T112625Z/pdf-read-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr242-20261014T144804Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr243-20261014T151717Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/chat-evidence-20261014T163442Z/chat-evidence-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr245-20261014T173536Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr246-20261014T175859Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr247-20261014T193431Z/publisher-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr248-20261014T202200Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr249-20261014T212500Z/explorer-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-23-pdf-reader-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-publish-20261015/pdf-archive-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-data-quality-20261015/pdf-data-quality-image.yml,/home/ubuntu/climate-monitor-ops/pdf-legacy-meeting-20261015/pdf-legacy-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-pending-audit-20261015/pdf-reviewed-display-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-year-query-20261015/meeting-year-query-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-29-verified-original-summary-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-30-verified-english-pdf-image.yml,/home/ubuntu/climate-monitor-ops/owner-agent-verification-20261015/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-meeting-association-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-date-evidence-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/article-refresh-combined-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-verified-source-links-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-catalog-date-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-native-json-guard-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/metadata-owner-code-20261016/metadata-owner-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-39-display-image.yml,/home/ubuntu/climate-monitor-ops/pr268-deploy-20261017/incremental-image.yml,/home/ubuntu/climate-monitor-ops/releases/pr271-8fa3029/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr272-b18271f/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr273-1954bf5/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr274-e323f0a/compose.yml,/home/ubuntu/climate-monitor-ops/pr275-selective-dates-20261019/compose.yml,/home/ubuntu/climate-monitor-ops/releases/date-toggle-4d88dc/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr291-62d41a6/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr293-305fda2/compose.yml",
+        "compose_config_files": "<HOST_HOME>/climate_monitor_wiki/docker-compose.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.registry.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.delivery.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.update-status.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.job-status.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.registry-import.yml,<HOST_HOME>/climate_monitor_data/deploy-configs/issue189-pdf-intake/docker-compose.pdf-glyph.yml,<HOST_HOME>/climate_monitor_data/deploy-backups/app-oom-ecdaa31-20261011T134346Z/hotfix-v2/docker-compose.hotfix-v2.yml,<HOST_HOME>/climate-monitor-ops/backups/pr233-20261012T144602Z/retained-runtime.yml,<HOST_HOME>/climate-monitor-ops/backups/pr236-20261013T023452Z/frontend-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr235-pr236-20261013T042500Z/category-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr237-20261013T193349Z/chat-report-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr238-20261013T204726Z/report-memory-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr239-20261014T062032Z/citation-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr241-20261014T112625Z/pdf-read-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr242-20261014T144804Z/report-ui-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr243-20261014T151717Z/report-ui-image.yml,<HOST_HOME>/climate-monitor-ops/backups/chat-evidence-20261014T163442Z/chat-evidence-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr245-20261014T173536Z/pdf-pagination-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr246-20261014T175859Z/pdf-pagination-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr247-20261014T193431Z/publisher-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr248-20261014T202200Z/frontend-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr249-20261014T212500Z/explorer-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-23-pdf-reader-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-meeting-publish-20261015/pdf-archive-meeting-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-data-quality-20261015/pdf-data-quality-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-legacy-meeting-20261015/pdf-legacy-meeting-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-pending-audit-20261015/pdf-reviewed-display-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-meeting-year-query-20261015/meeting-year-query-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-29-verified-original-summary-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-30-verified-english-pdf-image.yml,<HOST_HOME>/climate-monitor-ops/owner-agent-verification-20261015/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-meeting-association-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-date-evidence-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/article-refresh-combined-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-verified-source-links-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-catalog-date-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-native-json-guard-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/metadata-owner-code-20261016/metadata-owner-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-39-display-image.yml,<HOST_HOME>/climate-monitor-ops/pr268-deploy-20261017/incremental-image.yml,<HOST_HOME>/climate-monitor-ops/releases/pr271-8fa3029/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr272-b18271f/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr273-1954bf5/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr274-e323f0a/compose.yml,<HOST_HOME>/climate-monitor-ops/pr275-selective-dates-20261019/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/date-toggle-4d88dc/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr291-62d41a6/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr293-305fda2/compose.yml",
         "repo_commit_env": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
         "storage_env": {
           "CLIMATE_REGISTRY_DB": "/registry/article-registry.sqlite3",
@@ -325,84 +325,84 @@
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_data/registry",
+            "source": "<HOST_HOME>/climate_monitor_data/registry",
             "destination": "/registry",
             "rw": true
           },
           {
             "type": "volume",
             "name": "climate_monitor_wiki_climate_runtime",
-            "source": "/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data",
+            "source": "<DOCKER_VOLUMES_DIR>/climate_monitor_wiki_climate_runtime/_data",
             "destination": "/app/output",
             "rw": true
           },
           {
             "type": "volume",
             "name": "climate_monitor_wiki_climate_runtime",
-            "source": "/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data",
+            "source": "<DOCKER_VOLUMES_DIR>/climate_monitor_wiki_climate_runtime/_data",
             "destination": "/pipeline",
             "rw": true
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_delivery_artifacts",
+            "source": "<HOST_HOME>/climate_delivery_artifacts",
             "destination": "/delivery-output",
             "rw": false
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_data/runtime-wiki",
+            "source": "<HOST_HOME>/climate_monitor_data/runtime-wiki",
             "destination": "/runtime/wiki",
             "rw": false
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_data/update-status",
+            "source": "<HOST_HOME>/climate_monitor_data/update-status",
             "destination": "/update-status",
             "rw": false
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_data/job-status",
+            "source": "<HOST_HOME>/climate_monitor_data/job-status",
             "destination": "/job-status",
             "rw": false
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_wiki/wiki",
+            "source": "<HOST_HOME>/climate_monitor_wiki/wiki",
             "destination": "/app/wiki",
             "rw": false
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_wiki/sources",
+            "source": "<HOST_HOME>/climate_monitor_wiki/sources",
             "destination": "/app/sources",
             "rw": false
           },
           {
             "type": "volume",
             "name": "climate_web_listening_issue126",
-            "source": "/var/lib/docker/volumes/climate_web_listening_issue126/_data",
+            "source": "<DOCKER_VOLUMES_DIR>/climate_web_listening_issue126/_data",
             "destination": "/opt/web-listening-data",
             "rw": true
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_wiki/article_metadata",
+            "source": "<HOST_HOME>/climate_monitor_wiki/article_metadata",
             "destination": "/app/article_metadata",
             "rw": false
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_data/pdf-intake-queue",
+            "source": "<HOST_HOME>/climate_monitor_data/pdf-intake-queue",
             "destination": "/pdf-intake-queue",
             "rw": true
           }
@@ -427,7 +427,7 @@
           "scripts.run_pdf_intake_writer"
         ],
         "compose_project": "climate_monitor_wiki",
-        "compose_config_files": "/home/ubuntu/climate_monitor_wiki/docker-compose.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.delivery.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.update-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.job-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry-import.yml,/home/ubuntu/climate_monitor_data/deploy-configs/issue189-pdf-intake/docker-compose.pdf-glyph.yml,/home/ubuntu/climate_monitor_data/deploy-backups/app-oom-ecdaa31-20261011T134346Z/hotfix-v2/docker-compose.hotfix-v2.yml,/home/ubuntu/climate-monitor-ops/backups/pr233-20261012T144602Z/retained-runtime.yml,/home/ubuntu/climate-monitor-ops/backups/pr236-20261013T023452Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr235-pr236-20261013T042500Z/category-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr237-20261013T193349Z/chat-report-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr238-20261013T204726Z/report-memory-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr239-20261014T062032Z/citation-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr241-20261014T112625Z/pdf-read-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr242-20261014T144804Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr243-20261014T151717Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/chat-evidence-20261014T163442Z/chat-evidence-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr245-20261014T173536Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr246-20261014T175859Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr247-20261014T193431Z/publisher-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr248-20261014T202200Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr249-20261014T212500Z/explorer-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-23-pdf-reader-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-publish-20261015/pdf-archive-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-data-quality-20261015/pdf-data-quality-image.yml,/home/ubuntu/climate-monitor-ops/pdf-legacy-meeting-20261015/pdf-legacy-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-pending-audit-20261015/pdf-reviewed-display-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-year-query-20261015/meeting-year-query-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-29-verified-original-summary-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-30-verified-english-pdf-image.yml,/home/ubuntu/climate-monitor-ops/owner-agent-verification-20261015/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-meeting-association-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-date-evidence-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/article-refresh-combined-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-verified-source-links-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-catalog-date-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-native-json-guard-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/metadata-owner-code-20261016/metadata-owner-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-39-display-image.yml,/home/ubuntu/climate-monitor-ops/pr268-deploy-20261017/incremental-image.yml,/home/ubuntu/climate-monitor-ops/releases/pr271-8fa3029/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr272-b18271f/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr273-1954bf5/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr274-e323f0a/compose.yml,/home/ubuntu/climate-monitor-ops/pr275-selective-dates-20261019/compose.yml,/home/ubuntu/climate-monitor-ops/releases/date-toggle-4d88dc/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr291-62d41a6/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr293-305fda2/compose.yml",
+        "compose_config_files": "<HOST_HOME>/climate_monitor_wiki/docker-compose.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.registry.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.delivery.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.update-status.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.job-status.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.registry-import.yml,<HOST_HOME>/climate_monitor_data/deploy-configs/issue189-pdf-intake/docker-compose.pdf-glyph.yml,<HOST_HOME>/climate_monitor_data/deploy-backups/app-oom-ecdaa31-20261011T134346Z/hotfix-v2/docker-compose.hotfix-v2.yml,<HOST_HOME>/climate-monitor-ops/backups/pr233-20261012T144602Z/retained-runtime.yml,<HOST_HOME>/climate-monitor-ops/backups/pr236-20261013T023452Z/frontend-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr235-pr236-20261013T042500Z/category-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr237-20261013T193349Z/chat-report-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr238-20261013T204726Z/report-memory-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr239-20261014T062032Z/citation-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr241-20261014T112625Z/pdf-read-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr242-20261014T144804Z/report-ui-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr243-20261014T151717Z/report-ui-image.yml,<HOST_HOME>/climate-monitor-ops/backups/chat-evidence-20261014T163442Z/chat-evidence-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr245-20261014T173536Z/pdf-pagination-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr246-20261014T175859Z/pdf-pagination-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr247-20261014T193431Z/publisher-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr248-20261014T202200Z/frontend-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr249-20261014T212500Z/explorer-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-23-pdf-reader-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-meeting-publish-20261015/pdf-archive-meeting-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-data-quality-20261015/pdf-data-quality-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-legacy-meeting-20261015/pdf-legacy-meeting-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-pending-audit-20261015/pdf-reviewed-display-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-meeting-year-query-20261015/meeting-year-query-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-29-verified-original-summary-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-30-verified-english-pdf-image.yml,<HOST_HOME>/climate-monitor-ops/owner-agent-verification-20261015/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-meeting-association-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-date-evidence-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/article-refresh-combined-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-verified-source-links-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-catalog-date-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-native-json-guard-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/metadata-owner-code-20261016/metadata-owner-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-39-display-image.yml,<HOST_HOME>/climate-monitor-ops/pr268-deploy-20261017/incremental-image.yml,<HOST_HOME>/climate-monitor-ops/releases/pr271-8fa3029/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr272-b18271f/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr273-1954bf5/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr274-e323f0a/compose.yml,<HOST_HOME>/climate-monitor-ops/pr275-selective-dates-20261019/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/date-toggle-4d88dc/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr291-62d41a6/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr293-305fda2/compose.yml",
         "repo_commit_env": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
         "storage_env": {
           "CLIMATE_REGISTRY_DB": "/registry/article-registry.sqlite3"
@@ -436,28 +436,28 @@
           {
             "type": "volume",
             "name": "climate_monitor_wiki_climate_runtime",
-            "source": "/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data",
+            "source": "<DOCKER_VOLUMES_DIR>/climate_monitor_wiki_climate_runtime/_data",
             "destination": "/pipeline",
             "rw": true
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_data/registry",
+            "source": "<HOST_HOME>/climate_monitor_data/registry",
             "destination": "/registry",
             "rw": true
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_data/pdf-intake-queue",
+            "source": "<HOST_HOME>/climate_monitor_data/pdf-intake-queue",
             "destination": "/pdf-intake-queue",
             "rw": true
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_data/runtime-wiki",
+            "source": "<HOST_HOME>/climate_monitor_data/runtime-wiki",
             "destination": "/runtime/wiki",
             "rw": true
           }
@@ -483,7 +483,7 @@
           "caddyfile"
         ],
         "compose_project": "climate_monitor_wiki",
-        "compose_config_files": "/home/ubuntu/climate_monitor_wiki/docker-compose.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.delivery.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.update-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.job-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry-import.yml,/home/ubuntu/climate_monitor_data/deploy-configs/issue189-pdf-intake/docker-compose.pdf-glyph.yml,/home/ubuntu/climate_monitor_data/deploy-backups/app-oom-ecdaa31-20261011T134346Z/hotfix-v2/docker-compose.hotfix-v2.yml,/home/ubuntu/climate-monitor-ops/backups/pr233-20261012T144602Z/retained-runtime.yml,/home/ubuntu/climate-monitor-ops/backups/pr236-20261013T023452Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr235-pr236-20261013T042500Z/category-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr237-20261013T193349Z/chat-report-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr238-20261013T204726Z/report-memory-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr239-20261014T062032Z/citation-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr241-20261014T112625Z/pdf-read-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr242-20261014T144804Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr243-20261014T151717Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/chat-evidence-20261014T163442Z/chat-evidence-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr245-20261014T173536Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr246-20261014T175859Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr247-20261014T193431Z/publisher-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr248-20261014T202200Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr249-20261014T212500Z/explorer-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-23-pdf-reader-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-publish-20261015/pdf-archive-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-data-quality-20261015/pdf-data-quality-image.yml,/home/ubuntu/climate-monitor-ops/pdf-legacy-meeting-20261015/pdf-legacy-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-pending-audit-20261015/pdf-reviewed-display-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-year-query-20261015/meeting-year-query-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-29-verified-original-summary-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-30-verified-english-pdf-image.yml,/home/ubuntu/climate-monitor-ops/owner-agent-verification-20261015/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-meeting-association-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-date-evidence-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/article-refresh-combined-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-verified-source-links-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-catalog-date-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-native-json-guard-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/metadata-owner-code-20261016/metadata-owner-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-39-display-image.yml,/home/ubuntu/climate-monitor-ops/pr268-deploy-20261017/incremental-image.yml,/home/ubuntu/climate-monitor-ops/releases/pr271-8fa3029/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr272-b18271f/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr273-1954bf5/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr274-e323f0a/compose.yml,/home/ubuntu/climate-monitor-ops/pr275-selective-dates-20261019/compose.yml",
+        "compose_config_files": "<HOST_HOME>/climate_monitor_wiki/docker-compose.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.registry.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.delivery.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.update-status.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.job-status.yml,<HOST_HOME>/climate_monitor_wiki/docker-compose.registry-import.yml,<HOST_HOME>/climate_monitor_data/deploy-configs/issue189-pdf-intake/docker-compose.pdf-glyph.yml,<HOST_HOME>/climate_monitor_data/deploy-backups/app-oom-ecdaa31-20261011T134346Z/hotfix-v2/docker-compose.hotfix-v2.yml,<HOST_HOME>/climate-monitor-ops/backups/pr233-20261012T144602Z/retained-runtime.yml,<HOST_HOME>/climate-monitor-ops/backups/pr236-20261013T023452Z/frontend-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr235-pr236-20261013T042500Z/category-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr237-20261013T193349Z/chat-report-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr238-20261013T204726Z/report-memory-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr239-20261014T062032Z/citation-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr241-20261014T112625Z/pdf-read-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr242-20261014T144804Z/report-ui-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr243-20261014T151717Z/report-ui-image.yml,<HOST_HOME>/climate-monitor-ops/backups/chat-evidence-20261014T163442Z/chat-evidence-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr245-20261014T173536Z/pdf-pagination-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr246-20261014T175859Z/pdf-pagination-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr247-20261014T193431Z/publisher-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr248-20261014T202200Z/frontend-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr249-20261014T212500Z/explorer-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-23-pdf-reader-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-meeting-publish-20261015/pdf-archive-meeting-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-data-quality-20261015/pdf-data-quality-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-legacy-meeting-20261015/pdf-legacy-meeting-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-pending-audit-20261015/pdf-reviewed-display-image.yml,<HOST_HOME>/climate-monitor-ops/pdf-meeting-year-query-20261015/meeting-year-query-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-29-verified-original-summary-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-30-verified-english-pdf-image.yml,<HOST_HOME>/climate-monitor-ops/owner-agent-verification-20261015/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-meeting-association-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-date-evidence-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/article-refresh-combined-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-verified-source-links-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-catalog-date-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/owner-native-json-guard-20261016/owner-agent-image.yml,<HOST_HOME>/climate-monitor-ops/metadata-owner-code-20261016/metadata-owner-image.yml,<HOST_HOME>/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-39-display-image.yml,<HOST_HOME>/climate-monitor-ops/pr268-deploy-20261017/incremental-image.yml,<HOST_HOME>/climate-monitor-ops/releases/pr271-8fa3029/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr272-b18271f/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr273-1954bf5/compose.yml,<HOST_HOME>/climate-monitor-ops/releases/pr274-e323f0a/compose.yml,<HOST_HOME>/climate-monitor-ops/pr275-selective-dates-20261019/compose.yml",
         "repo_commit_env": null,
         "storage_env": {
           "SITE_HOST": {
@@ -497,28 +497,28 @@
           {
             "type": "volume",
             "name": "climate_monitor_wiki_caddy_data",
-            "source": "/var/lib/docker/volumes/climate_monitor_wiki_caddy_data/_data",
+            "source": "<DOCKER_VOLUMES_DIR>/climate_monitor_wiki_caddy_data/_data",
             "destination": "/data",
             "rw": true
           },
           {
             "type": "volume",
             "name": "climate_monitor_wiki_caddy_config",
-            "source": "/var/lib/docker/volumes/climate_monitor_wiki_caddy_config/_data",
+            "source": "<DOCKER_VOLUMES_DIR>/climate_monitor_wiki_caddy_config/_data",
             "destination": "/config",
             "rw": true
           },
           {
             "type": "volume",
             "name": "climate_monitor_wiki_caddy_logs",
-            "source": "/var/lib/docker/volumes/climate_monitor_wiki_caddy_logs/_data",
+            "source": "<DOCKER_VOLUMES_DIR>/climate_monitor_wiki_caddy_logs/_data",
             "destination": "/var/log/caddy",
             "rw": true
           },
           {
             "type": "bind",
             "name": null,
-            "source": "/home/ubuntu/climate_monitor_wiki/Caddyfile",
+            "source": "<HOST_HOME>/climate_monitor_wiki/Caddyfile",
             "destination": "/etc/caddy/Caddyfile",
             "rw": false
           }
@@ -593,7 +593,7 @@
     "qualification": "Selected API fields only; no model invocation or generation identity successful-run claim."
   },
   "scheduler": {
-    "jobs_source_path": "/home/ubuntu/.hermes/cron/jobs.json",
+    "jobs_source_path": "<HOST_HOME>/.hermes/cron/jobs.json",
     "captured_at_utc": "2026-10-24T19:27:37.304341Z",
     "source_updated_at": "2026-10-24T19:25:40.585678Z",
     "source_sha256": "37d4a097954cf4119e9b89dbc2234fce464bc9c4fe4f6ead58c185c673bdf011",
@@ -623,7 +623,7 @@
         "script": null,
         "prompt_sha256": "515eb609ab9b048a46aa346d2ded18245dcf0d5856bfbcaad417837cd7c82025",
         "prompt_paths": [
-          "/home/ubuntu/hermes_scripts/cost_report.py",
+          "<HOST_HOME>/hermes_scripts/cost_report.py",
           "scripts/cost_report.py"
         ]
       },
@@ -956,7 +956,7 @@
         "skills": [],
         "enabled_toolsets": null,
         "no_agent": true,
-        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "workdir": "<HOST_HOME>/climate_monitor_wiki",
         "script": null,
         "prompt_sha256": null,
         "prompt_paths": []
@@ -980,7 +980,7 @@
         "skills": [],
         "enabled_toolsets": null,
         "no_agent": true,
-        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "workdir": "<HOST_HOME>/climate_monitor_wiki",
         "script": null,
         "prompt_sha256": null,
         "prompt_paths": []
@@ -1004,7 +1004,7 @@
         "skills": [],
         "enabled_toolsets": null,
         "no_agent": true,
-        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "workdir": "<HOST_HOME>/climate_monitor_wiki",
         "script": null,
         "prompt_sha256": null,
         "prompt_paths": []
@@ -1028,7 +1028,7 @@
         "skills": [],
         "enabled_toolsets": null,
         "no_agent": true,
-        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "workdir": "<HOST_HOME>/climate_monitor_wiki",
         "script": null,
         "prompt_sha256": null,
         "prompt_paths": []
@@ -1052,7 +1052,7 @@
         "skills": [],
         "enabled_toolsets": null,
         "no_agent": true,
-        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "workdir": "<HOST_HOME>/climate_monitor_wiki",
         "script": null,
         "prompt_sha256": null,
         "prompt_paths": []
@@ -1076,7 +1076,7 @@
         "skills": [],
         "enabled_toolsets": null,
         "no_agent": true,
-        "workdir": "/home/ubuntu",
+        "workdir": "<HOST_HOME>",
         "script": null,
         "prompt_sha256": null,
         "prompt_paths": []
@@ -1100,7 +1100,7 @@
         "skills": [],
         "enabled_toolsets": null,
         "no_agent": true,
-        "workdir": "/home/ubuntu",
+        "workdir": "<HOST_HOME>",
         "script": null,
         "prompt_sha256": null,
         "prompt_paths": []
@@ -1133,7 +1133,7 @@
     ],
     "latest_enabled_snapshot": {
       "captured_at_utc": "2026-10-24T19:34:21.532678Z",
-      "path": "/home/ubuntu/.hermes/cron/jobs.json",
+      "path": "<HOST_HOME>/.hermes/cron/jobs.json",
       "sha256": "8837a1151d9003c5863ac0af82b12a04a946b417684c3b75b968fe91f8cdf5b3",
       "bytes": 42539,
       "enabled_count": 5,
@@ -1167,7 +1167,7 @@
           "next_run_at": "2026-10-24T19:35:00Z",
           "schedule_display": "*/5 * * * *",
           "no_agent": true,
-          "workdir": "/home/ubuntu/climate_monitor_wiki",
+          "workdir": "<HOST_HOME>/climate_monitor_wiki",
           "provider": null,
           "model": null,
           "skill": null,
@@ -1187,7 +1187,7 @@
           "next_run_at": "2026-10-25T08:00:00Z",
           "schedule_display": "0 8,9 * * *",
           "no_agent": true,
-          "workdir": "/home/ubuntu",
+          "workdir": "<HOST_HOME>",
           "provider": null,
           "model": null,
           "skill": null,
@@ -1207,7 +1207,7 @@
           "next_run_at": "2026-10-25T09:00:00Z",
           "schedule_display": "0 9,10 * * *",
           "no_agent": true,
-          "workdir": "/home/ubuntu",
+          "workdir": "<HOST_HOME>",
           "provider": null,
           "model": null,
           "skill": null,
@@ -1274,7 +1274,7 @@
         "actual": "No enabled native T10 review job in current 21-item inventory"
       }
     ],
-    "timezone_conclusion": "Observed host UTC; active gateway HERMES_HOME=/home/ubuntu/.hermes; no HERMES_TIMEZONE in observed process and no top-level timezone key in config. Installed clean Hermes source resolves environment -> effective profile config (including possible managed overlay) -> server local; compute_next_run uses get_timezone() or base_time.tzinfo, not schedule.tz. Current health schedule declares ET but next_run_at=2026-10-25T08:00:00Z. This is a bounded deployment/configuration semantics discrepancy. Effective managed overlays, routed contexts, and all due paths were not exercised; do not claim every job fires in ET or a general scheduler bug.",
+    "timezone_conclusion": "Observed host UTC; active gateway HERMES_HOME=<HOST_HOME>/.hermes; no HERMES_TIMEZONE in observed process and no top-level timezone key in config. Installed clean Hermes source resolves environment -> effective profile config (including possible managed overlay) -> server local; compute_next_run uses get_timezone() or base_time.tzinfo, not schedule.tz. Current health schedule declares ET but next_run_at=2026-10-25T08:00:00Z. This is a bounded deployment/configuration semantics discrepancy. Effective managed overlays, routed contexts, and all due paths were not exercised; do not claim every job fires in ET or a general scheduler bug.",
     "source_refs": [
       "climate_monitor/schedule.py:17",
       "climate_monitor/schedule.py:64",
@@ -1283,17 +1283,17 @@
     "installed_timezone_evidence": {
       "captured_at_utc": "2026-10-24T19:40:11.038000Z",
       "host": {
-        "localtime_target": "/usr/share/zoneinfo/Etc/UTC",
+        "localtime_target": "<HOST_ZONEINFO_DIR>/Etc/UTC",
         "timezone_file_present": false
       },
       "runtime": {
-        "repo": "/home/ubuntu/.hermes/hermes-agent",
+        "repo": "<HOST_HOME>/.hermes/hermes-agent",
         "git_head": "03544a73be9423b903bbfa11c29b252a0b88dce9",
         "worktree_clean": true
       },
       "profile": {
-        "hermes_home": "/home/ubuntu/.hermes",
-        "config_path": "/home/ubuntu/.hermes/config.yaml",
+        "hermes_home": "<HOST_HOME>/.hermes",
+        "config_path": "<HOST_HOME>/.hermes/config.yaml",
         "config_sha256": "6c0291450eada6df3dcfc4909fe2725a27b6502dd739a3c5f3e08d55e91d9326",
         "config_bytes": 8271,
         "timezone_key_present": false,
@@ -1304,14 +1304,14 @@
             "env_keys": [
               "HERMES_HOME"
             ],
-            "hermes_home": "/home/ubuntu/.hermes",
+            "hermes_home": "<HOST_HOME>/.hermes",
             "hermes_timezone_present": false
           }
         ]
       },
       "source_files": {
         "hermes_time.py": {
-          "path": "/home/ubuntu/.hermes/hermes-agent/hermes_time.py",
+          "path": "<HOST_HOME>/.hermes/hermes-agent/hermes_time.py",
           "sha256": "44867d31c4fcc09c248a9958f08c4ac57acf61cc9b20a9f2c8515c80de96ba69",
           "bytes": 4591,
           "snippets": [
@@ -1333,7 +1333,7 @@
           ]
         },
         "cron/jobs.py": {
-          "path": "/home/ubuntu/.hermes/hermes-agent/cron/jobs.py",
+          "path": "<HOST_HOME>/.hermes/hermes-agent/cron/jobs.py",
           "sha256": "9d27d9eb4d7cad4ce94a0d2f75b8f9ff4f2782d9e96c9a980710baf2f9251b68",
           "bytes": 151126,
           "snippets": [
@@ -1351,7 +1351,7 @@
         }
       },
       "cron": {
-        "path": "/home/ubuntu/.hermes/cron/jobs.json",
+        "path": "<HOST_HOME>/.hermes/cron/jobs.json",
         "sha256": "5ed898ed1714978d4df43d1843195b79ab530535159256da19b90cf0a42549f1",
         "bytes": 42539,
         "enabled_count": 5,
@@ -1385,7 +1385,7 @@
             "next_run_at": "2026-10-24T19:40:00Z",
             "schedule_display": "*/5 * * * *",
             "no_agent": true,
-            "workdir": "/home/ubuntu/climate_monitor_wiki",
+            "workdir": "<HOST_HOME>/climate_monitor_wiki",
             "provider": null,
             "model": null,
             "skill": null,
@@ -1405,7 +1405,7 @@
             "next_run_at": "2026-10-25T08:00:00Z",
             "schedule_display": "0 8,9 * * *",
             "no_agent": true,
-            "workdir": "/home/ubuntu",
+            "workdir": "<HOST_HOME>",
             "provider": null,
             "model": null,
             "skill": null,
@@ -1425,7 +1425,7 @@
             "next_run_at": "2026-10-25T09:00:00Z",
             "schedule_display": "0 9,10 * * *",
             "no_agent": true,
-            "workdir": "/home/ubuntu",
+            "workdir": "<HOST_HOME>",
             "provider": null,
             "model": null,
             "skill": null,
@@ -1914,7 +1914,7 @@
   },
   "runtime_instructions": {
     "local_only_skill": {
-      "path": "C:\\Users\\ferry\\.codex\\skills\\climate-article-dates\\SKILL.md",
+      "path": "<LOCAL_SKILLS_DIR>\\climate-article-dates\\SKILL.md",
       "sha256": "d3588b68040b60936ee0a40fffbd0c376bc9090a164f1486ec21f12084bec662",
       "observed_rules": [
         "publication date or collection-date fallback sorting",
@@ -2014,7 +2014,7 @@
       "passed": 0,
       "skips": null,
       "qualification": "No tests ran; predominant ModuleNotFoundError fcntl, also tests.fixtures import failure. No compatibility patch/stub or weakened test.",
-      "external_observed_output_evidence": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\pytest-evidence.json",
+      "external_observed_output_evidence": "<PRIVATE_EVIDENCE_DIR>\\pytest-evidence.json",
       "raw_stdout_limit": "Original tool return was truncated; full stdout not saved. External evidence contains actual visible excerpts/summary and tool metadata only."
     },
     "javascript": {
@@ -2060,7 +2060,7 @@
     "captured_at_utc": "2026-10-24T19:36:55.244283Z",
     "native_source": "current-storage-metadata-1936Z.json#/roots",
     "runtime_volume": {
-      "path": "/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data",
+      "path": "<DOCKER_VOLUMES_DIR>/climate_monitor_wiki_climate_runtime/_data",
       "exists": true,
       "top_level_inventory": {
         "dirs": 14,
@@ -2289,7 +2289,7 @@
       "qualification": "Inventory only; runtime contains historical/manual-recovery SQLite copies, not interchangeable with canonical Registry. File presence does not prove successful restore."
     },
     "queue": {
-      "path": "/home/ubuntu/climate_monitor_data/pdf-intake-queue",
+      "path": "<HOST_HOME>/climate_monitor_data/pdf-intake-queue",
       "exists": true,
       "directory_inventory": {
         ".": {
@@ -2430,7 +2430,7 @@
       ]
     },
     "runtime_wiki": {
-      "path": "/home/ubuntu/climate_monitor_data/runtime-wiki",
+      "path": "<HOST_HOME>/climate_monitor_data/runtime-wiki",
       "exists": true,
       "top_level_inventory": {
         "dirs": 2,
@@ -2490,9 +2490,10 @@
         "scheduler",
         "storage_existing_artifacts",
         "current_api",
-        "remote_main_readback"
+        "remote_main_readback",
+        "public_copy_redaction"
       ],
-      "remaining_limit": "Native author/reviewer actual context, full current backup/DB instance keys not verified. Remote HEAD at 19:26 deployment-snapshot time remains unverified: the snapshot retains only query_sha256, not its query body/command. Later controller ls-remote at 19:49:41Z must not be backfilled as contemporaneous proof."
+      "remaining_limit": "Native author/reviewer actual context, full current backup/DB instance keys not verified. Remote HEAD at 19:26 deployment-snapshot time remains unverified: the snapshot retains only query_sha256, not its query body/command. Later controller ls-remote at 19:49:41Z must not be backfilled as contemporaneous proof. Public copy redacts machine paths; exact absolute paths can only be inspected in authorized private native originals identified by SHA256 and JSON pointer."
     },
     {
       "criterion": 2,
@@ -2561,9 +2562,10 @@
       "status": "covered_with_explicit_limits",
       "evidence_keys": [
         "unverified",
-        "provenance"
+        "provenance",
+        "public_copy_redaction"
       ],
-      "remaining_limit": "No historical SQLite/job/closed Issue/fixture substituted for current native evidence. Remote HEAD at 19:26 deployment-snapshot time remains unverified: the snapshot retains only query_sha256, not its query body/command. Later controller ls-remote at 19:49:41Z must not be backfilled as contemporaneous proof."
+      "remaining_limit": "No historical SQLite/job/closed Issue/fixture substituted for current native evidence. Remote HEAD at 19:26 deployment-snapshot time remains unverified: the snapshot retains only query_sha256, not its query body/command. Later controller ls-remote at 19:49:41Z must not be backfilled as contemporaneous proof. Public copy redacts machine paths; exact absolute paths can only be inspected in authorized private native originals identified by SHA256 and JSON pointer."
     },
     {
       "criterion": 10,
@@ -2586,12 +2588,33 @@
     "native_evidence": "controller-current-remote-main.json",
     "sha256": "5ba87b95d9afa361a37f795c530e73c99c3813e2f427cea23bef97c984eda3e4",
     "command": "git ls-remote origin refs/heads/main",
-    "cwd": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\controller",
+    "cwd": "<CONTROLLER_CHECKOUT>",
     "started_at_utc": "2026-10-24T19:49:41.2450708Z",
     "completed_at_utc": "2026-10-24T19:49:41.5674260Z",
     "exit_code": 0,
     "raw_stdout": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc\trefs/heads/main",
     "observed_remote_main_sha": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
     "qualification": "Read-only remote refs/heads/main observed at 2026-10-24T19:49:41Z. It matches the earlier checkout/app declared SHA, but is not simultaneous and cannot backfill the 19:26 deployment snapshot remote state."
+  },
+  "public_copy_redaction": {
+    "policy": "Public report uses consistent placeholders/logical paths for machine-specific absolute paths and private addresses/hostnames. These placeholders are not the exact private paths or byte-identical native output. Exact absolute paths remain only in the unmodified external private native evidence files.",
+    "provenance": "native_evidence_inventory SHA256 values refer to original private file bytes, not the redacted embedded values. The retained filename/id and native_json_pointer identify each source field. Resolve PRIVATE_EVIDENCE_DIR through the authorized external audit handoff, not from this public repository.",
+    "placeholders": {
+      "<PRIVATE_EVIDENCE_DIR>": "private native evidence directory",
+      "<AUDIT_WORKTREE>": "isolated audit checkout",
+      "<CONTROLLER_CHECKOUT>": "controller checkout used for the later remote read",
+      "<INITIAL_CHECKOUT>": "initial user-modified checkout, not changed by this worker",
+      "<LOCAL_SKILLS_DIR>": "workstation skill directory",
+      "<LOCAL_USER_HOME>": "workstation user home",
+      "<PRIVATE_BUILD_ARCHIVE_DIR>": "historical private build archive",
+      "<HOST_HOME>": "production host account home",
+      "<DOCKER_VOLUMES_DIR>": "production Docker volume root",
+      "<HOST_RUNTIME_DIR>": "host user runtime directory",
+      "<HOST_ZONEINFO_DIR>": "host zoneinfo root; Etc/UTC suffix retains timezone identity",
+      "<HOST_LOCALTIME_FILE>": "host localtime configuration file",
+      "<HOST_TIMEZONE_FILE>": "host timezone configuration file"
+    },
+    "retained_logical_paths": "Container mount destinations, API endpoints and repository-relative source references remain as logical interface paths; they are not exposed host paths.",
+    "acceptance_impact": "AC1 absolute-path evidence is retained privately via original SHA/JSON pointers; public placeholders preserve mapping relationships but do not themselves prove exact path strings. AC9 still preserves current versus historical, source versus inference, and non-simultaneous remote-main limitations."
   }
 }
