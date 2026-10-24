@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 from climate_monitor.hermes_attempt_policy import verified_binding
 from climate_monitor.hermes_acquisition_hooks import transform_search_tool_result
-from climate_monitor.request_budget import candidate_handle_protocol
+from climate_monitor.request_budget import RequestBudget, candidate_handle_protocol, ledger_path
 
 stage_schema = {'name': 'climate_stage_candidate', 'description': 'Resolve one trusted search result handle, apply the frozen date policy, and conditionally obtain its governed article body.', 'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {'result_handle': {'type': 'string'}, 'source_key': {'type': 'string'}}, 'required': ['result_handle', 'source_key']}}
 
@@ -21,7 +21,9 @@ def register(ctx):
     if candidate_handle_protocol(binding):
         from scripts.run_agent_acquisition import _finalize_candidate_receipt
         def stage(args, session_id=None, **_kwargs):
-            verified_binding()
+            _, current_binding = verified_binding()
+            RequestBudget(ledger_path(current_binding), current_binding, initialize=False).result_handle(
+                args.get('result_handle'), session_id=session_id)
             root = Path(os.environ['HERMES_HOME']).parent
             payload = json.loads((root / 'manifest.json').read_text())
             result = subprocess.run([payload['acquisition_runtime']['interpreter'], '-I', '-S',
