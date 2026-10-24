@@ -1,0 +1,2597 @@
+{
+  "report_schema": "issue-276-readonly-baseline.v1",
+  "issue_url": "https://github.com/ferryhe/climate_monitor_wiki/issues/276",
+  "audited_at_utc": "2026-10-24T19:53:09.421646Z",
+  "report_timezone": "America/New_York",
+  "utc_offset_on_audit": "-04:00",
+  "scope": "Source audit + current native read-only evidence; no production flow execution. Report statuses are audit semantics, not application enums.",
+  "source_commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
+  "checkout": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\worktrees\\issue-276",
+  "branch": "agent/issue-276",
+  "source_inventory": [
+    {
+      "path": "AGENTS.md",
+      "sha256": "1ed957f3004a5d78284fb0e1f63ddb5c2999e8858c524c357da0f701fccfc9b1",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_monitor/schedule.py",
+      "sha256": "58e58c7e8ebfbdb3cd77974ce4bcc792a3e2f2a719f41e168e99fb1d5e2b1515",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_monitor/management.py",
+      "sha256": "094a4b711dc419506dcb2e37ee45ec83a82200124a2887d13e104fd1517776c8",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_monitor/pdf_intake.py",
+      "sha256": "e190a910138faf57015b8b4bb1e856b7ed7d50a207340d911402b6920d0ef518",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/schema.py",
+      "sha256": "6c4df56c9d247ad3bb0d28f4d215bc60c97c37493c2e9ed968c3713b034fb001",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/pdf_intake.py",
+      "sha256": "ac0f3b188788b544003005d2132d874c0fb7567fbc9bf8c30230aac8aca81c8b",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/pdf_pipeline.py",
+      "sha256": "a5f90d10af50b6a51436e94e0998b753b91ff079e53073253da41252f131e88a",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/web_ingest_pipeline.py",
+      "sha256": "7dad2e5308f5b914e7d034e5ae9d559955a45921b09e809e60666387ae48d2ad",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/owner_checks.py",
+      "sha256": "64a334b4445034a29905618c2c9b8cfb20b8f7fbfd7d56adbf0cf8a0a14652f1",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/owner_dates.py",
+      "sha256": "c29ff1fb1b5107da352d6f4fc7fbe4971973039e7f9126e48c062897921bf2ce",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/information_checks.py",
+      "sha256": "60dfb52a503ad6e45b8d2224a650cf597bd0c55a4499de1551ced455f8333646",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/publication.py",
+      "sha256": "14305bdde91f7598b4b410b3b95e0db90cd0173bbfa679095f36a7cc778d8853",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/verification.py",
+      "sha256": "b2fda1b2155b6f344646967c3133c6270005c2d0bc64f98ccc2beb618d6befcb",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/list_projection.py",
+      "sha256": "7967b9f48c6a765c073c23307132be56400c755f3bf3404a68f5e93c906deaed",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/article_dates.py",
+      "sha256": "1de05fd4d0c634184738e2b6e3bf91623ab55ae63f5975f489338da1e67f9923",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/acquisition_review.py",
+      "sha256": "14f4ca17db3762835db9fe5e1fc803a085cc236a1e0a9330bc4fdf0d7941e2b8",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "climate_registry/cli.py",
+      "sha256": "be555867d953d91ad5bdad5c8a023909bc6c181978840257d419a6c3f74d8b80",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "api_server.py",
+      "sha256": "bd6e55b4b64325db3b15960db8cc6a5d26914a8c8a2efd9738419f9ba9239b7f",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "scripts/review_pipeline.py",
+      "sha256": "3d935c42921c6a6cca0920a7eb22617f8e2c4daeb2db371f18485337e385a084",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "scripts/run_pdf_intake_writer.py",
+      "sha256": "f3bf1237218e911f22fab1e9e8c5c360d2c40183e833f5132c5b0f2086987ced",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "scripts/run_agent_acquisition.py",
+      "sha256": "27b5e264ef7145a0cc975a5208bf6a5471eb24813bc1946490f981f91159de59",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "scripts/hermes_job_information_check.sh",
+      "sha256": "7e2cc5fd03cc7043dd09bccd0bdbee183ff481e6e988251a8f9122ba5680db5d",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "scripts/check_information.py",
+      "sha256": "d3b9aebef4ae1e280634c6248ce6e0952d8cc1a6cb7e8833982fc414b06c8ccb",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "docker-compose.registry-import.yml",
+      "sha256": "cbd2a8928fcbc23354e4615326266d6587aae70c3787fdf0b1b231dc3cca399d",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "docs/owner-agent-verification.md",
+      "sha256": "69c653a5f97d723d30f014766bd8460e3b311a136f8a1b5890297c69ee133dd4",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    },
+    {
+      "path": "PIPELINE_REFERENCE.md",
+      "sha256": "8ab47a7c3fdeeb94cd811eba3532efdaaf3915127fcb4e243f2e46d87db9d5c1",
+      "commit": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc"
+    }
+  ],
+  "native_evidence_inventory": [
+    {
+      "id": "issue-276-live.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\issue-276-live.json",
+      "sha256": "b26f865d3c0719721cb0246ced2cdf415743b6fb6c61389de75f473f64241ee4",
+      "bytes": 12720,
+      "kind": "issue_contract",
+      "captured_at_utc": "2026-10-24T19:23:48.386440Z",
+      "content_time_if_not_capture": "2026-10-20T20:59:53Z",
+      "embedded_or_selected_pointer": "issue_url / acceptance_coverage; external original retained",
+      "native_json_pointer": "#/body",
+      "capture_qualification": "Snapshot acquisition time uses existing local snapshot file mtime in UTC, not the GitHub created_at/updated_at content time; no fresh fetch. The native JSON has no capture field.",
+      "capture_time_basis": {
+        "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\issue-276-live.json",
+        "filesystem_attribute": "st_mtime",
+        "evidence_json_pointer": "#/native_evidence_inventory/0/captured_at_utc"
+      }
+    },
+    {
+      "id": "issue-276-comments.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\issue-276-comments.json",
+      "sha256": "4406735744a883dca0981e1383194c11e4290660c5081c496bdff07bfba1cc1d",
+      "bytes": 304,
+      "kind": "issue_contract",
+      "captured_at_utc": "2026-10-24T19:23:48.681078Z",
+      "content_time_if_not_capture": null,
+      "embedded_or_selected_pointer": "issue_url / acceptance_coverage; external original retained",
+      "native_json_pointer": "#",
+      "capture_qualification": "Snapshot acquisition time uses existing local snapshot file mtime in UTC, not the GitHub created_at/updated_at content time; no fresh fetch. The native JSON has no capture field.",
+      "capture_time_basis": {
+        "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\issue-276-comments.json",
+        "filesystem_attribute": "st_mtime",
+        "evidence_json_pointer": "#/native_evidence_inventory/1/captured_at_utc"
+      }
+    },
+    {
+      "id": "current-server-probe.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-server-probe.json",
+      "sha256": "031a3ce105a2e57877de630c984061f53a09baed64fd17889d43f60c1d4990f5",
+      "bytes": 4014,
+      "kind": "current_native_snapshot",
+      "captured_at_utc": "2026-10-24T19:26:00.164978Z",
+      "content_time_if_not_capture": null,
+      "embedded_or_selected_pointer": "current_api",
+      "native_json_pointer": "#/result/api and #/result/runtime"
+    },
+    {
+      "id": "current-deployment-jobs.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-deployment-jobs.json",
+      "sha256": "4b70243d300b3b4267950f76d9fe4a51faed73b4fe9d8af61386d608324ca4e9",
+      "bytes": 49050,
+      "kind": "current_native_snapshot",
+      "captured_at_utc": "2026-10-24T19:26:58.314095Z",
+      "content_time_if_not_capture": null,
+      "embedded_or_selected_pointer": "deployment",
+      "native_json_pointer": "#/result"
+    },
+    {
+      "id": "current-hermes-jobs-detail.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-hermes-jobs-detail.json",
+      "sha256": "3437d66a2423306f185132b77c24c258497ebc7f25b5c788246c95a197874aba",
+      "bytes": 32979,
+      "kind": "current_native_snapshot",
+      "captured_at_utc": "2026-10-24T19:27:37.304341Z",
+      "content_time_if_not_capture": null,
+      "embedded_or_selected_pointer": "scheduler.jobs",
+      "native_json_pointer": "#/jobs"
+    },
+    {
+      "id": "current-hermes-runtime.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-hermes-runtime.json",
+      "sha256": "50f606dd9d0a9505ad3fc105556f2dc469cfa9c6608b3b0153bc8a4785a1d6e4",
+      "bytes": 8000,
+      "kind": "current_native_snapshot",
+      "captured_at_utc": "2026-10-24T19:28:49.061294Z",
+      "content_time_if_not_capture": null,
+      "embedded_or_selected_pointer": "scheduler.host",
+      "native_json_pointer": "#/host_time"
+    },
+    {
+      "id": "current-cron-active-jobs-1935Z.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-cron-active-jobs-1935Z.json",
+      "sha256": "fa6368d23b9a18a480a882c58fb7f4baba6200070399b03d84a956fa1bde0fec",
+      "bytes": 3229,
+      "kind": "current_native_snapshot",
+      "captured_at_utc": "2026-10-24T19:34:21.532678Z",
+      "content_time_if_not_capture": null,
+      "embedded_or_selected_pointer": "scheduler.latest_enabled_snapshot",
+      "native_json_pointer": "#/enabled_jobs"
+    },
+    {
+      "id": "current-storage-metadata-1936Z.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-storage-metadata-1936Z.json",
+      "sha256": "81cdee13ad0c51476a4b32147d14085918ae403d6b54c0bc557a8595ced3e5f2",
+      "bytes": 984552,
+      "kind": "current_native_snapshot",
+      "captured_at_utc": "2026-10-24T19:36:55.244283Z",
+      "content_time_if_not_capture": null,
+      "embedded_or_selected_pointer": "storage_existing_artifacts",
+      "native_json_pointer": "#/roots"
+    },
+    {
+      "id": "current-hermes-timezone-source-1940Z.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\current-hermes-timezone-source-1940Z.json",
+      "sha256": "d132f1d458d7e5f8822c6e1fde8420a7dc1542ee53c6d75e8d4ed90677f1dd55",
+      "bytes": 13530,
+      "kind": "current_native_snapshot",
+      "captured_at_utc": "2026-10-24T19:40:11.038000Z",
+      "content_time_if_not_capture": null,
+      "embedded_or_selected_pointer": "scheduler.installed_timezone_evidence",
+      "native_json_pointer": "#/profile, #/source_files, #/cron"
+    },
+    {
+      "id": "controller-current-remote-main.json",
+      "external_path": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\controller-current-remote-main.json",
+      "sha256": "5ba87b95d9afa361a37f795c530e73c99c3813e2f427cea23bef97c984eda3e4",
+      "bytes": 352,
+      "kind": "later_readonly_remote_ref_snapshot",
+      "captured_at_utc": "2026-10-24T19:49:41.5674260Z",
+      "embedded_or_selected_pointer": "remote_main_readback",
+      "native_json_pointer": "#/command, #/started_at_utc, #/completed_at_utc, #/exit_code, #/raw_stdout",
+      "capture_qualification": "Controller ls-remote read at 19:49:41Z, later than deployment snapshot. Does not establish remote HEAD at 19:26Z."
+    }
+  ],
+  "provenance": {
+    "read_method": "Existing sanitized native snapshots collected via reviewed transport.remote() only; worker reads files and source. No upload()/container(), no initial user-modified checkout script executed by worker. Supplemental data must include its own reviewed query hash.",
+    "transport": {
+      "transport_path": "C:\\Project\\climate_monitor_wiki\\tmp\\reviewed_import_20261016\\transport.py",
+      "transport_sha256": "21683dca0e12c204154ae3fc18f63291c6b3b08777660fbe99f6a274860e98c4",
+      "query_sha256": "2b49e6e3e7d074ea0be641585bab41c4b4d19206011c5ec584c8b7e2b5d2477f"
+    },
+    "exclusions": [
+      "D: historical deployment receipts not used as present run proof",
+      "Issue closures and fixtures not treated as live proof",
+      "No secret values read or emitted",
+      "Host security not audited/modified"
+    ]
+  },
+  "deployment": {
+    "captured_at_utc": "2026-10-24T19:26:58.314095Z",
+    "native_pointer": "current-deployment-jobs.json#/result",
+    "production_checkout": {
+      "path": "/home/ubuntu/climate_monitor_wiki",
+      "head": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
+      "branch": "main",
+      "origin_main": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
+      "working_tree_clean": true,
+      "untracked_or_modified_count": 0
+    },
+    "containers": [
+      {
+        "name": "/climate-wiki-app",
+        "service": "wiki",
+        "image_id": "sha256:f24138827d700a1602bca245ea95f641020bef8f154647d325d0c651e6efb181",
+        "image_ref": "climate-monitor-wiki:pr293-app-305fda2",
+        "status": "running",
+        "health": "healthy",
+        "restart_count": 0,
+        "oom_killed": false,
+        "working_dir": "/app",
+        "entrypoint": [
+          "/app/scripts/docker_entrypoint.sh"
+        ],
+        "cmd": [
+          "uvicorn",
+          "api_server:app",
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8501",
+          "--no-access-log"
+        ],
+        "compose_project": "climate_monitor_wiki",
+        "compose_config_files": "/home/ubuntu/climate_monitor_wiki/docker-compose.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.delivery.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.update-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.job-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry-import.yml,/home/ubuntu/climate_monitor_data/deploy-configs/issue189-pdf-intake/docker-compose.pdf-glyph.yml,/home/ubuntu/climate_monitor_data/deploy-backups/app-oom-ecdaa31-20261011T134346Z/hotfix-v2/docker-compose.hotfix-v2.yml,/home/ubuntu/climate-monitor-ops/backups/pr233-20261012T144602Z/retained-runtime.yml,/home/ubuntu/climate-monitor-ops/backups/pr236-20261013T023452Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr235-pr236-20261013T042500Z/category-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr237-20261013T193349Z/chat-report-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr238-20261013T204726Z/report-memory-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr239-20261014T062032Z/citation-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr241-20261014T112625Z/pdf-read-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr242-20261014T144804Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr243-20261014T151717Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/chat-evidence-20261014T163442Z/chat-evidence-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr245-20261014T173536Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr246-20261014T175859Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr247-20261014T193431Z/publisher-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr248-20261014T202200Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr249-20261014T212500Z/explorer-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-23-pdf-reader-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-publish-20261015/pdf-archive-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-data-quality-20261015/pdf-data-quality-image.yml,/home/ubuntu/climate-monitor-ops/pdf-legacy-meeting-20261015/pdf-legacy-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-pending-audit-20261015/pdf-reviewed-display-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-year-query-20261015/meeting-year-query-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-29-verified-original-summary-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-30-verified-english-pdf-image.yml,/home/ubuntu/climate-monitor-ops/owner-agent-verification-20261015/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-meeting-association-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-date-evidence-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/article-refresh-combined-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-verified-source-links-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-catalog-date-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-native-json-guard-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/metadata-owner-code-20261016/metadata-owner-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-39-display-image.yml,/home/ubuntu/climate-monitor-ops/pr268-deploy-20261017/incremental-image.yml,/home/ubuntu/climate-monitor-ops/releases/pr271-8fa3029/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr272-b18271f/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr273-1954bf5/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr274-e323f0a/compose.yml,/home/ubuntu/climate-monitor-ops/pr275-selective-dates-20261019/compose.yml,/home/ubuntu/climate-monitor-ops/releases/date-toggle-4d88dc/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr291-62d41a6/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr293-305fda2/compose.yml",
+        "repo_commit_env": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
+        "storage_env": {
+          "CLIMATE_REGISTRY_DB": "/registry/article-registry.sqlite3",
+          "CLIMATE_PUBLIC_ORIGIN": {
+            "configured": true
+          }
+        },
+        "mounts": [
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_data/registry",
+            "destination": "/registry",
+            "rw": true
+          },
+          {
+            "type": "volume",
+            "name": "climate_monitor_wiki_climate_runtime",
+            "source": "/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data",
+            "destination": "/app/output",
+            "rw": true
+          },
+          {
+            "type": "volume",
+            "name": "climate_monitor_wiki_climate_runtime",
+            "source": "/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data",
+            "destination": "/pipeline",
+            "rw": true
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_delivery_artifacts",
+            "destination": "/delivery-output",
+            "rw": false
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_data/runtime-wiki",
+            "destination": "/runtime/wiki",
+            "rw": false
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_data/update-status",
+            "destination": "/update-status",
+            "rw": false
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_data/job-status",
+            "destination": "/job-status",
+            "rw": false
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_wiki/wiki",
+            "destination": "/app/wiki",
+            "rw": false
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_wiki/sources",
+            "destination": "/app/sources",
+            "rw": false
+          },
+          {
+            "type": "volume",
+            "name": "climate_web_listening_issue126",
+            "source": "/var/lib/docker/volumes/climate_web_listening_issue126/_data",
+            "destination": "/opt/web-listening-data",
+            "rw": true
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_wiki/article_metadata",
+            "destination": "/app/article_metadata",
+            "rw": false
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_data/pdf-intake-queue",
+            "destination": "/pdf-intake-queue",
+            "rw": true
+          }
+        ]
+      },
+      {
+        "name": "/climate-pdf-intake-writer",
+        "service": "pdf-intake-writer",
+        "image_id": "sha256:8190074783ad8945ac5c78065e456269b0363215f044c8c499cad0e3192e3c03",
+        "image_ref": "climate-monitor-wiki:pr293-writer-305fda2",
+        "status": "created",
+        "health": null,
+        "restart_count": 0,
+        "oom_killed": false,
+        "working_dir": "/app",
+        "entrypoint": [
+          "/app/scripts/docker_entrypoint.sh"
+        ],
+        "cmd": [
+          "python",
+          "-m",
+          "scripts.run_pdf_intake_writer"
+        ],
+        "compose_project": "climate_monitor_wiki",
+        "compose_config_files": "/home/ubuntu/climate_monitor_wiki/docker-compose.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.delivery.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.update-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.job-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry-import.yml,/home/ubuntu/climate_monitor_data/deploy-configs/issue189-pdf-intake/docker-compose.pdf-glyph.yml,/home/ubuntu/climate_monitor_data/deploy-backups/app-oom-ecdaa31-20261011T134346Z/hotfix-v2/docker-compose.hotfix-v2.yml,/home/ubuntu/climate-monitor-ops/backups/pr233-20261012T144602Z/retained-runtime.yml,/home/ubuntu/climate-monitor-ops/backups/pr236-20261013T023452Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr235-pr236-20261013T042500Z/category-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr237-20261013T193349Z/chat-report-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr238-20261013T204726Z/report-memory-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr239-20261014T062032Z/citation-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr241-20261014T112625Z/pdf-read-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr242-20261014T144804Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr243-20261014T151717Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/chat-evidence-20261014T163442Z/chat-evidence-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr245-20261014T173536Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr246-20261014T175859Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr247-20261014T193431Z/publisher-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr248-20261014T202200Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr249-20261014T212500Z/explorer-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-23-pdf-reader-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-publish-20261015/pdf-archive-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-data-quality-20261015/pdf-data-quality-image.yml,/home/ubuntu/climate-monitor-ops/pdf-legacy-meeting-20261015/pdf-legacy-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-pending-audit-20261015/pdf-reviewed-display-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-year-query-20261015/meeting-year-query-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-29-verified-original-summary-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-30-verified-english-pdf-image.yml,/home/ubuntu/climate-monitor-ops/owner-agent-verification-20261015/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-meeting-association-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-date-evidence-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/article-refresh-combined-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-verified-source-links-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-catalog-date-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-native-json-guard-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/metadata-owner-code-20261016/metadata-owner-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-39-display-image.yml,/home/ubuntu/climate-monitor-ops/pr268-deploy-20261017/incremental-image.yml,/home/ubuntu/climate-monitor-ops/releases/pr271-8fa3029/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr272-b18271f/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr273-1954bf5/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr274-e323f0a/compose.yml,/home/ubuntu/climate-monitor-ops/pr275-selective-dates-20261019/compose.yml,/home/ubuntu/climate-monitor-ops/releases/date-toggle-4d88dc/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr291-62d41a6/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr293-305fda2/compose.yml",
+        "repo_commit_env": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
+        "storage_env": {
+          "CLIMATE_REGISTRY_DB": "/registry/article-registry.sqlite3"
+        },
+        "mounts": [
+          {
+            "type": "volume",
+            "name": "climate_monitor_wiki_climate_runtime",
+            "source": "/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data",
+            "destination": "/pipeline",
+            "rw": true
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_data/registry",
+            "destination": "/registry",
+            "rw": true
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_data/pdf-intake-queue",
+            "destination": "/pdf-intake-queue",
+            "rw": true
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_data/runtime-wiki",
+            "destination": "/runtime/wiki",
+            "rw": true
+          }
+        ]
+      },
+      {
+        "name": "/climate-wiki-caddy",
+        "service": "caddy",
+        "image_id": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        "image_ref": "caddy:2-alpine",
+        "status": "running",
+        "health": null,
+        "restart_count": 0,
+        "oom_killed": false,
+        "working_dir": "/srv",
+        "entrypoint": null,
+        "cmd": [
+          "caddy",
+          "run",
+          "--config",
+          "/etc/caddy/Caddyfile",
+          "--adapter",
+          "caddyfile"
+        ],
+        "compose_project": "climate_monitor_wiki",
+        "compose_config_files": "/home/ubuntu/climate_monitor_wiki/docker-compose.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.delivery.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.update-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.job-status.yml,/home/ubuntu/climate_monitor_wiki/docker-compose.registry-import.yml,/home/ubuntu/climate_monitor_data/deploy-configs/issue189-pdf-intake/docker-compose.pdf-glyph.yml,/home/ubuntu/climate_monitor_data/deploy-backups/app-oom-ecdaa31-20261011T134346Z/hotfix-v2/docker-compose.hotfix-v2.yml,/home/ubuntu/climate-monitor-ops/backups/pr233-20261012T144602Z/retained-runtime.yml,/home/ubuntu/climate-monitor-ops/backups/pr236-20261013T023452Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr235-pr236-20261013T042500Z/category-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr237-20261013T193349Z/chat-report-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr238-20261013T204726Z/report-memory-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr239-20261014T062032Z/citation-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr241-20261014T112625Z/pdf-read-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr242-20261014T144804Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr243-20261014T151717Z/report-ui-image.yml,/home/ubuntu/climate-monitor-ops/backups/chat-evidence-20261014T163442Z/chat-evidence-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr245-20261014T173536Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr246-20261014T175859Z/pdf-pagination-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr247-20261014T193431Z/publisher-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr248-20261014T202200Z/frontend-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr249-20261014T212500Z/explorer-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-23-pdf-reader-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-publish-20261015/pdf-archive-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-data-quality-20261015/pdf-data-quality-image.yml,/home/ubuntu/climate-monitor-ops/pdf-legacy-meeting-20261015/pdf-legacy-meeting-image.yml,/home/ubuntu/climate-monitor-ops/pdf-pending-audit-20261015/pdf-reviewed-display-image.yml,/home/ubuntu/climate-monitor-ops/pdf-meeting-year-query-20261015/meeting-year-query-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-29-verified-original-summary-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-30-verified-english-pdf-image.yml,/home/ubuntu/climate-monitor-ops/owner-agent-verification-20261015/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-meeting-association-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-date-evidence-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/article-refresh-combined-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-verified-source-links-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-catalog-date-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/owner-native-json-guard-20261016/owner-agent-image.yml,/home/ubuntu/climate-monitor-ops/metadata-owner-code-20261016/metadata-owner-image.yml,/home/ubuntu/climate-monitor-ops/backups/pr271-20261017T210900Z/compose-39-display-image.yml,/home/ubuntu/climate-monitor-ops/pr268-deploy-20261017/incremental-image.yml,/home/ubuntu/climate-monitor-ops/releases/pr271-8fa3029/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr272-b18271f/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr273-1954bf5/compose.yml,/home/ubuntu/climate-monitor-ops/releases/pr274-e323f0a/compose.yml,/home/ubuntu/climate-monitor-ops/pr275-selective-dates-20261019/compose.yml",
+        "repo_commit_env": null,
+        "storage_env": {
+          "SITE_HOST": {
+            "configured": true
+          },
+          "PUBLIC_HOST": {
+            "configured": true
+          }
+        },
+        "mounts": [
+          {
+            "type": "volume",
+            "name": "climate_monitor_wiki_caddy_data",
+            "source": "/var/lib/docker/volumes/climate_monitor_wiki_caddy_data/_data",
+            "destination": "/data",
+            "rw": true
+          },
+          {
+            "type": "volume",
+            "name": "climate_monitor_wiki_caddy_config",
+            "source": "/var/lib/docker/volumes/climate_monitor_wiki_caddy_config/_data",
+            "destination": "/config",
+            "rw": true
+          },
+          {
+            "type": "volume",
+            "name": "climate_monitor_wiki_caddy_logs",
+            "source": "/var/lib/docker/volumes/climate_monitor_wiki_caddy_logs/_data",
+            "destination": "/var/log/caddy",
+            "rw": true
+          },
+          {
+            "type": "bind",
+            "name": null,
+            "source": "/home/ubuntu/climate_monitor_wiki/Caddyfile",
+            "destination": "/etc/caddy/Caddyfile",
+            "rw": false
+          }
+        ]
+      }
+    ],
+    "qualification": "repo_commit_env/image refs establish declared deployed baseline, not process-by-process file hash or author/reviewer execution proof. production_checkout.origin_main is a retained snapshot field only: query body/command was not retained (query_sha256 alone), so contemporaneous 19:26 remote HEAD provenance remains unverified. Later 19:49 ls-remote is separately recorded."
+  },
+  "current_api": {
+    "captured_at_utc": "2026-10-24T19:26:00.164978Z",
+    "native_pointer": "current-server-probe.json#/result/api",
+    "responses": {
+      "/api/health": {
+        "status": 200,
+        "keys": [
+          "status"
+        ],
+        "selected": {
+          "status": "ok"
+        }
+      },
+      "/api/config": {
+        "status": 200,
+        "keys": [
+          "capabilities",
+          "agent_mode",
+          "model",
+          "wiki",
+          "documents",
+          "concepts",
+          "graphs",
+          "github_blob_base_url",
+          "answer_modes",
+          "default_answer_mode",
+          "prompt_starters"
+        ],
+        "selected": {
+          "agent_mode": "anthropic",
+          "model": "claude-haiku-5-5"
+        }
+      },
+      "/api/registry/status": {
+        "status": 200,
+        "keys": [
+          "available",
+          "schema_version",
+          "reports",
+          "articles",
+          "discoveries",
+          "latest_report_date",
+          "cache_version"
+        ],
+        "selected": {
+          "schema_version": 25,
+          "reports": 29,
+          "articles": 173
+        }
+      }
+    },
+    "runtime": {
+      "python": "3.12.15 (main, Oct  6 2026, 02:02:22) [GCC 14.2.0]",
+      "executable": "/usr/local/bin/python",
+      "sqlite": "3.46.1",
+      "native311_present": true,
+      "hermes_in_app": "None"
+    },
+    "native_python_probe": {
+      "exit": 0,
+      "stdout": "{\"version\": \"3.11.17 (main, Oct  6 2026, 02:02:21) [GCC 14.2.0]\", \"executable\": \"/opt/hermes-venv/bin/python\", \"module\": \"/opt/hermes-agent/hermes_cli/__init__.py\"}\n",
+      "stderr": ""
+    },
+    "qualification": "Selected API fields only; no model invocation or generation identity successful-run claim."
+  },
+  "scheduler": {
+    "jobs_source_path": "/home/ubuntu/.hermes/cron/jobs.json",
+    "captured_at_utc": "2026-10-24T19:27:37.304341Z",
+    "source_updated_at": "2026-10-24T19:25:40.585678Z",
+    "source_sha256": "37d4a097954cf4119e9b89dbc2234fce464bc9c4fe4f6ead58c185c673bdf011",
+    "count": 21,
+    "enabled_count": 5,
+    "jobs": [
+      {
+        "id": "a2f8751308cb",
+        "name": "Weekly LLM Cost Report (tokens & cost per model/provider)",
+        "enabled": true,
+        "state": "scheduled",
+        "last_run_at": "2026-10-19T00:00:52.845578Z",
+        "next_run_at": "2026-10-26T00:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 0 * * 1",
+          "display": "0 0 * * 1"
+        },
+        "schedule_display": "0 0 * * 1",
+        "provider": "nous",
+        "model": "tencent/hy3",
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "515eb609ab9b048a46aa346d2ded18245dcf0d5856bfbcaad417837cd7c82025",
+        "prompt_paths": [
+          "/home/ubuntu/hermes_scripts/cost_report.py",
+          "scripts/cost_report.py"
+        ]
+      },
+      {
+        "id": "0f33dec0fa24",
+        "name": "Step 2: Pillar B Web Search",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T08:20:47.000391Z",
+        "next_run_at": "2026-09-14T08:15:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "15 8 * * 1",
+          "display": "15 8 * * 1"
+        },
+        "schedule_display": "15 8 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": "web",
+        "skills": [
+          "web"
+        ],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "550151a2f4a0d0ae558171ac674943178a9a848ddf52a0e904753de25399606d",
+        "prompt_paths": []
+      },
+      {
+        "id": "a1e60e4c950e",
+        "name": "Step 3: Aggregate Report",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T08:31:01.088742Z",
+        "next_run_at": "2026-09-14T08:30:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "30 8 * * 1",
+          "display": "30 8 * * 1"
+        },
+        "schedule_display": "30 8 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "74aacf7e52641347eae3d03ddfa9ed095be4586e668a73b1a424cc924f97f3da",
+        "prompt_paths": [
+          "scripts/step3_aggregate.py"
+        ]
+      },
+      {
+        "id": "4e13913c2ed5",
+        "name": "Step 4: LLM Summary Generation",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T08:50:50.490925Z",
+        "next_run_at": "2026-09-14T08:45:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "45 8 * * 1",
+          "display": "45 8 * * 1"
+        },
+        "schedule_display": "45 8 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "2a0b13c5803ab0e091b80852606f38b179f6568f62f3047e4b2d0e65909a4225",
+        "prompt_paths": []
+      },
+      {
+        "id": "f5fb83b70c56",
+        "name": "Step 5: Build Markdown Report",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T09:02:27.221083Z",
+        "next_run_at": "2026-09-14T09:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 9 * * 1",
+          "display": "0 9 * * 1"
+        },
+        "schedule_display": "0 9 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "1485ceb10f83fd0f8812629c4c39344559ab8fca5f55a9fae41a9bdc6a39353c",
+        "prompt_paths": [
+          "scripts/step5_build_md.py"
+        ]
+      },
+      {
+        "id": "4da04cd6a83d",
+        "name": "Step 6: Render PDF",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T09:32:22.046657Z",
+        "next_run_at": "2026-09-14T09:15:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "15 9 * * 1",
+          "display": "15 9 * * 1"
+        },
+        "schedule_display": "15 9 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "cbbe909bd46473390347abafc318f41a24bfe8fe2588302ef1d54efe5bff0f2a",
+        "prompt_paths": [
+          "scripts/step6_render_pdf.py"
+        ]
+      },
+      {
+        "id": "e7df4ef65e99",
+        "name": "Step 7: Send Email",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T09:42:37.389959Z",
+        "next_run_at": "2026-09-14T09:30:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "30 9 * * 1",
+          "display": "30 9 * * 1"
+        },
+        "schedule_display": "30 9 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": "email",
+        "skills": [
+          "email"
+        ],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "05e6576993bd1c4d409b1cf5e976d5192a6cbaa43a60f137331f42fd3df8d4ec",
+        "prompt_paths": []
+      },
+      {
+        "id": "14406cb81199",
+        "name": "Step 8: Sync Registry",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T09:46:18.785578Z",
+        "next_run_at": "2026-09-14T09:45:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "45 9 * * 1",
+          "display": "45 9 * * 1"
+        },
+        "schedule_display": "45 9 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "dfbeec8b81ef1beb768808d83563014da86c90e74be2ed295c35b25291b41a0a",
+        "prompt_paths": [
+          "scripts/step8_sync_registry.py"
+        ]
+      },
+      {
+        "id": "68c21f64d57a",
+        "name": "Step 9: Update Website",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T10:06:15.393539Z",
+        "next_run_at": "2026-09-14T10:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 10 * * 1",
+          "display": "0 10 * * 1"
+        },
+        "schedule_display": "0 10 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "d2e41b8623e6c9cb2a7b0c312aef7036999f62d523c3365f6f4432bdde67123a",
+        "prompt_paths": [
+          "scripts/step9_update_website.py"
+        ]
+      },
+      {
+        "id": "4e7eda5c8d3b",
+        "name": "Step 3b: Hermes Relevance Filter + Classification",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T08:37:09.107812Z",
+        "next_run_at": "2026-09-14T08:35:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "35 8 * * 1",
+          "display": "35 8 * * 1"
+        },
+        "schedule_display": "35 8 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": "web",
+        "skills": [
+          "web"
+        ],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "a29b24111449ac07d2cfc36905d370a82273699ea9c67022d44f0b29af851506",
+        "prompt_paths": []
+      },
+      {
+        "id": "20a941f4d342",
+        "name": "Step 4: Executive Summary",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T08:52:08.823775Z",
+        "next_run_at": "2026-09-14T08:50:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "50 8 * * 1",
+          "display": "50 8 * * 1"
+        },
+        "schedule_display": "50 8 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": "web",
+        "skills": [
+          "web"
+        ],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "08d096bdfef2233cd864b14ac763e9c850fbc154d87a742e92f6309847826642",
+        "prompt_paths": []
+      },
+      {
+        "id": "42f98ce4d6b6",
+        "name": "Step 7b: Extract Conferences",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T08:32:54.049266Z",
+        "next_run_at": "2026-09-14T08:32:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "32 8 * * 1",
+          "display": "32 8 * * 1"
+        },
+        "schedule_display": "32 8 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "954693db68bbdb923d231ee109df02ccaf99c28f8e077463008970a3ce8423f9",
+        "prompt_paths": [
+          "scripts/step7b_extract_conferences.py"
+        ]
+      },
+      {
+        "id": "0748fe1dc1dc",
+        "name": "Step 1: Pillar A Site Check",
+        "enabled": false,
+        "state": "scheduled",
+        "last_run_at": "2026-09-07T08:01:27.419974Z",
+        "next_run_at": "2026-09-14T08:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 8 * * 1",
+          "display": "0 8 * * 1"
+        },
+        "schedule_display": "0 8 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "e7ae9c80e63e34eddc7ccb27031c2e8e466c8a72871697dbb1155483d32045d9",
+        "prompt_paths": [
+          "scripts/step1_pillar_a.py"
+        ]
+      },
+      {
+        "id": "3ef91ab6eae5",
+        "name": "Issue 124 Climate Monitor 08:00 ET",
+        "enabled": false,
+        "state": "paused",
+        "last_run_at": "2026-10-12T13:00:37.146701Z",
+        "next_run_at": "2026-10-19T12:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 12,13 * * 1",
+          "display": "0 12,13 * * 1"
+        },
+        "schedule_display": "0 12,13 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": true,
+        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "script": null,
+        "prompt_sha256": null,
+        "prompt_paths": []
+      },
+      {
+        "id": "8fcf37d1688a",
+        "name": "Issue 124 Climate Artifact 09:00 ET",
+        "enabled": false,
+        "state": "paused",
+        "last_run_at": "2026-10-12T14:00:37.141974Z",
+        "next_run_at": "2026-10-19T13:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 13,14 * * 1",
+          "display": "0 13,14 * * 1"
+        },
+        "schedule_display": "0 13,14 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": true,
+        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "script": null,
+        "prompt_sha256": null,
+        "prompt_paths": []
+      },
+      {
+        "id": "45537373636d",
+        "name": "Issue 124 Climate Publisher 10:00 ET",
+        "enabled": false,
+        "state": "paused",
+        "last_run_at": "2026-10-12T15:00:37.159754Z",
+        "next_run_at": "2026-10-19T14:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 14,15 * * 1",
+          "display": "0 14,15 * * 1"
+        },
+        "schedule_display": "0 14,15 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": true,
+        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "script": null,
+        "prompt_sha256": null,
+        "prompt_paths": []
+      },
+      {
+        "id": "12eacfa52713",
+        "name": "Issue 124 Climate Registry 10:30 ET",
+        "enabled": false,
+        "state": "paused",
+        "last_run_at": "2026-10-12T15:30:37.146717Z",
+        "next_run_at": "2026-10-19T14:30:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "30 14,15 * * 1",
+          "display": "30 14,15 * * 1"
+        },
+        "schedule_display": "30 14,15 * * 1",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": true,
+        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "script": null,
+        "prompt_sha256": null,
+        "prompt_paths": []
+      },
+      {
+        "id": "772dad913e7c",
+        "name": "Climate Scheduler Status Exporter (Every 5 Minutes)",
+        "enabled": true,
+        "state": "scheduled",
+        "last_run_at": "2026-10-24T19:25:40.560053Z",
+        "next_run_at": "2026-10-24T19:30:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "*/5 * * * *",
+          "display": "*/5 * * * *"
+        },
+        "schedule_display": "*/5 * * * *",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": true,
+        "workdir": "/home/ubuntu/climate_monitor_wiki",
+        "script": null,
+        "prompt_sha256": null,
+        "prompt_paths": []
+      },
+      {
+        "id": "4996f6b15d0e",
+        "name": "Daily Docker Cleanup (04:00 ET)",
+        "enabled": true,
+        "state": "scheduled",
+        "last_run_at": "2026-10-24T09:00:41.530758Z",
+        "next_run_at": "2026-10-25T08:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 8,9 * * *",
+          "display": "0 8,9 * * *"
+        },
+        "schedule_display": "0 8,9 * * *",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": true,
+        "workdir": "/home/ubuntu",
+        "script": null,
+        "prompt_sha256": null,
+        "prompt_paths": []
+      },
+      {
+        "id": "1754ec49a1e5",
+        "name": "Daily PDF Information Check (05:00 ET)",
+        "enabled": true,
+        "state": "scheduled",
+        "last_run_at": "2026-10-24T10:00:41.246454Z",
+        "next_run_at": "2026-10-25T09:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 9,10 * * *",
+          "display": "0 9,10 * * *"
+        },
+        "schedule_display": "0 9,10 * * *",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": true,
+        "workdir": "/home/ubuntu",
+        "script": null,
+        "prompt_sha256": null,
+        "prompt_paths": []
+      },
+      {
+        "id": "0b37b1812610",
+        "name": "Daily Server Health Report",
+        "enabled": true,
+        "state": "scheduled",
+        "last_run_at": "2026-10-24T08:07:11.182054Z",
+        "next_run_at": "2026-10-25T08:00:00Z",
+        "schedule": {
+          "kind": "cron",
+          "expr": "0 8 * * *",
+          "display": "0 8 * * * TZ=America/New_York (8:00 AM ET daily)",
+          "tz": "America/New_York"
+        },
+        "schedule_display": "0 8 * * *",
+        "provider": null,
+        "model": null,
+        "skill": null,
+        "skills": [],
+        "enabled_toolsets": null,
+        "no_agent": false,
+        "workdir": null,
+        "script": null,
+        "prompt_sha256": "1921624aeccf916490ad6fd1daa9c2d5a75528890a2c23b42e294a97949d2ae6",
+        "prompt_paths": []
+      }
+    ],
+    "latest_enabled_snapshot": {
+      "captured_at_utc": "2026-10-24T19:34:21.532678Z",
+      "path": "/home/ubuntu/.hermes/cron/jobs.json",
+      "sha256": "8837a1151d9003c5863ac0af82b12a04a946b417684c3b75b968fe91f8cdf5b3",
+      "bytes": 42539,
+      "enabled_count": 5,
+      "enabled_jobs": [
+        {
+          "id": "a2f8751308cb",
+          "name": "Weekly LLM Cost Report (tokens & cost per model/provider)",
+          "enabled": true,
+          "state": "scheduled",
+          "last_run_at": "2026-10-19T00:00:52.845578Z",
+          "next_run_at": "2026-10-26T00:00:00Z",
+          "schedule_display": "0 0 * * 1",
+          "no_agent": false,
+          "workdir": null,
+          "provider": "nous",
+          "model": "tencent/hy3",
+          "skill": null,
+          "skills": [],
+          "schedule": {
+            "kind": "cron",
+            "expr": "0 0 * * 1",
+            "display": "0 0 * * 1"
+          }
+        },
+        {
+          "id": "772dad913e7c",
+          "name": "Climate Scheduler Status Exporter (Every 5 Minutes)",
+          "enabled": true,
+          "state": "scheduled",
+          "last_run_at": "2026-10-24T19:30:40.529083Z",
+          "next_run_at": "2026-10-24T19:35:00Z",
+          "schedule_display": "*/5 * * * *",
+          "no_agent": true,
+          "workdir": "/home/ubuntu/climate_monitor_wiki",
+          "provider": null,
+          "model": null,
+          "skill": null,
+          "skills": [],
+          "schedule": {
+            "kind": "cron",
+            "expr": "*/5 * * * *",
+            "display": "*/5 * * * *"
+          }
+        },
+        {
+          "id": "4996f6b15d0e",
+          "name": "Daily Docker Cleanup (04:00 ET)",
+          "enabled": true,
+          "state": "scheduled",
+          "last_run_at": "2026-10-24T09:00:41.530758Z",
+          "next_run_at": "2026-10-25T08:00:00Z",
+          "schedule_display": "0 8,9 * * *",
+          "no_agent": true,
+          "workdir": "/home/ubuntu",
+          "provider": null,
+          "model": null,
+          "skill": null,
+          "skills": [],
+          "schedule": {
+            "kind": "cron",
+            "expr": "0 8,9 * * *",
+            "display": "0 8,9 * * *"
+          }
+        },
+        {
+          "id": "1754ec49a1e5",
+          "name": "Daily PDF Information Check (05:00 ET)",
+          "enabled": true,
+          "state": "scheduled",
+          "last_run_at": "2026-10-24T10:00:41.246454Z",
+          "next_run_at": "2026-10-25T09:00:00Z",
+          "schedule_display": "0 9,10 * * *",
+          "no_agent": true,
+          "workdir": "/home/ubuntu",
+          "provider": null,
+          "model": null,
+          "skill": null,
+          "skills": [],
+          "schedule": {
+            "kind": "cron",
+            "expr": "0 9,10 * * *",
+            "display": "0 9,10 * * *"
+          }
+        },
+        {
+          "id": "0b37b1812610",
+          "name": "Daily Server Health Report",
+          "enabled": true,
+          "state": "scheduled",
+          "last_run_at": "2026-10-24T08:07:11.182054Z",
+          "next_run_at": "2026-10-25T08:00:00Z",
+          "schedule_display": "0 8 * * *",
+          "no_agent": false,
+          "workdir": null,
+          "provider": null,
+          "model": null,
+          "skill": null,
+          "skills": [],
+          "schedule": {
+            "kind": "cron",
+            "expr": "0 8 * * *",
+            "display": "0 8 * * * TZ=America/New_York (8:00 AM ET daily)",
+            "tz": "America/New_York"
+          }
+        }
+      ]
+    },
+    "host": {
+      "captured_at_utc": "2026-10-24T19:28:49.061294Z",
+      "host_time": {
+        "rc": 0,
+        "out": "2026-10-24T19:28:49+0000 UTC\n",
+        "err": ""
+      },
+      "host_timezone_file": null,
+      "hermes_cli_package_path": "/opt/hermes-agent/hermes_cli"
+    },
+    "targets": [
+      {
+        "role": "T1",
+        "source_target": "five-minute tick ET",
+        "actual": "Daily PDF Information Check expr 0 9,10 * * *; not five-minute; exporter */5 is status export, not T1",
+        "guard": "Wrapper requires exactly one running selected writer; current writer created/stopped."
+      },
+      {
+        "role": "T2",
+        "source_target": "daily 06:00 America/New_York",
+        "actual": "No enabled rotation job in current 21-item inventory"
+      },
+      {
+        "role": "T3",
+        "source_target": "Sunday 08:00 America/New_York",
+        "actual": "No enabled weekly-search job in current 21-item inventory"
+      },
+      {
+        "role": "T10",
+        "source_target": "quarter-hour ET",
+        "actual": "No enabled native T10 review job in current 21-item inventory"
+      }
+    ],
+    "timezone_conclusion": "Observed host UTC; active gateway HERMES_HOME=/home/ubuntu/.hermes; no HERMES_TIMEZONE in observed process and no top-level timezone key in config. Installed clean Hermes source resolves environment -> effective profile config (including possible managed overlay) -> server local; compute_next_run uses get_timezone() or base_time.tzinfo, not schedule.tz. Current health schedule declares ET but next_run_at=2026-10-25T08:00:00Z. This is a bounded deployment/configuration semantics discrepancy. Effective managed overlays, routed contexts, and all due paths were not exercised; do not claim every job fires in ET or a general scheduler bug.",
+    "source_refs": [
+      "climate_monitor/schedule.py:17",
+      "climate_monitor/schedule.py:64",
+      "scripts/hermes_job_information_check.sh:20"
+    ],
+    "installed_timezone_evidence": {
+      "captured_at_utc": "2026-10-24T19:40:11.038000Z",
+      "host": {
+        "localtime_target": "/usr/share/zoneinfo/Etc/UTC",
+        "timezone_file_present": false
+      },
+      "runtime": {
+        "repo": "/home/ubuntu/.hermes/hermes-agent",
+        "git_head": "03544a73be9423b903bbfa11c29b252a0b88dce9",
+        "worktree_clean": true
+      },
+      "profile": {
+        "hermes_home": "/home/ubuntu/.hermes",
+        "config_path": "/home/ubuntu/.hermes/config.yaml",
+        "config_sha256": "6c0291450eada6df3dcfc4909fe2725a27b6502dd739a3c5f3e08d55e91d9326",
+        "config_bytes": 8271,
+        "timezone_key_present": false,
+        "timezone_value": null,
+        "processes": [
+          {
+            "pid": "2369098",
+            "env_keys": [
+              "HERMES_HOME"
+            ],
+            "hermes_home": "/home/ubuntu/.hermes",
+            "hermes_timezone_present": false
+          }
+        ]
+      },
+      "source_files": {
+        "hermes_time.py": {
+          "path": "/home/ubuntu/.hermes/hermes-agent/hermes_time.py",
+          "sha256": "44867d31c4fcc09c248a9958f08c4ac57acf61cc9b20a9f2c8515c80de96ba69",
+          "bytes": 4591,
+          "snippets": [
+            {
+              "from_line": 1,
+              "to_line": 5,
+              "text": "1: \"\"\"Timezone-aware clock for Hermes.\n2: \n3: ``now()`` returns a tz-aware datetime in the user's configured IANA timezone. Resolution order:\n4: ``HERMES_TIMEZONE`` env var, then ``timezone`` in ``~/.hermes/config.yaml``, else server-local\n5: time. Invalid timezone values log a warning and fall back — never crash."
+            },
+            {
+              "from_line": 29,
+              "to_line": 68,
+              "text": "29: def _env_timezone() -> str:\n30:     \"\"\"``HERMES_TIMEZONE`` when it may speak for the active profile. Under the multiplexed\n31:     gateway the env var holds only the DEFAULT profile's value (bridged from its config.yaml at\n32:     startup), so every routed profile must read its own config.yaml instead.\"\"\"\n33:     from agent.secret_scope import is_multiplex_active  # lazy: secret_scope pulls in more than a clock needs\n34: \n35:     if is_multiplex_active():\n36:         return \"\"\n37:     return os.getenv(\"HERMES_TIMEZONE\", \"\").strip()\n38: \n39: \n40: def _timezone_cache_identity() -> Tuple[str, str]:\n41:     tz_env = _env_timezone()\n42:     return (\"environment\", tz_env) if tz_env else (\"config\", str(get_config_path()))\n43: \n44: \n45: def _resolve_timezone_name() -> str:\n46:     \"\"\"Read the configured IANA timezone string (or ``\"\"``). Does file I/O — callers cache.\"\"\"\n47:     tz_env = _env_timezone()\n48:     if tz_env:\n49:         return tz_env\n50:     try:\n51:         # Prefer the shared cached effective-config loader (mtime-keyed + libyaml, managed overlay\n52:         # included so an administrator can pin ``timezone``): a direct safe_load of a large\n53:         # config.yaml costs ~100 ms and this ran inside the FIRST system prompt build. The bare\n54:         # parse is the stdlib-safe fallback for bootstrap consumers without hermes_cli importable.\n55:         try:\n56:             from hermes_cli.config_effective import load_user_config_effective\n57:             cfg = load_user_config_effective(get_config_path())\n58:         except Exception:\n59:             import yaml\n60:             config_path = get_config_path()\n61:             cfg = (yaml.safe_load(config_path.read_text(encoding=\"utf-8\")) or {}) if config_path.exists() else {}\n62:         if cfg:\n63:             tz_cfg = cfg.get(\"timezone\", \"\")\n64:             if isinstance(tz_cfg, str) and tz_cfg.strip():\n65:                 return tz_cfg.strip()\n66:     except Exception:\n67:         pass\n68:     return \"\""
+            },
+            {
+              "from_line": 91,
+              "to_line": 111,
+              "text": "91: def get_timezone() -> Optional[ZoneInfo]:\n92:     \"\"\"Return the active profile's configured ZoneInfo, or None (server-local).\"\"\"\n93:     return _timezone_entry()[1]\n94: \n95: \n96: def get_timezone_name() -> str:\n97:     \"\"\"The active profile's configured IANA timezone string, or ``\"\"`` (server-local). Same\n98:     resolution and cache as :func:`get_timezone`; for handing ``TZ`` to sandboxed children.\"\"\"\n99:     return _timezone_entry()[0]\n100: \n101: \n102: def reset_cache() -> None:\n103:     \"\"\"Clear the cached timezone so the next call re-resolves it (after config/env changes).\"\"\"\n104:     with _cache_lock:\n105:         _tz_cache.clear()\n106: \n107: \n108: def now() -> datetime:\n109:     \"\"\"Current time as a tz-aware datetime: configured zone, else server-local.\"\"\"\n110:     tz = get_timezone()\n111:     return datetime.now(tz) if tz is not None else datetime.now().astimezone()"
+            }
+          ]
+        },
+        "cron/jobs.py": {
+          "path": "/home/ubuntu/.hermes/hermes-agent/cron/jobs.py",
+          "sha256": "9d27d9eb4d7cad4ce94a0d2f75b8f9ff4f2782d9e96c9a980710baf2f9251b68",
+          "bytes": 151126,
+          "snippets": [
+            {
+              "from_line": 1137,
+              "to_line": 1192,
+              "text": "1137: def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:\n1138:     \"\"\"Compute the next run time for a schedule as an ISO string, or None if no more runs.\"\"\"\n1139:     now = _hermes_now()\n1140:     if not isinstance(schedule, dict):\n1141:         return None\n1142:     kind = schedule.get(\"kind\")\n1143:     if kind == \"once\":\n1144:         return _recoverable_oneshot_run_at(schedule, now, last_run_at=last_run_at)\n1145:     # Recurring kinds anchor on last_run_at so a restart doesn't re-anchor the schedule.\n1146:     base_time = (_parse_aware(last_run_at) if last_run_at else None) or now\n1147:     if kind == \"interval\":\n1148:         minutes = schedule.get(\"minutes\")\n1149:         if minutes is None:\n1150:             return None\n1151:         # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.\n1152:         next_run = base_time.astimezone(timezone.utc) + timedelta(minutes=minutes)\n1153:         return next_run.astimezone(base_time.tzinfo).isoformat()\n1154:     if kind == \"cron\":\n1155:         expr = schedule.get(\"expr\")\n1156:         if not expr:\n1157:             return None\n1158:         if not _ensure_croniter():\n1159:             logger.warning(\n1160:                 \"Cannot compute next run for cron schedule %r: 'croniter' is \"\n1161:                 \"not installed. croniter is a core dependency as of v0.9.x; \"\n1162:                 \"reinstall hermes-agent or run 'pip install croniter' in your runtime env.\",\n1163:                 expr)\n1164:             return None\n1165:         # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK,\n1166:         # not to the UTC offset carried by ``base_time``. croniter ignores\n1167:         # the tzinfo on its start time and uses the start's UTC offset as its\n1168:         # working offset, so a ``last_run_at`` stored in UTC (+00:00) would\n1169:         # push the next fire to 09:00 UTC instead of 09:00 local, and DST\n1170:         # transition days (spring-forward / fall-back) would land one hour off\n1171:         # (08:00 or 10:00). Render the base as the configured zone's naive\n1172:         # wall clock for croniter, then re-attach the zone to the result, so\n1173:         # the wall-clock hour stays correct every calendar day, including DST\n1174:         # boundaries (morning-routine 09:00 America/Toronto).\n1175:         # Fall back to the base's own zone only when nothing is configured.\n1176:         zone = get_timezone() or base_time.tzinfo\n1177:         base_wall = base_time.astimezone(zone).replace(tzinfo=None)\n1178:         it = croniter(expr, base_wall)\n1179:         # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):\n1180:         # attaching the zone to a naive wall clock resolves the repeated autumn hour\n1181:         # to its EARLIER occurrence (fold=0), so a base inside the second occurrence\n1182:         # got a \"next run\" up to an hour in the PAST — the fire path would re-fire\n1183:         # immediately and re-anchor, looping. Try both folds of each candidate wall\n1184:         # clock and return the earliest instant strictly after the base; a repeated\n1185:         # hour has two instants, so two candidates always suffice.\n1186:         base_ts = base_time.timestamp()\n1187:         next_wall = it.get_next(datetime)\n1188:         for _ in range(2):\n1189:             for fold in (0, 1):\n1190:                 candidate = next_wall.replace(tzinfo=zone, fold=fold)\n1191:                 if candidate.timestamp() > base_ts:\n1192:                     return candidate.isoformat()"
+            },
+            {
+              "from_line": 2573,
+              "to_line": 2597,
+              "text": "2573: def advance_next_runs(job_ids) -> int:\n2574:     \"\"\"Batch form of :func:`advance_next_run`: one load + at most one save for the whole due set;\n2575:     one-shot/unknown ids are skipped. Returns the count advanced. Persisted once at the end, so a\n2576:     crash mid-batch re-fires the whole set on restart rather than a prefix (sub-10ms window).\"\"\"\n2577:     ids = set(job_ids)\n2578:     if not ids:\n2579:         return 0\n2580:     with _jobs_lock():\n2581:         jobs = load_jobs()\n2582:         now = _hermes_now().isoformat()\n2583:         advanced = 0\n2584:         for job in jobs:\n2585:             if (\n2586:                 job[\"id\"] not in ids\n2587:                 or (is_terminal_job(job) and not _is_recoverable_error_job(job))\n2588:                 or job.get(\"schedule\", {}).get(\"kind\") not in {\"cron\", \"interval\"}\n2589:             ):\n2590:                 continue\n2591:             new_next = compute_next_run(job[\"schedule\"], now)\n2592:             if new_next and new_next != job.get(\"next_run_at\"):\n2593:                 job[\"next_run_at\"] = new_next\n2594:                 advanced += 1\n2595:         if advanced:\n2596:             save_jobs(jobs)\n2597:         return advanced"
+            }
+          ]
+        }
+      },
+      "cron": {
+        "path": "/home/ubuntu/.hermes/cron/jobs.json",
+        "sha256": "5ed898ed1714978d4df43d1843195b79ab530535159256da19b90cf0a42549f1",
+        "bytes": 42539,
+        "enabled_count": 5,
+        "enabled_jobs": [
+          {
+            "id": "a2f8751308cb",
+            "name": "Weekly LLM Cost Report (tokens & cost per model/provider)",
+            "enabled": true,
+            "state": "scheduled",
+            "last_run_at": "2026-10-19T00:00:52.845578Z",
+            "next_run_at": "2026-10-26T00:00:00Z",
+            "schedule_display": "0 0 * * 1",
+            "no_agent": false,
+            "workdir": null,
+            "provider": "nous",
+            "model": "tencent/hy3",
+            "skill": null,
+            "skills": [],
+            "schedule": {
+              "kind": "cron",
+              "expr": "0 0 * * 1",
+              "display": "0 0 * * 1"
+            }
+          },
+          {
+            "id": "772dad913e7c",
+            "name": "Climate Scheduler Status Exporter (Every 5 Minutes)",
+            "enabled": true,
+            "state": "scheduled",
+            "last_run_at": "2026-10-24T19:35:40.787277Z",
+            "next_run_at": "2026-10-24T19:40:00Z",
+            "schedule_display": "*/5 * * * *",
+            "no_agent": true,
+            "workdir": "/home/ubuntu/climate_monitor_wiki",
+            "provider": null,
+            "model": null,
+            "skill": null,
+            "skills": [],
+            "schedule": {
+              "kind": "cron",
+              "expr": "*/5 * * * *",
+              "display": "*/5 * * * *"
+            }
+          },
+          {
+            "id": "4996f6b15d0e",
+            "name": "Daily Docker Cleanup (04:00 ET)",
+            "enabled": true,
+            "state": "scheduled",
+            "last_run_at": "2026-10-24T09:00:41.530758Z",
+            "next_run_at": "2026-10-25T08:00:00Z",
+            "schedule_display": "0 8,9 * * *",
+            "no_agent": true,
+            "workdir": "/home/ubuntu",
+            "provider": null,
+            "model": null,
+            "skill": null,
+            "skills": [],
+            "schedule": {
+              "kind": "cron",
+              "expr": "0 8,9 * * *",
+              "display": "0 8,9 * * *"
+            }
+          },
+          {
+            "id": "1754ec49a1e5",
+            "name": "Daily PDF Information Check (05:00 ET)",
+            "enabled": true,
+            "state": "scheduled",
+            "last_run_at": "2026-10-24T10:00:41.246454Z",
+            "next_run_at": "2026-10-25T09:00:00Z",
+            "schedule_display": "0 9,10 * * *",
+            "no_agent": true,
+            "workdir": "/home/ubuntu",
+            "provider": null,
+            "model": null,
+            "skill": null,
+            "skills": [],
+            "schedule": {
+              "kind": "cron",
+              "expr": "0 9,10 * * *",
+              "display": "0 9,10 * * *"
+            }
+          },
+          {
+            "id": "0b37b1812610",
+            "name": "Daily Server Health Report",
+            "enabled": true,
+            "state": "scheduled",
+            "last_run_at": "2026-10-24T08:07:11.182054Z",
+            "next_run_at": "2026-10-25T08:00:00Z",
+            "schedule_display": "0 8 * * *",
+            "no_agent": false,
+            "workdir": null,
+            "provider": null,
+            "model": null,
+            "skill": null,
+            "skills": [],
+            "schedule": {
+              "kind": "cron",
+              "expr": "0 8 * * *",
+              "display": "0 8 * * * TZ=America/New_York (8:00 AM ET daily)",
+              "tz": "America/New_York"
+            }
+          }
+        ]
+      }
+    },
+    "next_responsibility": {
+      "issues": [
+        277,
+        278,
+        285,
+        288
+      ],
+      "action": "Runtime configuration owner should reconcile effective timezone/profile/job declarations and source ET guards before authorized enablement; final actual trigger proof belongs to #288. No scheduler edits in #276."
+    }
+  },
+  "capability_matrix": [
+    {
+      "goal": "G1",
+      "issue": 277,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Publication/update/revision/activity facts and month-midpoint evidence exist; list sort SQL uses publication date then collection fallback.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Current Registry API available; dynamic content sort and explicit human-override mode not established.",
+      "run_evidence": "No current read-back of a new content update sorted by its new rule.",
+      "gap": "New dynamic sort and explicit human instruction contract not found in inspected schema/CLI/owner validators.",
+      "source_refs": [
+        "climate_registry/list_projection.py:171",
+        "climate_registry/owner_checks.py:207",
+        "climate_registry/owner_checks.py:265",
+        "climate_registry/owner_dates.py:174"
+      ],
+      "next_responsibility": {
+        "issue": 277,
+        "action": "Implement/confirm two date modes and the new sort rule with their separate provenance; reconcile runtime instructions.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G2",
+      "issue": 279,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Original PDF bytes/hash, extracted text/page hashes, occurrences, canonical links and knowledge history persist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Shared Registry/queue mounts established; current sample detail pending/unverified unless supplemented below.",
+      "run_evidence": "No new import performed; existing record counts/keys do not prove semantic extraction accuracy.",
+      "gap": "Page/occurrence and canonical existence do not prove semantic item coverage or correct new-body/material identity.",
+      "source_refs": [
+        "climate_registry/schema.py:1024",
+        "climate_registry/pdf_intake.py:74",
+        "climate_registry/pdf_intake.py:249",
+        "climate_registry/schema.py:1515"
+      ],
+      "next_responsibility": {
+        "issue": 279,
+        "action": "Reuse intake; complete semantic item/version mapping and inspect retained evidence, without relabeling a repeated occurrence as new content.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G3",
+      "issue": 278,
+      "classification": "confirmed_missing_new_contract_in_audited_source",
+      "source_support": "Immutable content versions, content-bound enrichments, exact candidates/reviews, date-only published scope/CAS exist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Owner CLI exposes selected metadata/date/activity scopes; new contract not established.",
+      "run_evidence": "No current candidate-to-new-body/full-summary/change-note/manual-instruction receipt chain verified.",
+      "gap": "No change_note/change_summary/update_note/previous_published/baseline_content/manual_date/human_override/date_override/sort_date contract found across inspected packages/prompts/tests, except unrelated manual date exclusions. Owner allowed fields are narrower.",
+      "source_refs": [
+        "climate_registry/schema.py:161",
+        "climate_registry/schema.py:1324",
+        "climate_registry/schema.py:1416",
+        "climate_registry/owner_checks.py:207",
+        "climate_registry/owner_dates.py:174",
+        "climate_registry/cli.py:150"
+      ],
+      "next_responsibility": {
+        "issue": 278,
+        "action": "Define explicit versioned full contract and compatibility; distinguish prior published body baseline from current complete published-state baseline.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G4",
+      "issue": 281,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Canonical/aliases, PDF-core reconciliation, event/date observations and content-source relationships exist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Current API active; sample history/Article-Dates equivalence not fully audited.",
+      "run_evidence": "No same-article-new-edition versus different material/session end-to-end sample verified.",
+      "gap": "URL reconciliation is not universal material identity/edition correction proof.",
+      "source_refs": [
+        "climate_registry/schema.py:1515",
+        "climate_registry/article_dates.py:315",
+        "climate_registry/owner_dates.py:83"
+      ],
+      "next_responsibility": {
+        "issue": 281,
+        "action": "Preserve historic identities; establish edition/canonical correction and Article-Dates current/history rules using real retained records.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G7",
+      "issue": 282,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Source-body complete summary validation and T1/owner source checks exist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Native Python module is importable; writer stopped.",
+      "run_evidence": "No actual new-version author task or generated complete revised summary/change note observed.",
+      "gap": "Receiving/validating summary fields does not establish generation or comparison with previous published body.",
+      "source_refs": [
+        "climate_registry/owner_checks.py:279",
+        "climate_registry/information_checks.py:643",
+        "climate_registry/publication.py:965"
+      ],
+      "next_responsibility": {
+        "issue": 282,
+        "action": "Connect actual author generation to source and previous published body; retain complete summary and change explanation.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G8",
+      "issue": 280,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Durable queue status, retry/failure history, pending review and exact publication pointers exist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Daily PDF job differs from five-minute target; new T1/T10 enablement absent from native job inventory.",
+      "run_evidence": "Queue statuses cannot establish readiness decisions or actual author start.",
+      "gap": "No complete new ready/held/retry/capability/owner-instruction-continuation contract evidenced.",
+      "source_refs": [
+        "climate_registry/pdf_pipeline.py:80",
+        "climate_registry/pdf_pipeline.py:172",
+        "climate_registry/pdf_pipeline.py:894"
+      ],
+      "next_responsibility": {
+        "issue": 280,
+        "action": "Add or connect durable readiness, held subset, real owner decision and effective human-instruction scope; preserve distinct stages.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G9",
+      "issue": 283,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Manage preview/confirm/enqueue and writer import exist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Writer container created/stopped; no native PDF-author job identified.",
+      "run_evidence": "No actual PDF author task/actor/heartbeat/terminal receipt verified.",
+      "gap": "Inspected PDF pipeline contains no native author dispatch lifecycle; original readable and source persisted are distinct readiness points.",
+      "source_refs": [
+        "api_server.py:1844",
+        "api_server.py:1853",
+        "climate_registry/pdf_pipeline.py:560",
+        "scripts/run_pdf_intake_writer.py:53"
+      ],
+      "next_responsibility": {
+        "issue": 283,
+        "action": "Wire real author dispatch and restart/idempotent continuation, reusing persisted PDF/queue; do not claim queued/imported is author-started.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G10",
+      "issue": 285,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Native claim/events/session verification and owner independent actor/task plus exact candidate scope approval exist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Native Python3.11 module present; enabled T10 job not in current 21 jobs.",
+      "run_evidence": "No current newly executed native/owner author or fresh independent PASS was triggered/verified.",
+      "gap": "Installed native runtime and stored packet do not prove live author/reviewer context, authorization or publication handoff.",
+      "source_refs": [
+        "scripts/review_pipeline.py:65",
+        "climate_registry/publication.py:604",
+        "climate_registry/publication.py:745",
+        "climate_registry/publication.py:782",
+        "climate_registry/owner_checks.py:637"
+      ],
+      "next_responsibility": {
+        "issue": 285,
+        "action": "Connect actual native/owner actors and independent review; preserve exact receipt/source/scope/current-state bindings; no fabricated PASS.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G5",
+      "issue": 284,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Approved-only public projection, transactional display, frozen snapshots/manifests and expected-generation activation exist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "App running; writer stopped; shared paths confirmed.",
+      "run_evidence": "Current HTTP API available; public/active versions only as separately captured.",
+      "gap": "Approved subset/held new contract and full synchronization are not proved by Registry publication alone.",
+      "source_refs": [
+        "climate_registry/publication.py:643",
+        "climate_registry/pdf_pipeline.py:395",
+        "climate_registry/pdf_pipeline.py:473",
+        "climate_registry/pdf_pipeline.py:805",
+        "api_server.py:1306"
+      ],
+      "next_responsibility": {
+        "issue": 284,
+        "action": "Reuse shared writer and manifest; bind approved scope/held isolation and prove prepared-to-active acknowledgement after authorized rollout.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G6",
+      "issue": 286,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Verification inventories and revision/generation checking mechanisms exist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Health/config/status endpoints 200 at current capture.",
+      "run_evidence": "No semantic acceptance across actual new body, full summary, explanation and sort verified.",
+      "gap": "HTTP/file existence and current model selection are not Registry plus display/Wiki/RAG/Chat content acceptance.",
+      "source_refs": [
+        "climate_registry/publication.py:814",
+        "climate_registry/verification_report.py:1",
+        "api_server.py:886",
+        "api_server.py:1306"
+      ],
+      "next_responsibility": {
+        "issue": 286,
+        "action": "Implement/execute separate read-only Registry and public-consumer acceptance against exact expected versions; final three-source proof belongs to #288.",
+        "final_live_proof_issue": 288
+      }
+    },
+    {
+      "goal": "G11",
+      "issue": 287,
+      "classification": "implemented_not_wired_or_unverified",
+      "source_support": "Bounded T1/backoff, native claim ownership, managed attach/resume, writer retries, prepared revision reuse and newer-generation guard exist.",
+      "deployment_support": "Production app and created writer declare baseline SHA; not a per-module runtime execution proof. Writer is not running.",
+      "actual_connection": "Same baseline declared; stopped writer prevents assumed automatic continuation.",
+      "run_evidence": "No current production recovery/fair progress run observed.",
+      "gap": "Cross-new-content checkpoint continuation and uncertain generation reconciliation need real evidence; existing mechanisms must not be rebuilt.",
+      "source_refs": [
+        "climate_monitor/management.py:1262",
+        "climate_registry/information_checks.py:643",
+        "climate_registry/pdf_pipeline.py:473",
+        "climate_registry/pdf_pipeline.py:687",
+        "climate_registry/pdf_pipeline.py:805",
+        "climate_registry/pdf_pipeline.py:894"
+      ],
+      "next_responsibility": {
+        "issue": 287,
+        "action": "Reuse existing recovery; bind new stages, approved-only sync continuation, generation uncertainty and fairness, then prove in #288.",
+        "final_live_proof_issue": 288
+      }
+    }
+  ],
+  "entrypoint_map": [
+    {
+      "stage": "PDF preview/confirm",
+      "entry": "POST /api/manage/pdf-intake/preview ; POST /api/manage/pdf-intake/import",
+      "access": "Management authentication; POST preview writes temporary files; import durably writes queue. Not invoked.",
+      "artifacts": [
+        "document SHA/original bytes",
+        "preview digest",
+        "bundle.json",
+        "status.json"
+      ],
+      "refs": [
+        "api_server.py:1726",
+        "api_server.py:1844",
+        "api_server.py:1853",
+        "climate_registry/pdf_pipeline.py:80"
+      ]
+    },
+    {
+      "stage": "T2 rotation",
+      "entry": "python scripts/run_agent_acquisition.py --scheduled-start --acquisition-kind website_rotation --rotation-root <external-root>",
+      "access": "Business acquisition/writes, not invoked. ET guard and rotation reservation.",
+      "artifacts": [
+        "frozen binding",
+        "source outcomes",
+        "Registry pending candidates",
+        "acquisition-review/"
+      ],
+      "refs": [
+        "scripts/run_agent_acquisition.py:4104",
+        "climate_monitor/management.py:739"
+      ]
+    },
+    {
+      "stage": "T3 search",
+      "entry": "python scripts/run_agent_acquisition.py --scheduled-start --acquisition-kind weekly_search",
+      "access": "Business acquisition/writes, not invoked. Sunday ET guard.",
+      "artifacts": [
+        "search/outcome evidence",
+        "content/capture versions",
+        "pending candidates"
+      ],
+      "refs": [
+        "scripts/run_agent_acquisition.py:4104"
+      ]
+    },
+    {
+      "stage": "T1 enrichment",
+      "entry": "scripts/hermes_job_information_check.sh ; scripts/check_information.py --kind articles|meetings --database <canonical> --backup-dir <external> ...",
+      "access": "Business checks/generation/writes, not invoked; wrapper requires running unique writer, reader and secret presence.",
+      "artifacts": [
+        "check_runs input SHA",
+        "attempt packets",
+        "bounded batch/retry/backoff",
+        "registry-review/packet.json"
+      ],
+      "refs": [
+        "scripts/hermes_job_information_check.sh:20",
+        "scripts/check_information.py:48",
+        "climate_registry/information_checks.py:643"
+      ]
+    },
+    {
+      "stage": "T10 review/approve",
+      "entry": "python scripts/review_pipeline.py claim|submit|activate --kind acquisition --root <external-run-root> --target registry-review ...",
+      "access": "claim/submit mutate; peek calls write_verification_report so NOT a pure read-only probe. activate registry-review reads review_activation_status but can also write verification inventory at wrapper end. None invoked.",
+      "artifacts": [
+        "exact frozen snapshot/readable text",
+        "native claim/events",
+        "receipt",
+        "Registry public pointer"
+      ],
+      "refs": [
+        "scripts/review_pipeline.py:92",
+        "scripts/review_pipeline.py:108",
+        "climate_registry/publication.py:745",
+        "climate_registry/publication.py:782"
+      ]
+    },
+    {
+      "stage": "owner scoped source check",
+      "entry": "python -m climate_registry plan-owner-check|ingest-owner-check|plan-owner-review|approve-owner-check ...",
+      "access": "Plans read-only; ingest/approve --apply write with backup/lock; none invoked. Actor/task/authorization/source capture and independently different reviewer required.",
+      "artifacts": [
+        "v1/v2/date/activity plan",
+        "real capture SHA",
+        "candidate SHA",
+        "scope-bound independent receipt",
+        "backup path"
+      ],
+      "refs": [
+        "climate_registry/cli.py:150",
+        "climate_registry/owner_checks.py:163",
+        "climate_registry/owner_dates.py:174"
+      ]
+    },
+    {
+      "stage": "shared activation",
+      "entry": "python -m scripts.run_pdf_intake_writer ; PdfIntakePipeline.refresh_checks(run_id)/refresh_publication()",
+      "access": "Business writes/reload/active switching; not invoked.",
+      "artifacts": [
+        "public revision",
+        "Registry snapshots",
+        "intake-manifest.json",
+        "public-refresh.json prepared_generation",
+        "pending.json",
+        "active.json"
+      ],
+      "refs": [
+        "scripts/run_pdf_intake_writer.py:23",
+        "climate_registry/pdf_pipeline.py:473",
+        "climate_registry/pdf_pipeline.py:805",
+        "climate_registry/pdf_pipeline.py:894"
+      ]
+    },
+    {
+      "stage": "recovery",
+      "entry": "retry_pdf_batch ; ManagementService.attach_or_resume ; review_pipeline recover ; python -m climate_registry restore-backup",
+      "access": "Business writes/process starts possible; none invoked. Exact DB/SHA/claim binding required.",
+      "artifacts": [
+        "retry.json",
+        "runtime heartbeat/attempt",
+        "checkpoint",
+        "backup SHA",
+        "active generation reconciliation"
+      ],
+      "refs": [
+        "climate_registry/pdf_pipeline.py:172",
+        "climate_monitor/management.py:1262",
+        "climate_registry/cli.py:121"
+      ]
+    },
+    {
+      "stage": "audit reads",
+      "entry": "Read source/native JSON; GET /api/health, /api/config, /api/registry/status (current probe); SQLite mode=ro only if supplemental capture exists",
+      "access": "Only approved existing read-only capture; no direct new endpoint call from worker.",
+      "artifacts": [
+        "timestamped sanitized response",
+        "native path/hash",
+        "read-only metadata"
+      ],
+      "refs": [
+        "api_server.py:515",
+        "api_server.py:886"
+      ]
+    }
+  ],
+  "version_binding": {
+    "body_and_summary": {
+      "existing": "Immutable article_content_versions (content/markdown SHA) and content_version_id-bound enrichments; manual article_version compatibility remains. registry_candidates snapshot immutable; latest_candidate_sha256 and published_candidate_sha256 separate.",
+      "refs": [
+        "climate_registry/schema.py:161",
+        "climate_registry/schema.py:1324",
+        "climate_registry/schema.py:1416"
+      ]
+    },
+    "two_baselines": {
+      "approval_inheritance_concurrency": "Owner date plan freezes current published candidate, exact baseline reviews, nondate scope hash and expected latest/published/visibility.",
+      "change_note_comparison": "Previous published BODY version comparison with new full summary/change note is a separate requirement; explicit contract not found. Date-only overlay must not count as new body.",
+      "refs": [
+        "climate_registry/owner_dates.py:132",
+        "climate_registry/owner_dates.py:174",
+        "climate_registry/owner_dates.py:412"
+      ],
+      "owners": [
+        278,
+        282
+      ]
+    },
+    "pdf_canonical_history": {
+      "existing": "PDF document SHA/bytes, page/content SHA, occurrence identity, canonical URL uniqueness and PDF/core links; duplicate occurrence distinct from new content. Knowledge history and Article-Dates observations exist.",
+      "current_samples": "Only supplemental native records can establish concrete current instances; none inferred from fixtures.",
+      "refs": [
+        "climate_registry/pdf_intake.py:32",
+        "climate_registry/pdf_intake.py:249",
+        "climate_registry/schema.py:1515",
+        "climate_registry/article_dates.py:315"
+      ],
+      "owners": [
+        279,
+        281
+      ]
+    },
+    "date_modes": {
+      "agent_source_verification": "Actual capture text/hash, source kind/precision, literal record context, exact source/target scope and independent receipt.",
+      "human_explicit_override": "New dedicated explicit human date value/instruction/scope contract not found in inspected source; do not claim available or invent an exception. A legitimate human instruction must not be mislabeled as a failed source claim.",
+      "legacy_manual": "verification.py retains exact historic manual meeting identity/review bindings; this is not a new general human-override mode and must not be indiscriminately rejected for lacking a new source PASS.",
+      "refs": [
+        "climate_registry/owner_checks.py:207",
+        "climate_registry/owner_checks.py:237",
+        "climate_registry/verification.py:160"
+      ],
+      "owners": [
+        277,
+        278
+      ]
+    },
+    "sort": {
+      "existing": "ListProjection.articles ORDER BY publication_date or substr(collected_at,1,10) descending, article_id ascending.",
+      "new_dynamic_sort": "Not evidenced in this source SQL; no live new-version sort test executed.",
+      "refs": [
+        "climate_registry/list_projection.py:171"
+      ],
+      "owner": 277
+    }
+  },
+  "runtime_instructions": {
+    "local_only_skill": {
+      "path": "C:\\Users\\ferry\\.codex\\skills\\climate-article-dates\\SKILL.md",
+      "sha256": "d3588b68040b60936ee0a40fffbd0c376bc9090a164f1486ec21f12084bec662",
+      "observed_rules": [
+        "publication date or collection-date fallback sorting",
+        "independently reviewed publication path"
+      ],
+      "loaded_on_server": null,
+      "qualification": "This is workstation documentation, not evidence of server runtime-loaded instructions."
+    },
+    "actual_loaded_date_enrichment_publication_skill_versions": null,
+    "actual_author_reviewer_profile_and_authorization": null,
+    "repo_prompt_config_vs_runtime": "Repository definitions can bind config/prompt/source/site-skill versions via management.build_task_binding; no current task receipt proves loaded author/reviewer date/content rules. Job null skill/profile metadata is not proof no instruction exists.",
+    "source_refs": [
+      "climate_monitor/management.py:148",
+      "climate_monitor/management.py:162",
+      "climate_monitor/management.py:739"
+    ],
+    "next_responsibility": [
+      277,
+      278,
+      285,
+      288
+    ]
+  },
+  "stage_contract": {
+    "queued": "Durable bundle/status only; Registry not necessarily imported.",
+    "imported": "Original/source and occurrences persisted; not author-started, reviewed or public.",
+    "packet_created": "Frozen inputs only; not a native task or independent PASS.",
+    "author_started": "Requires actual task/actor/execution/heartbeat evidence, not observed by this audit.",
+    "reviewed": "Exact candidate/scope with native events or actual independent owner receipt; history counts alone not new run proof.",
+    "published": "Registry published candidate/public revision, separate from consumer activation.",
+    "prepared": "Frozen snapshot/manifest/generation ready, not active.",
+    "active": "Expected generation acknowledged by Chat/corpus and actual active metadata; requires read-back.",
+    "qualification": "These descriptions do not add new CLI/state enums."
+  },
+  "consumer_version_reconciliation": {
+    "registry": {
+      "schema_actual": 25,
+      "reports_actual": 29,
+      "articles_actual": 173,
+      "public_revision_target": null,
+      "public_revision_actual": null,
+      "checkability": "public_revision(database) and read-only DB metadata; current API selected fields only.",
+      "public_revision_retained_hash16": "aca53f4c5e7c3340",
+      "qualification": "Hash is from retained queue metadata, not a current full canonical Registry public_revision read."
+    },
+    "display": {
+      "generation_target": null,
+      "generation_actual": null,
+      "checkability": "display materialization/revision metadata, exact approved pointers; no current read-back in initial probes."
+    },
+    "wiki": {
+      "generation_target": null,
+      "generation_actual": "checks-30df9eca92ac41d28c5011955f0d01cb",
+      "manifest_sha256_actual": "248082eb02fef63f0ab8c5d60b4b56632c716f1db00a6a8772bb0abcda716bdf",
+      "checkability": "Read queue active.json/prepared metadata + runtime generation intake-manifest.json and public Registry snapshot binding.",
+      "qualification": "Disk active.json hash-correlated metadata and matching manifest at 19:36:55Z. Loaded Chat/corpus and semantic manifest content remain unverified."
+    },
+    "rag": {
+      "corpus_generation_actual": null,
+      "checkability": "Actual responder/corpus read-back needed; health and filesystem do not prove loaded corpus."
+    },
+    "chat": {
+      "agent_mode_actual": "anthropic",
+      "model_actual": "claude-haiku-5-5",
+      "active_generation_actual": null,
+      "reload_token_configured": null,
+      "qualification": "/api/config selected fields prove mode only, not successful synthesis, background author capability, or active generation."
+    },
+    "uncertain_generation": {
+      "existing": "Writer catches reload exception and reads exact active pointer before deciding failure; public revision checks and newer-generation guard exist.",
+      "refs": [
+        "climate_registry/pdf_pipeline.py:473",
+        "climate_registry/pdf_pipeline.py:687",
+        "climate_registry/pdf_pipeline.py:805",
+        "api_server.py:1327"
+      ],
+      "not_proved": "No timeout/lost-response/recovery run triggered; full cross-consumer target/actual reconciliation remains unverified."
+    }
+  },
+  "unverified": [
+    "Actual native author/reviewer execution, authorization and date/enrichment/publication loaded skills/prompts; installed module/config not actual context",
+    "All three source reader/model access, immutable PDF complete readability and semantic page/item/canonical/history correctness",
+    "Full new body/summary/change-note/date/human/sort binding on actual same-article updated versions; no live DB sample was opened by worker",
+    "Exact current public revision/display generation and equivalence with retained disk Wiki metadata; actual loaded RAG/Chat generation",
+    "Backup full SHA/restore selection and actual recovery; only runtime backup directory/file inventory retained",
+    "Effective managed timezone overlays/routed contexts/all due paths; discrepancy recorded without activating jobs",
+    "Final authorized three-source actual update and fault recovery under #288",
+    "Remote HEAD at 19:26 deployment-snapshot time remains unverified: the snapshot retains only query_sha256, not its query body/command. Later controller ls-remote at 19:49:41Z must not be backfilled as contemporaneous proof."
+  ],
+  "validation": {
+    "revision": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc + docs/audits/issue-276 only",
+    "environment": "Windows PowerShell; Python 3.11.9; Node v24.14.1",
+    "pytest": {
+      "command": "python -m pytest -q",
+      "exit_code": 1,
+      "result": "Interrupted: 46 errors during collection in 19.79s",
+      "passed": 0,
+      "skips": null,
+      "qualification": "No tests ran; predominant ModuleNotFoundError fcntl, also tests.fixtures import failure. No compatibility patch/stub or weakened test.",
+      "external_observed_output_evidence": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\issue-276\\pytest-evidence.json",
+      "raw_stdout_limit": "Original tool return was truncated; full stdout not saved. External evidence contains actual visible excerpts/summary and tool metadata only."
+    },
+    "javascript": {
+      "command": "node --check showcase/app.js",
+      "exit_code": 0,
+      "output": ""
+    },
+    "json_schema_or_logic_tests": "No application logic added; evidence JSON parsed by standard library.",
+    "wsl": {
+      "reported_by_manager": "Existing Ubuntu-24.04, Python 3.12.3, no preinstalled pytest; no dependency installation or venv creation authorized/performed.",
+      "qualification": "Worker did not execute WSL diagnosis itself; Windows pytest and node results are direct worker observations."
+    },
+    "documentation_checks": {
+      "evidence_json_parse": "passed",
+      "git_diff_check": "exit0",
+      "tracked_application_diff": "none; only new docs/audits/issue-276 files"
+    }
+  },
+  "authorization_ledger": {
+    "allowed_writes": [
+      "docs/audits/issue-276/README.md",
+      "docs/audits/issue-276/evidence.json",
+      "external worker report"
+    ],
+    "production_business_writes": false,
+    "application_code_changes": false,
+    "jobs_config_service_changes": false,
+    "active_pointer_changes": false,
+    "flow_executions": [],
+    "not_executed": [
+      "capture/acquisition",
+      "writer/generation",
+      "review/approve",
+      "sync/reload",
+      "resume/retry",
+      "fault injection",
+      "restore",
+      "commit/push/PR/merge"
+    ]
+  },
+  "handoff": "G1-G11 implementation owners resolve only their mapped gaps; G12a complete means evidence/limits delivered. #288 owns final deployed three-source and recovery proof, not this audit.",
+  "storage_existing_artifacts": {
+    "captured_at_utc": "2026-10-24T19:36:55.244283Z",
+    "native_source": "current-storage-metadata-1936Z.json#/roots",
+    "runtime_volume": {
+      "path": "/var/lib/docker/volumes/climate_monitor_wiki_climate_runtime/_data",
+      "exists": true,
+      "top_level_inventory": {
+        "dirs": 14,
+        "files": 10,
+        "suffixes": {
+          ".json": 6,
+          ".sqlite3": 3,
+          ".lock": 1
+        }
+      },
+      "backup_subtree": {
+        "dirs": 0,
+        "files": 3,
+        "suffixes": {
+          ".bak": 1,
+          ".gz": 1,
+          ".json": 1
+        }
+      },
+      "top_level_small_json_metadata": [
+        {
+          "relative_dir": ".",
+          "name_sha256": "d39f8e936877d41a",
+          "content_sha256": "4c441e98f6c554833e56af96bc96ba684a54557f3487ff43c30386745a90d4a3",
+          "bytes": 594,
+          "mtime_ns": 1791121864184103075,
+          "keys": [
+            "articles",
+            "meetings",
+            "projection"
+          ],
+          "metadata": {
+            "id_hashes": {
+              "run_id": [
+                "bff7f49b43ba6ab5",
+                "48250e5a1d93d717",
+                "48250e5a1d93d717"
+              ],
+              "generation_id": [
+                "0ec3029c04395521"
+              ]
+            },
+            "states": {
+              "kind": [
+                "meetings",
+                "articles"
+              ],
+              "status": [
+                "partial",
+                "partial",
+                "chat_ready"
+              ]
+            }
+          }
+        },
+        {
+          "relative_dir": ".",
+          "name_sha256": "d36c57a75cc8927c",
+          "content_sha256": "b27454994716fb4421b3c44066c90c99001640b8369ca6f1f2eb33f941b45a89",
+          "bytes": 195,
+          "mtime_ns": 1792227632043681629,
+          "keys": [
+            "completed_count",
+            "item_count",
+            "kind",
+            "occurrence",
+            "run_id",
+            "status"
+          ],
+          "metadata": {
+            "states": {
+              "kind": [
+                "articles"
+              ],
+              "status": [
+                "pending"
+              ]
+            },
+            "id_hashes": {
+              "run_id": [
+                "7d01a28330b6788d"
+              ]
+            }
+          }
+        },
+        {
+          "relative_dir": ".",
+          "name_sha256": "c8202f2cf3127d1b",
+          "content_sha256": "63913bb7dad4ca0232a7b560bce4cc46b19985b74a8020a3ed41dec48130b5ea",
+          "bytes": 391,
+          "mtime_ns": 1791623463766486051,
+          "keys": [
+            "completed_count",
+            "enrichment_failed_count",
+            "item_count",
+            "kind",
+            "projection",
+            "run_id",
+            "status",
+            "unverified_count"
+          ],
+          "metadata": {
+            "states": {
+              "kind": [
+                "meetings"
+              ],
+              "status": [
+                "chat_ready",
+                "partial"
+              ]
+            },
+            "id_hashes": {
+              "generation_id": [
+                "6a0e0f35cb15aa21"
+              ],
+              "run_id": [
+                "11377d9c46250a23",
+                "11377d9c46250a23"
+              ]
+            }
+          }
+        },
+        {
+          "relative_dir": ".",
+          "name_sha256": "a492ecef2417ab90",
+          "content_sha256": "f8cd6464c7687178839854ce7298a928f2d51ab85ef42e099915158afef4c1db",
+          "bytes": 178,
+          "mtime_ns": 1791121853488960283,
+          "keys": [
+            "completed_count",
+            "item_count",
+            "kind",
+            "run_id",
+            "status",
+            "unverified_count"
+          ],
+          "metadata": {
+            "id_hashes": {
+              "run_id": [
+                "bff7f49b43ba6ab5"
+              ]
+            },
+            "states": {
+              "kind": [
+                "meetings"
+              ],
+              "status": [
+                "partial"
+              ]
+            }
+          }
+        },
+        {
+          "relative_dir": ".",
+          "name_sha256": "bcf90d1f3c9daa67",
+          "content_sha256": "78b72d1b51fc7e1af304504843ea3985e9a38ee6a34abf0253b0da16a6e9f1ab",
+          "bytes": 2566,
+          "mtime_ns": 1792096154053892327,
+          "keys": [
+            "backup",
+            "backup_uncompressed_bytes",
+            "backup_uncompressed_sha256",
+            "baseline",
+            "launch",
+            "model",
+            "original_task_path",
+            "original_task_sha256",
+            "prior_launches",
+            "private_hermes_source",
+            "provider",
+            "request",
+            "request_root",
+            "runtime_context_compression",
+            "runtime_context_length",
+            "window"
+          ],
+          "metadata": {
+            "states": {
+              "schema_version": [
+                22
+              ]
+            },
+            "id_hashes": {
+              "run_id": [
+                "f13a808ec4299c37",
+                "2a8f2c3cb25fd283",
+                "0fe7d39e511b94c2",
+                "6c948467cc1165a5",
+                "e52a5cb5a9009c01"
+              ]
+            }
+          }
+        },
+        {
+          "relative_dir": ".",
+          "name_sha256": "5c61ce29219d26cb",
+          "content_sha256": "fd43cb9a20a4d1565d128ba37d72cb28a2a4dc6fa6bf0797e8a029dd2c89f553",
+          "bytes": 178,
+          "mtime_ns": 1791121856110130883,
+          "keys": [
+            "completed_count",
+            "item_count",
+            "kind",
+            "run_id",
+            "status",
+            "unverified_count"
+          ],
+          "metadata": {
+            "id_hashes": {
+              "run_id": [
+                "48250e5a1d93d717"
+              ]
+            },
+            "states": {
+              "kind": [
+                "articles"
+              ],
+              "status": [
+                "partial"
+              ]
+            }
+          }
+        }
+      ],
+      "all_small_json_metadata_count": 448,
+      "qualification": "Inventory only; runtime contains historical/manual-recovery SQLite copies, not interchangeable with canonical Registry. File presence does not prove successful restore."
+    },
+    "queue": {
+      "path": "/home/ubuntu/climate_monitor_data/pdf-intake-queue",
+      "exists": true,
+      "directory_inventory": {
+        ".": {
+          "dirs": 1,
+          "files": 2,
+          "suffixes": {
+            ".json": 2
+          }
+        },
+        "locks": {
+          "dirs": 0,
+          "files": 1,
+          "suffixes": {
+            ".lock": 1
+          }
+        }
+      },
+      "small_json_metadata": [
+        {
+          "relative_dir": ".",
+          "name_sha256": "52192daf6f88df7d",
+          "content_sha256": "93010883db27a34859091a3d6223ed0dc84613d12df669e9b5eed7f2b4312379",
+          "bytes": 1695,
+          "mtime_ns": 1792777384037424424,
+          "keys": [
+            "batch_id",
+            "chat_ready",
+            "generation_id",
+            "observed_at",
+            "prepared_generation",
+            "public_registry_revision",
+            "run_id",
+            "stage",
+            "status"
+          ],
+          "metadata": {
+            "id_hashes": {
+              "batch_id": [
+                "dd43d4903ed08fb1",
+                "dd43d4903ed08fb1"
+              ],
+              "generation_id": [
+                "0b40ea906f7ea07b",
+                "0b40ea906f7ea07b"
+              ],
+              "check_run_id": [
+                "71ee28f01211f5e5"
+              ],
+              "public_registry_revision": [
+                "aca53f4c5e7c3340",
+                "aca53f4c5e7c3340"
+              ],
+              "run_id": [
+                "71ee28f01211f5e5"
+              ]
+            },
+            "states": {
+              "chat_ready": [
+                true
+              ],
+              "projection_kind": [
+                "pdf"
+              ],
+              "stage": [
+                "chat_ready"
+              ],
+              "status": [
+                "chat_ready"
+              ]
+            },
+            "times": {
+              "observed_at": [
+                "2026-10-23T17:43:04.035150Z"
+              ],
+              "activated_at": [
+                "2026-10-23T17:35:36.171106Z"
+              ],
+              "batch_created_at": [
+                ""
+              ]
+            }
+          }
+        },
+        {
+          "relative_dir": ".",
+          "name_sha256": "44396df1150a9f85",
+          "content_sha256": "3d3f0e522d7d0f7f33306a60feeec392bb8fc092fb8a26c00d0ba544a41bdd0b",
+          "bytes": 1231,
+          "mtime_ns": 1792777383571687863,
+          "keys": [
+            "activated_at",
+            "batch_created_at",
+            "batch_id",
+            "check_run_id",
+            "generation_id",
+            "manifest_sha256",
+            "path",
+            "pdf_registry_sha256",
+            "pdf_registry_snapshot",
+            "projection_kind",
+            "public_registry_revision",
+            "public_registry_sha256",
+            "public_registry_snapshot",
+            "registry_database",
+            "registry_sha256",
+            "registry_snapshot"
+          ],
+          "metadata": {
+            "times": {
+              "activated_at": [
+                "2026-10-23T17:35:36.171106Z"
+              ],
+              "batch_created_at": [
+                ""
+              ]
+            },
+            "id_hashes": {
+              "batch_id": [
+                "dd43d4903ed08fb1"
+              ],
+              "check_run_id": [
+                "71ee28f01211f5e5"
+              ],
+              "generation_id": [
+                "0b40ea906f7ea07b"
+              ],
+              "public_registry_revision": [
+                "aca53f4c5e7c3340"
+              ]
+            },
+            "states": {
+              "projection_kind": [
+                "pdf"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "runtime_wiki": {
+      "path": "/home/ubuntu/climate_monitor_data/runtime-wiki",
+      "exists": true,
+      "top_level_inventory": {
+        "dirs": 2,
+        "files": 0,
+        "suffixes": {}
+      },
+      "matching_manifest_metadata": [
+        {
+          "relative_dir": "generations/checks-30df9eca92ac41d28c5011955f0d01cb",
+          "name_sha256": "65f822d24b357a03",
+          "content_sha256": "248082eb02fef63f0ab8c5d60b4b56632c716f1db00a6a8772bb0abcda716bdf",
+          "bytes": 201,
+          "mtime_ns": 1792776936170853620,
+          "keys": [
+            "generation_id",
+            "pdf_calendar_occurrence_ids",
+            "pdf_occurrence_ids",
+            "schema_version",
+            "web_items"
+          ],
+          "metadata": {
+            "id_hashes": {
+              "generation_id": [
+                "0b40ea906f7ea07b"
+              ]
+            },
+            "states": {
+              "schema_version": [
+                "climate-intake-projection.v1"
+              ]
+            }
+          }
+        }
+      ],
+      "all_small_json_metadata_count": 27
+    },
+    "correlation": {
+      "method": "name_sha256 equals first 16 hex of SHA256 filename; generation id_hash equals first 16 hex of SHA256 value. Independently reproduced locally for active.json/public-refresh.json/intake-manifest.json and checks-30df9eca92ac41d28c5011955f0d01cb. Hashes are correlators, not full business receipts.",
+      "active_json_name_hash": "44396df1150a9f85",
+      "public_refresh_json_name_hash": "52192daf6f88df7d",
+      "intake_manifest_name_hash": "65f822d24b357a03",
+      "generation_id": "checks-30df9eca92ac41d28c5011955f0d01cb",
+      "generation_id_hash16": "0b40ea906f7ea07b",
+      "public_revision_hash16": "aca53f4c5e7c3340",
+      "manifest_sha256": "248082eb02fef63f0ab8c5d60b4b56632c716f1db00a6a8772bb0abcda716bdf",
+      "activated_at_in_stored_metadata": "2026-10-23T17:35:36.171106Z",
+      "refresh_observed_at": "2026-10-23T17:43:04.035150Z",
+      "qualification": "Current disk read of retained prior activation metadata and matching manifest only. Full public revision value/Registry equivalence, manifest contents, loaded RAG/Chat active generation not read back. No new activation or reviewer run proved."
+    }
+  },
+  "acceptance_coverage": [
+    {
+      "criterion": 1,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "deployment",
+        "scheduler",
+        "storage_existing_artifacts",
+        "current_api",
+        "remote_main_readback"
+      ],
+      "remaining_limit": "Native author/reviewer actual context, full current backup/DB instance keys not verified. Remote HEAD at 19:26 deployment-snapshot time remains unverified: the snapshot retains only query_sha256, not its query body/command. Later controller ls-remote at 19:49:41Z must not be backfilled as contemporaneous proof."
+    },
+    {
+      "criterion": 2,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "entrypoint_map",
+        "scheduler.targets"
+      ],
+      "remaining_limit": "No collection/author/review/publication/sync/recovery execution; commands are source mappings."
+    },
+    {
+      "criterion": 3,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "capability_matrix"
+      ],
+      "remaining_limit": "Deployed SHA declarations do not prove loaded module/execution success."
+    },
+    {
+      "criterion": 4,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "version_binding",
+        "capability_matrix"
+      ],
+      "remaining_limit": "Full new contract and current real updated-article samples not verified; missing source contract recorded."
+    },
+    {
+      "criterion": 5,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "version_binding.date_modes"
+      ],
+      "remaining_limit": "New explicit human override contract not established; legacy legitimate manual evidence distinguished."
+    },
+    {
+      "criterion": 6,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "stage_contract",
+        "storage_existing_artifacts"
+      ],
+      "remaining_limit": "Retained chat_ready/active metadata not actual newly started author or current loaded Chat proof."
+    },
+    {
+      "criterion": 7,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "runtime_instructions",
+        "version_binding.two_baselines",
+        "scheduler.installed_timezone_evidence"
+      ],
+      "remaining_limit": "Actual loaded source date/enrichment/publication skills/prompts and new dynamic sort instructions unverified."
+    },
+    {
+      "criterion": 8,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "consumer_version_reconciliation",
+        "current_api"
+      ],
+      "remaining_limit": "Some actual/target values unavailable; disk metadata differs from current loaded consumer read-back."
+    },
+    {
+      "criterion": 9,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "unverified",
+        "provenance"
+      ],
+      "remaining_limit": "No historical SQLite/job/closed Issue/fixture substituted for current native evidence. Remote HEAD at 19:26 deployment-snapshot time remains unverified: the snapshot retains only query_sha256, not its query body/command. Later controller ls-remote at 19:49:41Z must not be backfilled as contemporaneous proof."
+    },
+    {
+      "criterion": 10,
+      "status": "covered_with_explicit_limits",
+      "evidence_keys": [
+        "authorization_ledger",
+        "handoff"
+      ],
+      "remaining_limit": "Audit only; all implementation and final live proof intentionally remain in owning Issues."
+    }
+  ],
+  "time_boundary": {
+    "report_assembled_at_utc": "2026-10-24T19:53:09.421646Z",
+    "source_snapshots_first_at_utc": "2026-10-24T19:26:00.164978Z",
+    "source_snapshots_last_at_utc": "2026-10-24T19:49:41.5674260Z",
+    "qualification": "Initial deployed/runtime snapshots span 19:26–19:40Z. Later controller remote-main read spans 19:49:41.2450708Z–19:49:41.5674260Z and does not establish remote state at the earlier deployment snapshot. Report assembly completion is later than these sources; no assertion of continued live state after each snapshot.",
+    "timestamp_serialization": "All structured ISO timestamps in this report are normalized to UTC Z. Native snapshot files are unchanged; their SHA256 is calculated from original bytes, independently of normalized report values. Literal source snippets and command output preserve original text."
+  },
+  "remote_main_readback": {
+    "native_evidence": "controller-current-remote-main.json",
+    "sha256": "5ba87b95d9afa361a37f795c530e73c99c3813e2f427cea23bef97c984eda3e4",
+    "command": "git ls-remote origin refs/heads/main",
+    "cwd": "C:\\Users\\ferry\\.codex\\issue-to-merge\\climate-all-20261024\\controller",
+    "started_at_utc": "2026-10-24T19:49:41.2450708Z",
+    "completed_at_utc": "2026-10-24T19:49:41.5674260Z",
+    "exit_code": 0,
+    "raw_stdout": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc\trefs/heads/main",
+    "observed_remote_main_sha": "305fda230ad91d1c8dac8ea4d34f717a44bd91fc",
+    "qualification": "Read-only remote refs/heads/main observed at 2026-10-24T19:49:41Z. It matches the earlier checkout/app declared SHA, but is not simultaneous and cannot backfill the 19:26 deployment snapshot remote state."
+  }
+}
