@@ -117,7 +117,7 @@ def ledger_path(binding):
 
 
 class RequestBudget:
-    def __init__(self, path, binding, *, prior=None):
+    def __init__(self, path, binding, *, prior=None, initialize=True):
         self.path = Path(path)
         self.attempt = int(binding["attempt"])
         identity_fields = {
@@ -137,6 +137,9 @@ class RequestBudget:
         self.provider_native_search = provider_native_unbounded_search(binding)
         self.acquisition_kind = binding.get("acquisition_kind", "report")
         self.candidate_handles = candidate_handle_protocol(binding)
+        self._existing_attempt_only = not initialize
+        if self._existing_attempt_only:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._locked(create=True) as state:
             now = time.time()
@@ -453,6 +456,11 @@ class RequestBudget:
         if not isinstance(handle, str) or not isinstance(session_id, str):
             raise ValueError("candidate result handle identity is invalid")
         with self._locked(write=False) as state:
+            if self._existing_attempt_only:
+                current = state["attempts"].get(str(self.attempt))
+                if (state["active"] != self.attempt or current is None
+                        or current["finished"] is not None):
+                    raise ValueError("request ledger current attempt is not initialized")
             row = state["result_handles"].get(handle)
             site_handle = (
                 row is not None and row.get("discovery_kind") == "site"
