@@ -36,6 +36,18 @@ def owner(tmp_path):
     return responder.chat_evidence
 
 
+def freeze_chat_clock(monkeypatch, as_of="2026-10-15T12:00:00+00:00"):
+    from agentic_wiki import chat_evidence
+
+    fixed = datetime.fromisoformat(as_of)
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(chat_evidence, "datetime", FrozenDateTime)
+
+
 def test_chat_source_payload_preserves_real_score_and_record_navigation_ids(tmp_path):
     turn = EvidenceTurn(owner(tmp_path), "Show the evidence", None, [])
     scored = turn.add({"evidence_id": "passage-1", "title": "Report passage", "score": 2.375}, kind="wiki", text="Finding.")
@@ -1251,6 +1263,7 @@ def identity_model(chat):
 @pytest.mark.parametrize("focused", [False, True])
 def test_online_agent_selects_topic_and_iterates_after_page_body(tmp_path, monkeypatch, provider, focused):
     from climate_monitor import article_content_adapter
+    freeze_chat_clock(monkeypatch)
     chat = owner(tmp_path)
     article = {"article_id": "a", "title": "Approved report", "summary": "Approved article findings",
         "canonical_url": "https://example.org/article"}
@@ -1639,7 +1652,8 @@ def test_review20_model_selected_search_retains_validated_active_path(tmp_path, 
 @pytest.mark.parametrize("question", [
     "Summarize new reports added in the last 14 days for this climate committee.",
     "Summarize new articles added in the last 14 days for that climate committee."])
-def test_recent_article_topic_switch_ignores_committee_audience_reference(tmp_path, question):
+def test_recent_article_topic_switch_ignores_committee_audience_reference(tmp_path, monkeypatch, question):
+    freeze_chat_clock(monkeypatch)
     chat = owner(tmp_path)
     identity_model(chat)
     article = {"article_id": "a", "title": "Approved report", "publication_date": "2024-01-01",
@@ -1803,7 +1817,8 @@ def test_wiki_second_visible_article_uses_stable_id_and_keeps_original_order(tmp
     assert not removed["sources"] and "no longer" in removed["text"]
 
 
-def test_approved_article_second_result_resolves_current_record_by_id(tmp_path):
+def test_approved_article_second_result_resolves_current_record_by_id(tmp_path, monkeypatch):
+    freeze_chat_clock(monkeypatch)
     chat = owner(tmp_path)
     identity_model(chat)
     class Reader(MeetingsReader):
@@ -3031,7 +3046,8 @@ def test_give_pdf_intent_routes_only_affirmative_artifact_requests(monkeypatch, 
 
 
 @pytest.mark.parametrize("time_label", ["first-ingested", "first ingested"])
-def test_recent_article_temporal_metadata_is_not_an_ordinal(tmp_path, time_label):
+def test_recent_article_temporal_metadata_is_not_an_ordinal(tmp_path, monkeypatch, time_label):
+    freeze_chat_clock(monkeypatch)
     chat = owner(tmp_path)
     identity_model(chat)
     class Reader(MeetingsReader):

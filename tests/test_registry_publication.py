@@ -514,6 +514,106 @@ def test_shared_core_pdf_identity_has_one_visibility_and_version(tmp_path):
     assert reader.pdf_article("a")["title"] == "Title a"
 
 
+@pytest.mark.parametrize("version", [21, 25])
+def test_runtime_registry_schema_probe_uses_one_approved_projection(tmp_path, monkeypatch, version):
+    from contextlib import contextmanager
+    from climate_registry.wiki import render_runtime_registry, sync_registry_wiki
+    import climate_registry.read_api as read_api
+    import climate_registry.publication as publication
+
+    database = _database(tmp_path, version=version, verified=version >= 22)
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('c','https://example.org/c','s','2026-09-01','2026-09-01')")
+        db.execute("INSERT INTO article_versions VALUES('v-c','c','Title c','Title c','Observed summary','f-c','report-title-summary','2026-09-01','2026-09-01')")
+        db.execute("UPDATE articles SET current_version_id='v-c' WHERE article_id='c'")
+        _pdf(db)
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
+        stage_entities(db)
+        candidates = dict(db.execute("SELECT entity_id,latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article'"))
+        for identity in ('a', 'c'):
+            _approve(db, candidates[identity], {"basis": "approved renderer fixture"}, status="accepted_legacy")
+        db.execute("UPDATE article_versions SET observed_title='Pending title v2' WHERE version_id='v-a'")
+        stage_entities(db)
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE registry_publication SET is_visible=0 WHERE entity_kind='article' AND entity_id='c'")
+
+    baseline_dir = tmp_path / "baseline"
+    sync_registry_wiki(database, baseline_dir)
+    baseline = {path.name: path.read_text(encoding="utf-8") for path in baseline_dir.glob("*.md")}
+    source_bytes = database.read_bytes()
+    public_connection_calls = 0
+    original_public_connection = publication.public_connection
+    def count_public_connection(connection):
+        nonlocal public_connection_calls
+        public_connection_calls += 1
+        return original_public_connection(connection)
+    monkeypatch.setattr(publication, "public_connection", count_public_connection)
+
+    events = []
+    probe_connections = []
+    original_connect = read_api.RegistryReader.connect
+    @contextmanager
+    def track_connect(reader):
+        tracked = not hasattr(reader, "_snapshot_connection")
+        with original_connect(reader) as connection:
+            if tracked:
+                events.append(("enter", reader.public))
+            if tracked and not reader.public:
+                probe_connections.append(connection)
+            elif tracked and probe_connections:
+                with pytest.raises(sqlite3.ProgrammingError):
+                    probe_connections[0].execute("SELECT 1")
+            try:
+                yield connection
+            finally:
+                if tracked:
+                    events.append(("exit", reader.public))
+        if tracked and not reader.public:
+            with pytest.raises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+    monkeypatch.setattr(read_api.RegistryReader, "connect", track_connect)
+
+    rendered = render_runtime_registry(
+        tmp_path / "runtime", web_database=database, pdf_database=database, manifest={}
+    )
+    assert rendered == baseline
+    assert public_connection_calls == 1
+    assert events[:2] == [("enter", False), ("exit", False)]
+    assert events[2:] == [("enter", True), ("exit", True)]
+    if version >= 22:
+        assert "article-a.md" in rendered and "Title a" in rendered["article-a.md"]
+        assert "Pending title v2" not in rendered["article-a.md"]
+        assert "article-b.md" not in rendered and "article-c.md" not in rendered
+        assert "PDF observation" in rendered["article-a.md"]
+    assert database.read_bytes() == source_bytes
+
+
+def test_runtime_registry_rejects_invalid_probe_and_approved_candidate(tmp_path, monkeypatch):
+    from climate_registry.read_api import RegistryContractError, RegistryUnavailableError
+    from climate_registry.wiki import render_runtime_registry
+    import climate_registry.publication as publication
+
+    missing = tmp_path / "missing.sqlite3"
+    corrupt = tmp_path / "corrupt.sqlite3"
+    corrupt.write_bytes(b"not a SQLite database")
+    for database in (missing, corrupt):
+        with pytest.raises(RegistryUnavailableError):
+            render_runtime_registry(tmp_path / database.stem, web_database=database,
+                pdf_database=None, manifest={})
+        assert not list((tmp_path / database.stem).glob("*.md"))
+
+    database = _database(tmp_path, version=25)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "invalid binding fixture"}, status="accepted_legacy")
+    monkeypatch.setattr(publication, "digest", lambda _snapshot: "sha-mismatch")
+    with pytest.raises(RegistryContractError, match="invalid .*Registry (candidate|snapshot)"):
+        render_runtime_registry(tmp_path / "invalid-candidate", web_database=database,
+            pdf_database=None, manifest={})
+    assert not list((tmp_path / "invalid-candidate").glob("*.md"))
+
+
 def test_shared_url_with_different_pdf_id_is_one_canonical_flag(tmp_path):
     database = _database(tmp_path)
     with sqlite3.connect(database) as db:
