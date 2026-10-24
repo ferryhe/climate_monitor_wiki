@@ -852,11 +852,13 @@ def render_runtime_registry(
     """Render only identities pinned by one validated active intake manifest."""
     wiki_dir.mkdir(parents=True, exist_ok=True)
     canonical = web_database or pdf_database
+    schema_version = None
     if canonical is not None:
-        with RegistryReader(canonical, repository_root=Path(__file__).resolve().parents[1]).connect() as connection:
-            if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                _registry_pages(canonical, wiki_dir)
-                return {path.name: path.read_text(encoding="utf-8") for path in wiki_dir.glob("*.md")}
+        with RegistryReader(canonical, repository_root=Path(__file__).resolve().parents[1], public=False).connect() as connection:
+            schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if schema_version is not None and schema_version >= 21:
+        _registry_pages(canonical, wiki_dir)
+        return {path.name: path.read_text(encoding="utf-8") for path in wiki_dir.glob("*.md")}
     articles: dict[str, dict[str, Any]] = {}
     web_items = list(manifest.get("web_items", []))
     by_article: dict[str, list[dict[str, Any]]] = defaultdict(list)
