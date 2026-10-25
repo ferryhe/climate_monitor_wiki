@@ -303,6 +303,8 @@ def date_plan(connection, plan, *, fields=None, activity_dates_only=False):
 
 def validate_date_manifest(manifest):
     from .owner_checks import PLAN_VERSION, _actor, _nonempty, validate_observation
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("plan"), dict):
+        raise ValueError("article date check and plan must be objects")
     plan = manifest["plan"]
     if (plan.get("schema_version") != PLAN_VERSION or plan.get("scope") not in {"article_publication_date_only", DATE_FIELDS_SCOPE, ACTIVITY_SCOPE}
             or plan.get("entity_kind") not in {"article", "pdf_article"} or "taxonomy" in manifest):
@@ -311,6 +313,8 @@ def validate_date_manifest(manifest):
     _actor(manifest["actor"])
     if not all(_nonempty(manifest.get(key)) for key in ("authorization_reference", "audit_reference")):
         raise ValueError("owner authorization and audit references are required")
+    if not isinstance(manifest.get("checked_at"), str):
+        raise ValueError("date checked_at must be a timestamp string")
     timestamp(manifest["checked_at"])
     entries = manifest["observations"]
     if not isinstance(entries, list) or len(entries) != 1:

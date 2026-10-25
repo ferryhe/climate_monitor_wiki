@@ -36,8 +36,20 @@ def pending(kind: str, root: Path):
             from climate_registry.publication import resolve_database, require_review_information
             import sqlite3
             with sqlite3.connect(f"{resolve_database(frozen=state['packet']['registry_database']).as_uri()}?mode=ro",uri=True) as connection:
+                from climate_registry.item_lifecycle import partition_items
+                current = dict(connection.execute("SELECT entity_id,latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article'"))
+                original = state["packet"]["candidates"] + state.get("excluded_candidates", [])
+                shas = [current[item["identity"]["article_id"]] for item in original if item["identity"]["article_id"] in current]
+                ready = {item["candidate_sha256"] for item in partition_items(connection, root, shas)["ready"]}
+                frozen = {item.get("registry_candidate_sha256") for item in state["packet"]["candidates"]}
+                if ready and ready != frozen:
+                    return path.parent, {**state, "preparation_required": True, "ready_candidate_sha256s": sorted(ready)}
                 try:
                     require_review_information(connection,state["packet"])
+                    from climate_registry.item_lifecycle import require_item_readiness
+                    require_item_readiness(connection, root, state["packet"])
+                    if not state["packet"]["candidates"] and state.get("excluded_candidates"):
+                        continue
                 except ValueError:
                     continue
         return path.parent, state
@@ -46,24 +58,26 @@ def pending(kind: str, root: Path):
         if packet_path.is_file():
             packet = json.loads(packet_path.read_text())
             from climate_registry.publication import resolve_database
-            from climate_registry.publication import information_ready, _information_groups
+            from climate_registry.item_lifecycle import partition_items
             import sqlite3
             with sqlite3.connect(f"{resolve_database(frozen=packet['registry_database']).as_uri()}?mode=ro", uri=True) as connection:
-                groups = _information_groups(connection)
-                pending_hashes = {row[0] for row in connection.execute("""SELECT c.candidate_sha256,c.snapshot_json FROM registry_publication p
+                shas = [row[0] for row in connection.execute("""SELECT c.candidate_sha256 FROM registry_publication p
                     JOIN registry_candidates c ON c.candidate_sha256=p.latest_candidate_sha256
-                    WHERE p.published_candidate_sha256 IS NOT p.latest_candidate_sha256""")
-                    if information_ready(connection,json.loads(row[1]),information_groups=groups)}
-            if any(item["candidate_sha256"] in pending_hashes for item in packet["candidates"]):
+                    WHERE p.published_candidate_sha256 IS NOT p.latest_candidate_sha256""")]
+                pending_hashes = {item["candidate_sha256"] for item in partition_items(connection, root, shas)["ready"]}
+            if pending_hashes:
                 claim_path = packet_path.parent / "claim.json"
                 if not claim_path.exists() or (claim := json.loads(claim_path.read_text())).get("released_at") or acquisition.owner_finished(claim):
-                    return packet_path.parent, {"packet": {**packet, "run_id": "registry-review"}}
+                    return packet_path.parent, {"packet": packet,
+                        "preparation_required": pending_hashes != {item["candidate_sha256"] for item in packet["candidates"]},
+                        "ready_candidate_sha256s": sorted(pending_hashes)}
     return None
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("peek", "claim", "submit", "correct", "recover", "activate", "regenerate", "send"))
+    parser.add_argument("command", choices=("peek", "claim", "submit", "correct", "recover", "activate", "regenerate", "send",
+        "status", "export", "hold", "import-decisions", "resume", "prepare-owner"))
     parser.add_argument("--kind", choices=("acquisition", "report"), default="report")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--target", help="run id for acquisition, occurrence date for reports")
@@ -81,11 +95,40 @@ def main(argv=None):
     parser.add_argument("--queue-dir", type=Path, default=os.getenv("CLIMATE_INTAKE_QUEUE_DIR") or os.getenv("CLIMATE_PDF_INTAKE_QUEUE_DIR"))
     parser.add_argument("--database", type=Path)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--item", action="append", help="exact Registry candidate SHA for an item handoff")
+    parser.add_argument("--decision-id", help="exact imported human reply to resume")
+    parser.add_argument("--backup-dir", type=Path)
+    parser.add_argument("--runtime-wiki-dir", type=Path)
     parser.add_argument("--send", action="store_true", help="Enable actual delivery after the separate production cutover")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     if not root.is_absolute() or root.is_relative_to(ROOT):
         parser.error("business state must be external to the checkout")
+    if args.command in {"status", "export", "hold", "import-decisions", "resume", "prepare-owner"}:
+        if args.kind != "acquisition":
+            parser.error("item handoffs require --kind acquisition")
+        from climate_registry import item_lifecycle as items
+        database = args.database or os.getenv("CLIMATE_REGISTRY_DB")
+        if not database:
+            parser.error("item handoffs require an exact --database")
+        selection = dict(candidate_sha256s=args.item, queue_dir=args.queue_dir, runtime_wiki_dir=args.runtime_wiki_dir)
+        if args.command in {"status", "export"}:
+            result = (items.item_status if args.command == "status" else items.export_items)(root, database, **selection)
+        elif args.command == "resume":
+            result = items.resume_items(root, database, decision_id=args.decision_id, backup_dir=args.backup_dir, **selection)
+        else:
+            if not args.result:
+                parser.error("a precise --result JSON input is required")
+            value = json.loads(args.result.read_text(encoding="utf-8"))
+            if args.command == "import-decisions":
+                result = items.import_decisions(root, database, value)
+            elif args.command == "hold":
+                result = items.record_dispute(root, database, **value)
+            else:
+                from climate_registry.owner_checks import prepare_owner_checks
+                result = prepare_owner_checks(database, value, root=root)
+        print(json.dumps(result, sort_keys=True))
+        return 0
     verification_report = None
     def refresh_verification_report():
         if args.kind != "acquisition":
@@ -104,7 +147,7 @@ def main(argv=None):
         verification_report = refresh_verification_report()
         selected = pending(args.kind, root)
         resolved = {}
-        if selected:
+        if selected and not selected[1].get("preparation_required"):
             target_root, state = selected
             packet = state["packet"]
             if args.kind == "report":
@@ -121,6 +164,7 @@ def main(argv=None):
                     resolved["candidate_bodies"] = [(c.get("readable_text") or {}).get("path") or str((target_root / c["body_path"]).resolve()) for c in packet["candidates"]]
         print(json.dumps({"wakeAgent": bool(selected), "kind": args.kind, "verification_report": verification_report,
             **({"target": selected[1].get("occurrence") or selected[1]["packet"]["run_id"],
+                **{key: selected[1][key] for key in ("preparation_required", "ready_candidate_sha256s") if key in selected[1]},
                 "packet": selected[1]["packet"], "resolved_paths": resolved} if selected else {})}, sort_keys=True))
         return 0
     if args.command == "send" and not args.target:
@@ -151,8 +195,8 @@ def main(argv=None):
         context = dict(session_id=args.session_id, execution_id=args.execution_id, reviewer=args.reviewer,
             hermes_database=args.hermes_database, timeout_seconds=args.timeout_seconds)
         if registry_review:
-            packet = json.loads((acquisition_root / "packet.json").read_text())
-            result = acquisition.claim_review(acquisition_root, packet, **context)
+            from climate_registry.publication import claim_registry_review
+            result = claim_registry_review(acquisition_root, **context)
         else:
             result = (acquisition.claim_acquisition(acquisition_root, **context) if args.kind == "acquisition"
             else reports.claim_report(root, args.target, **context))
@@ -170,7 +214,8 @@ def main(argv=None):
         if args.kind != "acquisition" or not args.result:
             parser.error("candidate corrections require acquisition --result")
         value = json.loads(args.result.read_text())
-        result = acquisition.correct_candidate(acquisition_root, value["item_id"], value["changes"], reason=value["reason"])
+        result = acquisition.correct_candidate(acquisition_root, value["item_id"], value["changes"], reason=value["reason"],
+            session_id=args.session_id, execution_id=args.execution_id, hermes_database=args.hermes_database)
     elif args.command == "recover":
         if args.kind != "acquisition" or not args.token:
             parser.error("recovery requires an acquisition review token")

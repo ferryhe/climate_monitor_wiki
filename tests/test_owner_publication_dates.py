@@ -119,7 +119,7 @@ def _date_review(database, tmp_path, sha):
 
 
 def _approve(database, tmp_path, receipt):
-    return approve_owner_check(database, receipt, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    return approve_owner_check(database, receipt, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
 
 
 def _item(reader, source):
@@ -699,6 +699,7 @@ def test_date_only_skips_native_queue_and_rejects_generic_or_legacy_promotion(tm
 
 def test_inflight_native_review_cannot_publish_date_scope_without_date_receipt(tmp_path, monkeypatch):
     import climate_registry.publication as publication
+    from climate_registry import item_lifecycle
     from climate_registry.acquisition_review import claim_review
     database = _seed(tmp_path)
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
@@ -709,9 +710,18 @@ def test_inflight_native_review_cannot_publish_date_scope_without_date_receipt(t
     session = "cron_date_native_inflight"
     # Model a real claim already issued by the pre-fix application's readiness gate.
     original_ready = publication.information_ready
+    original_partition = item_lifecycle.partition_items
     with monkeypatch.context() as old_gate:
         old_gate.setattr(publication, "information_ready", lambda connection, snapshot, **kwargs:
             OVERLAY in snapshot or original_ready(connection, snapshot, **kwargs))
+        def historical_partition(*args, **kwargs):
+            result = original_partition(*args, **kwargs)
+            legacy_dates = [item for item in result["held"] if item.get("reason") == "date_scope_uses_existing_owner_date_writer"]
+            result["held"] = [item for item in result["held"] if item not in legacy_dates]
+            result["ready"].extend({**item, "classification": "ready", "stage": "awaiting_independent_review", "next_owner": "G10"}
+                for item in legacy_dates)
+            return result
+        old_gate.setattr(item_lifecycle, "partition_items", historical_partition)
         packet = publication.prepare_review(database, root)
         assert [item["candidate_sha256"] for item in packet["candidates"]] == [sha]
         with sqlite3.connect(hermes) as db:
@@ -733,7 +743,11 @@ def test_inflight_native_review_cannot_publish_date_scope_without_date_receipt(t
         assert db.execute("SELECT * FROM registry_publication").fetchall() == pointers
         assert db.execute("SELECT status FROM registry_reviews WHERE review_id=?", (outcome["review_ids"][0],)).fetchone()[0] == "needs_correction"
     assert _reader(database, tmp_path).article("good") == before
-    _approve(database, tmp_path, _date_review(database, tmp_path, sha))
+    with pytest.raises(RegistryInputError, match="held"):
+        _approve(database, tmp_path, _date_review(database, tmp_path, sha))
+    replacement = _ingest(database, tmp_path, _date_manifest(database))
+    assert replacement["candidate_sha256"] != sha
+    _approve(database, tmp_path, _date_review(database, tmp_path, replacement["candidate_sha256"]))
     assert _reader(database, tmp_path).article("good")["publication_date"] == "2026-10-02"
 
 

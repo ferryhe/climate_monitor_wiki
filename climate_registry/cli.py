@@ -168,6 +168,9 @@ def _parser() -> argparse.ArgumentParser:
         else:
             owner.add_argument("--input", required=True, type=Path)
             owner.add_argument("--queue-dir", required=True, type=Path)
+            if name == "approve-owner-check":
+                owner.add_argument("--lifecycle-root", type=Path,
+                    help="Exact external lifecycle root from prepare-owner; required for source-fact approval")
             owner.add_argument("--backup-dir", type=Path)
             owner.add_argument("--apply", action="store_true")
     date_inventory = subcommands.add_parser("inventory-date-overlays")
@@ -247,6 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else:
                     operation = ingest_owner_check if args.command == "ingest-owner-check" else approve_owner_check
                     result = operation(args.database, json.loads(args.input.read_text(encoding="utf-8")),
+                        **({"lifecycle_root": args.lifecycle_root} if args.command == "approve-owner-check" else {}),
                         queue_dir=args.queue_dir, backup_dir=args.backup_dir, apply=args.apply)
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 raise RegistryInputError(str(exc)) from exc
