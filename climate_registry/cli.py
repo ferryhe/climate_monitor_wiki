@@ -172,6 +172,14 @@ def _parser() -> argparse.ArgumentParser:
             owner.add_argument("--apply", action="store_true")
     date_inventory = subcommands.add_parser("inventory-date-overlays")
     date_inventory.add_argument("--database", required=True, type=Path)
+    subcommands.add_parser("enrichment-capabilities", help="Read the versioned source/entity/scope capability matrix")
+    enrichment = subcommands.add_parser("inspect-enrichment-contract", help="Read the exact frozen candidate contract and publication references")
+    enrichment.add_argument("--database", required=True, type=Path)
+    enrichment.add_argument("--candidate-sha256", required=True)
+    validation = subcommands.add_parser("validate-enrichment-contract", help="Validate a declared scope on an existing candidate snapshot without staging or writing")
+    validation.add_argument("--database", required=True, type=Path)
+    validation.add_argument("--input", required=True, type=Path)
+    validation.add_argument("--scope", required=True, choices=["complete_article_content_update", "initial_article_content"])
     return parser
 
 
@@ -208,7 +216,22 @@ def _weekly_failure(args: argparse.Namespace, *, kind: str, message: str) -> dic
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
-        if args.command == "inventory-date-overlays":
+        if args.command == "enrichment-capabilities":
+            from .enrichment_contract import capability_matrix
+            result = capability_matrix()
+        elif args.command == "inspect-enrichment-contract":
+            from .enrichment_contract import inspect_candidate
+            try:
+                result = inspect_candidate(args.database, args.candidate_sha256)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise RegistryInputError(str(exc)) from exc
+        elif args.command == "validate-enrichment-contract":
+            from .enrichment_contract import validate_input
+            try:
+                result = validate_input(args.database, json.loads(args.input.read_text(encoding="utf-8")), args.scope)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise RegistryInputError(str(exc)) from exc
+        elif args.command == "inventory-date-overlays":
             from .owner_dates import inventory_date_overlays
             result = inventory_date_overlays(args.database)
         elif args.command in {"plan-owner-check", "plan-owner-review", "ingest-owner-check", "approve-owner-check"}:

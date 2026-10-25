@@ -380,7 +380,7 @@ G10 supplies generated-content approval; G1 does not synthesize either.
 
 ### Read-only legacy inventory
 
-Run `python -m climate_registry.cli inventory-date-overlays --database ABSOLUTE_DB`
+Run `python -m climate_registry inventory-date-overlays --database ABSOLUTE_DB`
 to list candidate hashes, record identities, current-public flags and typed
 evidence for legacy non-Published publication overlays. `write_performed` is
 always false. This inventory neither repairs data nor upgrades old authority.
@@ -407,3 +407,160 @@ The exported DTO carries `content_update_candidate_sha256`, which must match its
 `published_candidate_sha256`, and static readers check summary/version/date
 coherence before using it. Existing static files with no update package retain
 their old complete version and do not gain dynamic dates.
+
+## Shared enrichment contract (G3)
+
+`registry-enrichment-contract.v1` is a projection of the existing immutable
+candidate, source attempts, owner plan and receipts. It is not another manifest
+or database. G7, G8, G10, G5, G6 and G11 use the same Registry database identity,
+candidate SHA and contract SHA. A pending candidate and its contract never imply
+approval, visibility, activation or consumer synchronization. The read-only
+handoff reports the actual latest/published pointers and exact stored receipts;
+consumer generations remain explicitly unknown until the downstream checks run.
+
+The machine matrix is available with
+`python -m climate_registry enrichment-capabilities`. `site` and `search`
+are the actual acquisition `discovery_kind` values; PDF uses the existing intake
+adapter. The matrix describes accepted frozen Registry inputs, not a promise that
+an external generator already implements them.
+
+| Source/entity/scope | Required evidence and public scope | Inheritance / unavailable reason |
+| --- | --- | --- |
+| `site` / `search`, canonical Article or meeting, native | Frozen source targets, current native information checks and exact final review | Legacy scope does not freeze an approval baseline; the projection says unknown |
+| PDF, PDF Article / meeting, native or owner v1 | Exact document/occurrence/page/hash, capture and per-field dispositions; Article title and complete body summary, or meeting identity and interval | No new body/update claim; PDF summary adoption and author/editorial analysis retain their separate provenance |
+| Article / PDF Article, owner v2 | Same capture for title/summary and editorial evidence; frozen taxonomy, separate metadata purpose and evidence | Explicit `editorial_metadata: null` is source-only hold; unreviewed old taxonomy is not inherited |
+| Article / PDF Article, selected source date or activity scope | Exact approved baseline and receipts, selected date fields, literal typed date/event evidence and independent exact-candidate review | All approved unrelated fields, body, summary, update note and comparison basis are inherited |
+| Article / PDF Article, human dates | Exact instruction/reference, human identity, target/allowed fields, old/new values, precision, operation time and record/version applicability | Uses `human-article-date-authorization.v1`, not source PASS; no invented reason or repeated approval |
+| Canonical Article, new G3 complete update | Existing `article-content-update.v1`, current and previous bodies/SHAs, complete current summary, separate change note, precise date evidence and two baseline references | Missing previous published body is `required_missing`; independent semantic review covers the whole new scope |
+| Canonical Article, new G3 initial content | Current retained body and complete `article_enrichments` summary bound to that content version | Comparison is explicitly `not_applicable: initial_content_publication`; no update package or update note is asserted |
+| PDF evidence used for a canonical entity | Existing stored `core_article_id` (or existing canonical meeting association), plus the canonical body's own evidence | Conditional support; equal URLs do not establish a link. Standalone PDF content updates are unsupported without retained canonical bodies; existing PDF owner summary/date capabilities remain available |
+
+Article publication, Updated, Revision, event, collection, report and operation
+times retain the G1 meanings above. New update packages use the existing dynamic
+date projection; unknown dates and missing content packages stay explicit. Report
+or import time never supplies a missing source update date. Content changes do
+not remove a still-applicable record-level human instruction.
+
+The projection exposes the entire proposed display/source scope, native/owner
+field comparisons, exact exclusions where recorded, inherited scope, current
+source/run/occurrence bindings, taxonomy, authority and both baseline references.
+Native scopes that did not record exclusions say unknown rather than inventing
+them. A same capture may support summary and editorial metadata for their
+separate purposes. An update note may compare only the retained old/new bodies
+in its bound package, or quote an explicit explanation in the current body.
+Structure/hash validation never claims semantic correctness or dispatches an
+independent reviewer.
+
+### Declaring and validating new content scopes
+
+The existing `stage_snapshot` accepts an explicit `enrichment_scope` of
+`complete_article_content_update` or `initial_article_content`. It freezes only
+`enrichment_scope` (`registry-enrichment-scope.v1`): scope/capability and the two
+baseline references. Body, summary, note and date evidence remain solely in
+their existing tables and `derived_display.content_update`. Arbitrary public
+display fields are rejected. Existing G1 `article-content-update.v1` callers
+that do not declare the new G3 scope retain their existing contract; frozen
+owner v1/v2 inputs and receipts remain readable without rewriting history.
+
+A bare `derived_display` date is not evidence. New G3 scopes accept unchanged
+approved dates with their existing inheritance basis, applicable real human
+instructions, or typed source evidence for the exact current body. Updated and
+Revision facts of a content update stay in its existing content package. A new
+publication-date proof binds its current content version, canonical/final URL,
+successful capture, literal text and precision; an inherited publication date
+does not need a new capture. Owner review projections include their proposed
+source-backed publication date and sort basis before approval.
+
+Use the same deterministic validator without writing or staging:
+
+```bash
+python -m climate_registry validate-enrichment-contract --database ABSOLUTE_DB --input EXISTING_CANDIDATE.json --scope complete_article_content_update
+python -m climate_registry inspect-enrichment-contract --database ABSOLUTE_DB --candidate-sha256 EXACT_SHA
+```
+
+The validation input is the existing `registry-public-candidate.v1` snapshot,
+not a replacement intake format. Successful validation is not a frozen candidate
+or approval; staging still applies current approved date/editorial inheritance.
+`inspect-enrichment-contract` reads a real stored candidate. Owner review
+templates and native final review packets expose this same projection. New G3
+native conclusions must bind its exact contract SHA. An owner v1/v2 receipt
+cannot approve a new G3 content scope, even if its candidate SHA is replaced.
+
+G3 validation checks editorial arrays and their exact evidence before staging
+and again at approval. New categories/keywords must match the existing validated
+owner-v2 capture/taxonomy package or a frozen native semantic-import row with its
+exact stored source/report, taxonomy and bundle hashes. Categories use that
+taxonomy's labels; keywords remain free text under the existing editorial
+contract. Exact previously approved arrays keep their original authority and
+taxonomy. Unchanged unreviewed source-only fields are still removed by the
+public projection. No new proposal needs a content PASS before it can be staged:
+structure/evidence validation is separate from the later independent semantic
+review. Missing or unsupported bindings are rejected.
+
+`is_activity` must be boolean, `metadata_provenance` a mapping of editorial field
+names to string/null provenance, and `activity_dates` a list of approved activity
+records. G3 inherits activity values through the existing date-scope approval;
+it cannot introduce or clear activity dates by supplying an unbound public DTO.
+The date writer remains responsible for its existing activity schema and source
+or human authority checks. These checks apply to new G3 writes, without changing
+frozen owner v1/v2 reads or revoking valid human date instructions.
+
+### Two baselines and concurrent date publications
+
+The content comparison reference points to the previous published body candidate,
+version and SHA. A date overlay is not a new body version. The approval inheritance
+reference points to the current published candidate observed by the staging
+transaction; approval rechecks it inside the existing writer transaction.
+
+Approved owner-v2 editorial fields may be inherited through that reference. The
+staging and approval transactions verify their values and original authority;
+the frozen field hashes must still match the proposal covered by the current
+G3 exact-contract PASS. Source-only owner cleanup still removes unreviewed old
+taxonomy. Applicable new owner-v2 metadata uses its own current reviewed scope.
+Native editorial fields approved by an exact full G3 receipt likewise retain
+their original candidate/contract/scope/review and frozen semantic-import
+report/taxonomy/bundle bindings. `source_report` alone grants no inheritance.
+New G3 native evidence retains the taxonomy's exact `definition_yaml` with its
+ID/hash inside the same candidate scope and review contract. Later source-only
+operations resolve those frozen bytes rather than the current configuration.
+Legacy owner scopes and the existing archived taxonomy resolver are unchanged.
+Unchanged published candidates rebuild without changing their frozen proposal;
+new source operations project approved public editorial fields before binding
+their inheritance baseline. Pending owner proposals still need their own review.
+Owner input retries omit the derived scope from the source comparison while
+retaining checks for changed live sources, run membership and candidate data.
+
+The existing category-only writer retains a separate content-approval reference:
+original candidate/contract SHA, scope, review ID, body version/hash and summary
+hash. Its receipt approves only the category delta and retains the unchanged
+original content receipt with its original candidate identity. Restoring only
+the recorded category/provenance/binding delta must reproduce both original
+candidate and contract hashes; body, version or summary drift cannot inherit
+that approval. Repeated category corrections keep the same content baseline.
+
+For an already published, unchanged body, an owner source recheck or native
+refetch uses its existing source-review scope. Its `operation_scope` is separate
+from the original content scope. The approval baseline retains the exact original
+candidate, contract, scope, review ID, body/version, summary hash and update-package
+hash. Readers resolve those immutable references in the same database transaction;
+the original PASS is never rebound to the new candidate. The current operation
+still needs its own exact receipt. Date overlays keep their existing frozen
+baseline receipts, including applicable content approval references. A later
+category correction preserves the approved date projection and human authority.
+Changed body bytes, version, complete summary or update package cannot inherit
+the old content approval. Initial publication rules apply only to a new content
+publication, not to these separately reviewed operations on unchanged content.
+
+When B is pending and A becomes A′ through a date-only instruction, B and its old
+receipts remain immutable. Explicitly staging B′ carries A′'s valid human values
+and approved unrelated editorial/date fields. B′ compares its content to A and
+inherits its approval baseline from A′. B′ requires its own exact full-scope review;
+an old candidate's whole PASS cannot be copied by replacing its SHA. Re-staging
+the same unchanged approved candidate remains idempotent.
+
+If a substantive C has already been published, a B package still comparing to A
+fails with `content comparison baseline mismatch`, retaining C and all old
+evidence. Stale approval inheritance fails separately. The contract never orders
+content versions by hash, fetch time or completion time and does not create a G8
+dispute state or decision. Reconciliation of genuinely ambiguous content identity
+remains outside G3.
