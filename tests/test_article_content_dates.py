@@ -908,3 +908,78 @@ def test_legacy_manual_source_basis_frozen_read_and_new_revoke_use_distinct_poli
     assert item["updated_date"] == item["content_date"] == "2026-10-20"
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (decision["candidate_sha256"],)).fetchone()[0] == prior
+
+
+@pytest.mark.parametrize("mutation", ["date", "evidence", "scope"])
+def test_restage_identical_source_date_keeps_candidate_but_real_change_needs_new_review(tmp_path, mutation):
+    from climate_registry.acquisition import store_acquisition_batch
+    from test_issue112_acquisition import _batch, _item, _database as acquisition_database
+    from verified_fixtures import seed_verified_articles
+    database = acquisition_database(tmp_path)
+    store_acquisition_batch(database, _batch([_item()], batch_id="first"))
+    with sqlite3.connect(database) as db:
+        identity = db.execute("SELECT article_id FROM articles").fetchone()[0]
+        seed_verified_articles(db)
+        original = snapshot_entity(db, "article", identity)
+        approved = stage_snapshot(db, original)
+        _approve(db, approved, {"basis": "exact stable date fixture"}, status="accepted_legacy")
+        repeated = snapshot_entity(db, "article", identity)
+        assert stage_snapshot(db, repeated) == approved
+        assert "derived_display" not in repeated
+        changed = snapshot_entity(db, "article", identity)
+        observation = changed["tables"]["acquisition_items"][0]
+        if mutation == "date":
+            observation["publication_date"] = "2026-09-02"
+        elif mutation == "evidence":
+            proof = json.loads(observation["publication_date_evidence_json"])
+            proof["text"] = "Publisher explicitly states Published 1 September 2026"
+            observation["publication_date_evidence_json"] = json.dumps(proof)
+        else:
+            observation["source_name"] = "other-publisher-scope"
+        assert stage_snapshot(db, changed) != approved
+        with pytest.raises(ValueError, match="changed candidate"):
+            _approve(db, approved, {"basis": "cannot reuse old approval"}, status="accepted_legacy")
+
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("own_date", [False, True])
+def test_pdf_same_url_date_scope_does_not_borrow_unlinked_core_update(tmp_path, linked, own_date):
+    database = _seed(tmp_path, "linked" if linked else "same_url")
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT core_article_id FROM pdf_intake_articles WHERE article_id='pdf-good'").fetchone()[0] == ("good" if linked else None)
+        if own_date:
+            proof = {"date_kind": "published", "date_precision": "day", "text": "Published 3 October 2026",
+                "review_status": "pass", "source_url": "https://example.org/good", "target_url": "https://example.org/good", "field": "publication_date"}
+            db.execute("INSERT INTO pdf_article_date_observations VALUES('own-pdf-date','pdf-good','https://example.org/good','page_information','2026-10-03','fixture','fixture','pdf','pdf-good',?,'2026-10-04T00:00:00Z')", (json.dumps(proof),))
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
+    sha, bundle = _stage_complete_bundle(database)
+    with sqlite3.connect(database) as db:
+        snapshot = json.loads(db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (sha,)).fetchone()[0])
+        snapshot["derived_display"]["summary_provenance"] = "owner_reviewed_source_evidence"
+        sha = stage_snapshot(db, snapshot)
+        _approve(db, sha, {"basis": "complete core update plus independently retained PDF observation"}, status="accepted_legacy")
+        from climate_registry.display import refresh_display
+        refresh_display(db)
+    reader = _reader(database, tmp_path)
+    assert reader.article("good")["content_date"] == "2026-10-16"
+    def check(item):
+        assert item["core_article_id"] == ("good" if linked else None)
+        if linked:
+            assert item["content_date"] == "2026-10-16" and item["content_update"] == bundle
+        else:
+            assert item["content_date"] == ("2026-10-03" if own_date else None)
+            assert item["content_date_basis"] == ("publication_date" if own_date else "unknown")
+            assert not item.get("content_update") and item["summary"] != bundle["summary"]
+            if own_date:
+                assert item["content_date_evidence"]["text"] == "Published 3 October 2026"
+    for direct in (True, False):
+        with reader.public_snapshot(direct=direct):
+            check(reader.pdf_article("pdf-good"))
+    with reader.public_snapshot(direct=True):
+        owner = reader._public_candidates("article", entity_ids={"article": ["good"]})[("article", "good")]
+        check(reader._pdf_article_from_snapshot({**owner, "entity_id": "pdf-good"}))  # Existing singleton alias shape.
+    root = tmp_path / "scope-export"
+    (root / "wiki").mkdir(parents=True)
+    export_public_snapshot(database, root / "wiki/public-registry.json")
+    check(RegistryReader.from_public_export(root).pdf_article("pdf-good"))

@@ -28,13 +28,16 @@ def _seed(tmp_path, source="native"):
         keywords = ["approved keyword " + str(i) for i in range(12)]
         db.execute("INSERT INTO article_enrichments(enrichment_id,article_id,article_version_id,status,summary,categories_json,keywords_json,language,generator_kind,generator_name,generator_version,generated_at) VALUES('e-good','good','v-good','complete','Summary good','[\"Physical Risk\"]',?,'en','manual','approved-generator','v1','2026-09-01T00:00:00Z')", (json.dumps(keywords),))
         if source != "native":
-            _pdf(db, identity="pdf-good", url="https://example.org/" + ("good" if source == "linked" else "pdf-only"),
+            _pdf(db, identity="pdf-good", url="https://example.org/" + ("good" if source in {"linked", "same_url"} else "pdf-only"),
                 occurrence={"summary": "Original PDF observation", "summary_basis": "verbatim_pdf_article_row",
                     "categories": ["Physical Risk"], "keywords": keywords})
             db.execute("UPDATE pdf_intake_articles SET type_safe_classification_json=?", (json.dumps({"label": "article", "reason": "approved classifier reason"}),))
+        if source == "linked":
+            from climate_registry.schema import reconcile_pdf_article_links
+            reconcile_pdf_article_links(db, canonical_url="https://example.org/good")
         from verified_fixtures import seed_verified_articles
         seed_verified_articles(db, occurrence_ids={"core:good"} if source == "native"
-            else {"core:good", "occurrence"} if source == "linked" else {"occurrence"})
+            else {"core:good", "occurrence"} if source in {"linked", "same_url"} else {"occurrence"})
     _approve_all(database)
     if source != "native":
         from climate_registry.publication import _approve as approve_snapshot
