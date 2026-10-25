@@ -103,6 +103,8 @@ def _bundle(tmp_path, *, filename="IAA_CSC_Climate_Report_20260928.pdf", summary
     source = tmp_path / filename
     source.write_bytes(_pdf_bytes(summary) if summary else _pdf_bytes())
     bundle = import_pdf_reports([source])
+    # These tests deliberately exercise the historical schema20/v1 writer.
+    bundle.pop("source_coverage")
     article = next(
         item
         for item in bundle["articles"]
@@ -144,6 +146,47 @@ def _ack_activation(queue):
         os.replace(queue / "pending.json", queue / "active.json")
 
     return reload_chat
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Actual writer locks require POSIX")
+def test_complete_g2_coverage_does_not_approve_or_activate_writer_batch(tmp_path, monkeypatch):
+    monkeypatch.undo()  # Use the actual current writer, not the schema20 fixture.
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    from climate_monitor.pdf_intake import reconcile_source_coverage
+    from climate_registry.persistent import initialize_registry
+    from climate_registry.read_api import RegistryReader
+    source = tmp_path / "source.pdf"
+    source.write_bytes(_pdf_bytes())
+    bundle = import_pdf_reports([source])
+    coverage = bundle["source_coverage"][0]
+    covered = {key for required in coverage["observation_bindings"].values() for key in required}
+    reconcile_source_coverage(bundle, [{"source_document_sha256": coverage["source_document_sha256"],
+        "entry_key": "material-" + identity, "binding_ids": required, "observation_ids": [identity],
+        "disposition": "mapped", "agent": "source-reviewer/task", "reason": "Read exact PDF region"}
+        for identity, required in coverage["observation_bindings"].items()] + [
+        {"source_document_sha256": coverage["source_document_sha256"], "entry_key": "header-" + str(index),
+            "binding_ids": [binding["binding_id"]], "disposition": "excluded", "agent": "source-reviewer/task",
+            "reason": "Read nonmaterial source heading or blank page"}
+        for index, binding in enumerate(coverage["bindings"]) if binding["binding_id"] not in covered])
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    status = enqueue_pdf_batch(queue, bundle, repository_root=tmp_path / "application")
+    assert status["source_coverage"]["source_complete"]
+    assert status["stage"] == "queued" and not status["imported"]
+    activations = []
+    result = PdfIntakePipeline(queue, database, tmp_path / "backups", tmp_path / "runtime", activations.append,
+        repository_root=tmp_path / "application").process(status["batch_id"])
+    assert result["stage"] == "pending_review" and result["imported"]
+    assert not result["indexed"] and not result["chat_ready"] and activations == []
+    assert result["source_coverage"]["source_complete"]
+    assert not result["source_coverage"]["registry_complete"] and not result["source_coverage"]["display_complete"]
+    stored = RegistryReader(database, repository_root=tmp_path / "application", public=False).pdf_source_coverage(coverage["source_document_sha256"])
+    assert stored["status"]["source_complete"]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM registry_reviews").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM registry_publication WHERE published_candidate_sha256 IS NOT NULL").fetchone()[0] == 0
 
 
 def test_pdf_citation_survives_excerpt_truncation():

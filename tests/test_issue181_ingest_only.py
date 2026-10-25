@@ -258,6 +258,8 @@ def test_pdf_and_web_activation_share_one_pinned_read_only_snapshot(tmp_path):
     pdf_path = tmp_path / "outlook.pdf"
     _pdf(pdf_path)
     bundle = import_pdf_reports([pdf_path])
+    # This module deliberately retains the pre-G2 schema20 writer contract.
+    bundle.pop("source_coverage")
     bundle["documents"][0].update(period_start="2025-12-31", period_end="2025-12-31")
     bundle["calendar_items"].append({
         "event_id": "future-key-date", "occurrence_id": "future-key-date-occurrence",
@@ -576,6 +578,8 @@ def test_authorized_date_selection_retains_activated_web_main_facts(tmp_path, da
             extra_url="https://web.example/unapproved-article",
         )
         bundle = import_pdf_reports([pdf_path])
+        # This module deliberately retains the pre-G2 schema20 writer contract.
+        bundle.pop("source_coverage")
         bundle["documents"][0].update(
             period_start="2026-09-25", period_end="2026-09-25"
         )
@@ -663,6 +667,8 @@ def test_failed_pdf_then_web_activation_then_pdf_retry_merges_both(tmp_path):
     pdf_path = tmp_path / "retry.pdf"
     _pdf(pdf_path)
     bundle = import_pdf_reports([pdf_path])
+    # This module deliberately retains the pre-G2 schema20 writer contract.
+    bundle.pop("source_coverage")
     bundle["documents"][0].update(period_start="2025-12-31", period_end="2025-12-31")
     bundle["calendar_items"].append({
         "event_id": "failed-pdf-date", "occurrence_id": "failed-pdf-date-occurrence",

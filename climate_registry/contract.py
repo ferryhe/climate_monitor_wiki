@@ -217,10 +217,16 @@ REQUIRED_TABLE_COLUMNS["pdf_article_date_observations"] = {
     "source_system", "source_database", "source_table", "source_record_id", "evidence_json", "recorded_at",
 }
 V25_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25)
+REQUIRED_TABLE_COLUMNS["pdf_source_coverage"] = {
+    "coverage_id", "document_sha256", "coverage_json", "occurrence_bindings_json", "published_baselines_json", "recorded_at",
+}
+V26_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26)
 
 
 def _required_tables(version: int) -> frozenset[str]:
+    if version >= 26:
+        return V26_TABLES
     if version >= 25:
         return V25_TABLES
     if version >= 24:
@@ -582,6 +588,8 @@ GOLDEN_CONTRACTS = {
 
 def _required_triggers(version: int) -> frozenset[str]:
     names = REQUIRED_TRIGGERS
+    if version >= 26:
+        names |= {"pdf_source_coverage_append_only_update", "pdf_source_coverage_append_only_delete"}
     if version >= 24:
         names |= frozenset(DISPLAY_DIRTY_TRIGGERS)
     if version >= 23:
@@ -653,6 +661,8 @@ def _required_triggers(version: int) -> frozenset[str]:
 
 def _required_indexes(version: int) -> frozenset[str]:
     names = REQUIRED_INDEXES
+    if version >= 26:
+        names |= {"idx_pdf_source_coverage_document"}
     if version >= 24:
         names |= frozenset(DISPLAY_INDEX_SQL)
     if version >= 21:
@@ -691,6 +701,8 @@ def _required_foreign_keys(
     table: str, version: int
 ) -> set[tuple[str, tuple[str, ...], tuple[str, ...]]]:
     keys = set(REQUIRED_FOREIGN_KEYS.get(table, set()))
+    if table == "pdf_source_coverage":
+        keys.add(("pdf_intake_documents", ("document_sha256",), ("document_sha256",)))
     if table == "pdf_intake_summary_adoptions":
         keys.add(("pdf_intake_documents", ("document_sha256",), ("document_sha256",)))
     if version >= 22 and table in {"article_check_attempts","meeting_check_attempts"}:

@@ -1647,6 +1647,25 @@ MIGRATIONS += ((25, "pdf_article_date_observations", """
 """),)
 
 
+MIGRATIONS += ((26, "pdf_source_coverage", """
+    CREATE TABLE pdf_source_coverage (
+        coverage_id TEXT PRIMARY KEY,
+        document_sha256 TEXT NOT NULL REFERENCES pdf_intake_documents(document_sha256),
+        coverage_json TEXT NOT NULL CHECK (json_valid(coverage_json)),
+        occurrence_bindings_json TEXT NOT NULL CHECK (json_valid(occurrence_bindings_json)),
+        published_baselines_json TEXT NOT NULL CHECK (json_valid(published_baselines_json)),
+        recorded_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_pdf_source_coverage_document ON pdf_source_coverage(document_sha256);
+    CREATE TRIGGER pdf_source_coverage_append_only_update BEFORE UPDATE ON pdf_source_coverage BEGIN
+        SELECT RAISE(ABORT, 'PDF source coverage is append-only');
+    END;
+    CREATE TRIGGER pdf_source_coverage_append_only_delete BEFORE DELETE ON pdf_source_coverage BEGIN
+        SELECT RAISE(ABORT, 'PDF source coverage is append-only');
+    END;
+"""),)
+
+
 def apply_migrations(connection: sqlite3.Connection, *, target_version: int | None = None) -> list[int]:
     """Apply all pending schema migrations and return their version numbers."""
 

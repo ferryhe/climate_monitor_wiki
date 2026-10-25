@@ -29,45 +29,203 @@ from .persistent import (
 from .schema import apply_migrations, reconcile_pdf_article_links
 
 
+def validate_source_coverage(bundle: dict[str, Any]) -> None:
+    """Replay evidence and judgments from the original bytes before any write."""
+    if "source_coverage" not in bundle:
+        return  # Legacy v1 bundles remain supported by the original writer.
+    from climate_monitor.pdf_intake import (
+        _read_pdf, _article_records,
+        build_source_coverage, reconcile_source_coverage,
+    )
+    documents = []
+    for document in bundle["documents"]:
+        raw = base64.b64decode(document["source"]["original_pdf_base64"], validate=True)
+        if hashlib.sha256(raw).hexdigest() != document["source"]["sha256"]:
+            raise RegistryInputError("coverage original PDF hash differs")
+        original = _read_pdf(Path(document["source"]["filename"]), raw_pdf=raw)
+        for key, value in original["source"].items():
+            if key not in {"path", "filename", "source_observations"} and document["source"].get(key) != value:
+                raise RegistryInputError("coverage source metadata differs from original PDF")
+        if len(original["pages"]) != len(document["pages"]):
+            raise RegistryInputError("coverage PDF page count differs")
+        for actual, stored in zip(original["pages"], document["pages"]):
+            if {key: value for key, value in actual.items() if key != "_text_fragments"} != stored:
+                raise RegistryInputError("coverage page text, native links or region differs from original PDF")
+        if {key: value for key, value in original.items() if key not in {"source", "pages", "calendar_items"}} != {
+            key: value for key, value in document.items() if key not in {"source", "pages", "calendar_items"}
+        }:
+            raise RegistryInputError("coverage report source fields differ from original PDF")
+        original["source"] = document["source"]
+        documents.append(original)
+
+    def raw_calendar(items):
+        return [{key: value for key, value in item.items() if key not in {"type_safe_classification", "management_batch_id"}} for item in items]
+
+    for original, document in zip(documents, bundle["documents"]):
+        if raw_calendar(original["calendar_items"]) != raw_calendar(document["calendar_items"]):
+            raise RegistryInputError("coverage calendar original text, hashes or source fields differ from PDF")
+    calendar_items = [item for document in documents for item in document["calendar_items"]]
+    if raw_calendar(calendar_items) != raw_calendar(bundle["calendar_items"]):
+        raise RegistryInputError("coverage calendar original text, hashes or source fields differ from PDF")
+    articles = _article_records(documents)
+    def raw_articles(items):
+        return [{key: ([{field: value for field, value in occurrence.items() if field != "management_batch_id"}
+            for occurrence in item["occurrences"]] if key == "occurrences" else value)
+            for key, value in item.items() if key != "type_safe_classification"} for item in items]
+    if raw_articles(articles) != raw_articles(bundle["articles"]):
+        raise RegistryInputError("coverage article original text, hashes or source fields differ from PDF")
+    replay = dict(bundle, articles=articles, calendar_items=calendar_items,
+        source_coverage=build_source_coverage(documents, articles))
+    try:
+        for source in bundle["source_coverage"]:
+            for entry in source["entries"]:
+                for revision in entry["revisions"]:
+                    reconcile_source_coverage(replay, [{key: value for key, value in revision.items() if key != "revision_id"}])
+        if replay["source_coverage"] != bundle["source_coverage"]:
+            raise ValueError("source coverage does not replay from exact PDF evidence")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RegistryInputError(f"invalid source coverage: {exc}") from exc
+
+
+def _persist_source_coverage(connection, bundle, now, article_matches, calendar_matches):
+    from climate_monitor.pdf_intake import _coverage_id
+    for source in bundle.get("source_coverage", []):
+        coverage_id = _coverage_id("pdf-coverage-", source)
+        if connection.execute("SELECT 1 FROM pdf_source_coverage WHERE coverage_id=?", (coverage_id,)).fetchone():
+            continue
+        histories = [json.loads(row[0]) for row in connection.execute(
+            "SELECT coverage_json FROM pdf_source_coverage WHERE document_sha256=? ORDER BY rowid", (source["source_document_sha256"],))]
+        latest_revisions = {}
+        for history in histories:
+            for entry in history["entries"]:
+                if entry["revisions"]:
+                    latest_revisions[entry["entry_id"]] = entry["revisions"]
+        for entry in source["entries"]:
+            previous = latest_revisions.get(entry["entry_id"], [])
+            if entry["revisions"] and entry["revisions"][:len(previous)] != previous:
+                raise RegistryInputError("stored PDF coverage judgment changed; re-read before appending")
+        baselines = []
+        occurrence_bindings = {}
+        for article in bundle["articles"]:
+            for occurrence in article["occurrences"]:
+                if occurrence["source_document_sha256"] == source["source_document_sha256"]:
+                    key = occurrence["occurrence_id"]
+                    occurrence_bindings[key] = article_matches.get(key, key)
+        for occurrence in bundle["calendar_items"]:
+            if occurrence["source_document_sha256"] == source["source_document_sha256"]:
+                key = occurrence["occurrence_id"]
+                occurrence_bindings[key] = calendar_matches.get(key, key)
+        for article in bundle["articles"]:
+            if not any(item["source_document_sha256"] == source["source_document_sha256"] for item in article["occurrences"]):
+                continue
+            owner = connection.execute("SELECT core_article_id FROM pdf_intake_articles WHERE article_id=?", (article["article_id"],)).fetchone()
+            kind, identity = ("article", owner[0]) if owner and owner[0] else ("pdf_article", article["article_id"])
+            row = connection.execute("""SELECT p.published_candidate_sha256,c.snapshot_json FROM registry_publication p
+                JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
+                WHERE p.entity_kind=? AND p.entity_id=?""", (kind, identity)).fetchone()
+            from .owner_dates import current_date_view
+            baselines.append({"observation_article_id": article["article_id"], "read_at": now,
+                "entity_kind": kind, "entity_id": identity, "status": "published" if row else "pending_g4",
+                "candidate_sha256": row[0] if row else None, "snapshot": json.loads(row[1]) if row else None,
+                "public_view": current_date_view(connection, kind, identity) if row else None,
+                "requires_downstream_recheck": True})
+        for occurrence in bundle["calendar_items"]:
+            if occurrence["source_document_sha256"] != source["source_document_sha256"]:
+                continue
+            key = occurrence["occurrence_id"]
+            translated = calendar_matches.get(key)
+            stored = connection.execute("""SELECT event_id FROM pdf_intake_calendar_items
+                WHERE occurrence_id=? AND source_document_sha256=? AND page=?""",
+                (translated, source["source_document_sha256"], occurrence["page"])).fetchone() if translated else None
+            published = []
+            if stored:
+                # Only a persisted source identity or its approved, explicit native link is known here.
+                published = connection.execute("""SELECT p.entity_kind,p.entity_id,p.published_candidate_sha256,c.snapshot_json
+                    FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
+                    WHERE (p.entity_kind='pdf_meeting' AND p.entity_id=?) OR (p.entity_kind='meeting'
+                        AND EXISTS (SELECT 1 FROM json_each(c.snapshot_json,'$.tables.pdf_intake_calendar_items') item
+                            WHERE json_extract(item.value,'$.occurrence_id')=?
+                                AND json_extract(item.value,'$.source_document_sha256')=?
+                                AND json_extract(item.value,'$.page')=? AND json_extract(item.value,'$.event_id')=?)
+                        AND EXISTS (SELECT 1 FROM json_each(c.snapshot_json,'$.tables.meeting_check_attempts') check_row
+                            WHERE json_extract(check_row.value,'$.occurrence_id')=?
+                                AND json_extract(check_row.value,'$.verification_status')='verified'
+                                AND json_extract(json_extract(check_row.value,'$.packet_json'),'$.canonical_event_id')=p.entity_id))""",
+                    (stored[0], translated, source["source_document_sha256"], occurrence["page"], stored[0], translated)).fetchall()
+            row = published[0] if len(published) == 1 else None
+            kind, identity = row[:2] if row else (None, None)
+            from .owner_dates import current_date_view
+            baselines.append({"observation_occurrence_id": key, "registry_occurrence_id": occurrence_bindings[key],
+                "entity_kind": kind, "entity_id": identity, "status": "published" if row else "pending_g4",
+                "candidate_sha256": row[2] if row else None, "snapshot": json.loads(row[3]) if row else None,
+                "public_view": current_date_view(connection, kind, identity) if row else None,
+                "read_at": now, "requires_downstream_recheck": True})
+        connection.execute("INSERT INTO pdf_source_coverage VALUES(?,?,?,?,?,?)", (
+            coverage_id, source["source_document_sha256"], json.dumps(source, ensure_ascii=False, sort_keys=True),
+            json.dumps(occurrence_bindings, sort_keys=True),
+            json.dumps(baselines, ensure_ascii=False, sort_keys=True), now))
+
+
 def _existing_occurrence_ids(
     connection: sqlite3.Connection,
     documents: list[dict[str, Any]],
     articles: list[dict[str, Any]],
     calendar_items: list[dict[str, Any]],
 ) -> tuple[dict[str, str], dict[str, str]]:
-    article_ids: dict[tuple[str, str, int, str], list[str]] = defaultdict(list)
-    calendar_ids: dict[tuple[str, int, str], list[str]] = defaultdict(list)
+    article_rows = defaultdict(list)
+    calendar_rows = defaultdict(list)
     for source_sha in {document["source"]["sha256"] for document in documents}:
         for row in connection.execute(
-            """SELECT occurrence_id, article_id, source_document_sha256, page, raw_url
+            """SELECT occurrence_id, article_id, source_document_sha256, page, raw_url, occurrence_json
                FROM pdf_intake_article_occurrences
                WHERE source_document_sha256=? ORDER BY rowid""",
             (source_sha,),
         ):
             key = (row[2], row[1], row[3], row[4])
-            article_ids[key].append(row[0])
+            article_rows[key].append((row[0], json.loads(row[5])))
         for row in connection.execute(
-            """SELECT occurrence_id, event_id, source_document_sha256, page
+            """SELECT occurrence_id, event_id, source_document_sha256, page, item_json
                FROM pdf_intake_calendar_items
                WHERE source_document_sha256=? ORDER BY rowid""",
             (source_sha,),
         ):
-            key = (row[2], row[3], row[1])
-            calendar_ids[key].append(row[0])
+            key = (row[2], row[3])
+            calendar_rows[key].append((row[0], json.loads(row[4])))
+
+    def match(rows, occurrence, evidence):
+        matches = [row for row in rows if row[0] == occurrence["occurrence_id"]]
+        if not matches:
+            matches = [row for row in rows if evidence(row[1], occurrence)]
+        if len(matches) > 1:
+            raise RegistryInputError("PDF legacy occurrence source evidence is ambiguous; cannot translate its ID")
+        if matches:
+            rows.remove(matches[0])
+            return matches[0][0]
+        return None
 
     article_matches: dict[str, str] = {}
     for article in articles:
         for occurrence in article["occurrences"]:
             key = (occurrence["source_document_sha256"], article["article_id"],
                    occurrence["page"], occurrence["raw_url"])
-            if article_ids[key]:
-                article_matches[occurrence["occurrence_id"]] = article_ids[key].pop(0)
+            identity = match(article_rows[key], occurrence,
+                lambda old, new: bool(old.get("link_rects")) and old["link_rects"] == new.get("link_rects"))
+            if not identity and any(not old.get("link_rects") for _, old in article_rows[key]):
+                raise RegistryInputError("PDF legacy occurrence has no unique source rectangle; cannot translate its ID")
+            if identity:
+                article_matches[occurrence["occurrence_id"]] = identity
 
     calendar_matches: dict[str, str] = {}
     for item in calendar_items:
-        key = (item["source_document_sha256"], item["page"], item["event_id"])
-        if calendar_ids[key]:
-            calendar_matches[item["occurrence_id"]] = calendar_ids[key].pop(0)
+        key = (item["source_document_sha256"], item["page"])
+        identity = match(calendar_rows[key], item,
+            lambda old, new: bool(old.get("raw_text")) and old["raw_text"] == new.get("raw_text")
+                and (not old.get("source_region") or old["source_region"] == new.get("source_region")))
+        if not identity and any(not old.get("raw_text") and old.get("event_id") == item["event_id"]
+                for _, old in calendar_rows[key]):
+            raise RegistryInputError("PDF legacy occurrence has no unique source row; cannot translate its ID")
+        if identity:
+            calendar_matches[item["occurrence_id"]] = identity
     return article_matches, calendar_matches
 
 
@@ -89,6 +247,7 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
         isinstance(items, list) for items in (documents, articles, calendar_items)
     ):
         raise RegistryInputError("unsupported or malformed PDF intake bundle")
+    validate_source_coverage(bundle)
     original_pdfs = {}
     pdf_metadata_json_by_sha = {}
     source_observations_by_sha = {}
@@ -313,6 +472,7 @@ def persist_pdf_intake(database: Path, backup_dir: Path, bundle: dict[str, Any])
                                 (json.dumps(classification, ensure_ascii=False, sort_keys=True),
                                  occurrence_id),
                             )
+                    _persist_source_coverage(connection, bundle, now, existing_article_ids, existing_calendar_ids)
                     from .publication import stage_entities
                     stage_entities(connection)
                     from .display import refresh_display

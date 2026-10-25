@@ -121,6 +121,10 @@ def test_pdf_import_requires_session_and_preview_never_writes(monkeypatch, tmp_p
     assert article["title"] == "Climate risk study"
     assert article["page"] == 2 and "Article summary" in article["report_summary"]
     assert article["source_document"] == "report.pdf"
+    assert preview.json()["documents"][0]["filename"] == "report.pdf"
+    source_coverage = preview.json()["source_coverage"][0]
+    assert source_coverage["source_document_sha256"] == preview.json()["documents"][0]["sha256"]
+    assert source_coverage["bindings"] and all(item["canonical_identity"] is None for item in source_coverage["entries"])
     calendar = preview.json()["calendar"][0]
     assert calendar["name"] == "Climate conference"
     assert calendar["page"] == 3 and calendar["date"] == "2026-09-04"

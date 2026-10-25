@@ -114,6 +114,9 @@ def enqueue_pdf_batch(
         "created_at": now,
         "updated_at": now,
     }
+    if "source_coverage" in bundle:
+        from climate_monitor.pdf_intake import source_coverage_status
+        status["source_coverage"] = source_coverage_status(bundle["source_coverage"])
     atomic_write_json(status_path, status)
     return status
 

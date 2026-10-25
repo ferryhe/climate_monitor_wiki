@@ -455,7 +455,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert len(status_payload.pop("cache_version")) == 32
     assert status_payload == {
         "available": True,
-        "schema_version": 25,
+        "schema_version": 26,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,

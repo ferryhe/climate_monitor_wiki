@@ -21,6 +21,33 @@ def _calendar_pdf(path, name, date_text):
     SimpleDocTemplate(str(path)).build([Paragraph("Key Dates", style), table])
 
 
+def test_calendar_table_has_exact_source_coverage_without_invented_links(tmp_path, monkeypatch):
+    from climate_monitor.pdf_intake import import_pdf_reports, reconcile_source_coverage, source_coverage_status
+    from climate_registry.pdf_intake import validate_source_coverage
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    path = tmp_path / "calendar-original.pdf"
+    _calendar_pdf(path, "Climate finance ministerial meeting", "5-8 Oct 2026")
+    bundle = import_pdf_reports([path])
+    source = bundle["source_coverage"][0]
+    event = bundle["calendar_items"][0]
+    assert event["source_urls"] == [] and event["source_links"] == []
+    assert "".join(item["raw_text"] for item in source["bindings"]) == bundle["documents"][0]["pages"][0]["text"]
+    assert all(not item["native_links"] for item in source["bindings"])
+    # Keep all original row spans together; the table header is an exclusion.
+    required = source["observation_bindings"][event["occurrence_id"]]
+    reconcile_source_coverage(bundle, [{"source_document_sha256": source["source_document_sha256"],
+        "entry_key": "calendar-row", "binding_ids": required,
+        "observation_ids": [event["occurrence_id"]], "disposition": "mapped", "agent": "calendar-reviewer/task",
+        "reason": "Read the original table cells together; no native PDF links exist"}] + [
+        {"source_document_sha256": source["source_document_sha256"], "entry_key": "header-" + str(index),
+            "binding_ids": [item["binding_id"]], "disposition": "excluded", "agent": "calendar-reviewer/task",
+            "reason": "Source table heading is not an independent calendar material"}
+        for index, item in enumerate(source["bindings"]) if item["binding_id"] not in required])
+    assert source_coverage_status(bundle["source_coverage"])["source_complete"]
+    assert source_coverage_status(bundle["source_coverage"])["canonical_identity_status"] == "pending_g4"
+    validate_source_coverage(bundle)
+
+
 def test_calendar_geometry_recovers_full_cells_for_new_and_existing_imports(tmp_path):
     path = tmp_path / "calendar.pdf"
     style = getSampleStyleSheet()["BodyText"]

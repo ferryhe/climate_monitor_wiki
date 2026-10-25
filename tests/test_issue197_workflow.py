@@ -65,7 +65,7 @@ def _queue_after_actual_information(binding_path,binding,payload,**kwargs):
 def test_transaction_times_ignore_retries_and_check_metadata():
     db = sqlite3.connect(":memory:")
     apply_migrations(db)
-    assert validate_registry_contract(db) == 25
+    assert validate_registry_contract(db) == 26
     for ref, when, text in (("first", "2026-09-29T02:00:00Z", "same"),
                            ("retry", "2026-10-02T02:00:00Z", "same"),
                            ("check", "2026-10-04T02:00:00Z", "changed")):
@@ -728,7 +728,7 @@ def test_information_check_requires_explicit_v18_migration_with_exact_backup(tmp
     result = run_checks(database, kind="articles", backup_dir=backups, fetcher=unexpected, verifier=unexpected)
     assert result["status"] == "complete" and result["item_count"] == 0 and not calls
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db) == 25
+        assert validate_registry_contract(db) == 26
         assert db.execute("SELECT count(*) FROM knowledge_versions").fetchone()[0] == 0
     saved = list(backups.glob("*.bak"))
     assert len(saved) == 1
@@ -965,6 +965,8 @@ def test_first_ingestion_in_window_survives_current_update_after_cutoff(tmp_path
     pdf.save()
     bundle = import_pdf_reports([source])
     assert len(bundle["articles"]) == len(bundle["calendar_items"]) == 1
+    # This frozen schema20 case intentionally exercises the pre-G2 v1 writer.
+    bundle.pop("source_coverage")
     writer, public = tmp_path / "writer.sqlite3", tmp_path / "public.sqlite3"
     for database in (writer, public):
         with sqlite3.connect(database) as db:
@@ -1588,7 +1590,7 @@ def test_approved_but_delayed_writer_activation_carries_exact_unfrozen_material(
         apply_migrations(db,target_version=20)
         assert validate_registry_contract(db)==20
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db)==25
+        assert validate_registry_contract(db)==26
     public_before=public.read_bytes()
     reader=RegistryReader(public,repository_root=tmp_path/"application");artifacts=tmp_path/"artifacts"
     inactive={"web_items":[],"pdf_occurrence_ids":[],"pdf_calendar_occurrence_ids":[]}
