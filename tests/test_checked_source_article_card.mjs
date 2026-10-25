@@ -75,6 +75,9 @@ const approved = approvedList.items[0];
 assert.equal(approved.owner_agent_verification?.verification_status, "verified");
 assert.equal(approved.checked_source_url, approved.owner_agent_verification.final_url);
 const checked = await run(approvedList);
+assert.equal(checked.context.registryArticleDateSummary({ first_collected_at: "2026-10-02T00:00:00Z",
+  collected_at: "2026-10-24T00:00:00Z" }), "First collected 2026-10-02");
+assert.equal(checked.context.registryArticleDateSummary({ collected_at: "2026-10-24T00:00:00Z" }), "Collected 2026-10-24");
 const monthEvidence = { date_normalization: "month_midpoint", source_date_precision: "month", text: "November 2025" };
 const monthArticle = { publication_date: "2025-11-15", publication_date_evidence: monthEvidence,
   updated_date: "2025-11-15", updated_date_evidence: monthEvidence,
@@ -83,8 +86,8 @@ assert.equal(checked.context.registryArticleDateLabel(monthArticle, "updated_dat
   "November 2025 (normalized to 2025-11-15 for sorting)");
 assert.equal(checked.context.registryArticleDateSummary(monthArticle),
   "Published November 2025 (normalized to 2025-11-15 for sorting) · " +
-  "Updated November 2025 (normalized to 2025-11-15 for sorting) · " +
-  "Version revised November 2025 (normalized to 2025-11-15 for sorting)");
+  "Source Updated date November 2025 (normalized to 2025-11-15 for sorting) · " +
+  "Source Revision date November 2025 (normalized to 2025-11-15 for sorting)");
 const metricsStart = source.indexOf('    const metrics = [\n      registryMetric("Publisher", article.publisher)');
 const metricsEnd = source.indexOf("\n    const summaryPresentation =", metricsStart);
 assert.ok(metricsStart >= 0 && metricsEnd > metricsStart);
@@ -94,13 +97,16 @@ const metricsContext = vm.createContext({ article: monthArticle, pdfSource: fals
   registryMetric: (label, value) => ({ label, value }),
   registryArticleDateLabel: checked.context.registryArticleDateLabel });
 vm.runInContext(source.slice(metricsStart, metricsEnd), metricsContext);
-assert.deepEqual(metricsSeen.filter(item => ["Publication date", "Updated", "Version revised"].includes(item.label)), [
+assert.deepEqual(metricsSeen.filter(item => ["Publication date", "Source Updated date", "Source Revision date"].includes(item.label)), [
   { label: "Publication date", value: "November 2025 (normalized to 2025-11-15 for sorting)" },
-  { label: "Updated", value: "November 2025 (normalized to 2025-11-15 for sorting)" },
-  { label: "Version revised", value: "November 2025 (normalized to 2025-11-15 for sorting)" },
+  { label: "Source Updated date", value: "November 2025 (normalized to 2025-11-15 for sorting)" },
+  { label: "Source Revision date", value: "November 2025 (normalized to 2025-11-15 for sorting)" },
 ]);
 const pdfOccurrence = { publication_date: "2025-11-15", publication_date_evidence: monthEvidence,
   source_document: "climate-report.pdf", page: 4 };
+assert.equal(checked.context.registryOccurrenceDateSummary({ publication_date: "2026-10-02",
+  publication_date_evidence: { authority: "human_override", instruction_reference: "human-message:277/explicit" } }),
+  "Publication date 2026-10-02 · human override");
 const pdfAppearances = new Element();
 checked.context.appendPdfAppearances(pdfAppearances, [pdfOccurrence]);
 const pdfAppearanceText = [];

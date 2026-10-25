@@ -242,3 +242,166 @@ non-event public DTO change. Existing `derived_display`, summary, categories,
 keywords and event observations are inherited. Only the reviewed event observations
 and their `activity_dates`/`is_activity` projection are added. The existing Dates
 projection displays them; the Articles list projection excludes activity records.
+
+
+## Article date contract (G1)
+
+The current write policy is `typed-article-dates.v2`. Frozen older candidates and
+receipts keep their original meaning and remain readable; this is not permission
+to reuse an old receipt for a new candidate or to publish new Updated-kind
+publication overlays.
+
+| Time | Retained fact and allowed change | Public use |
+| --- | --- | --- |
+| Publication | Source Published/Posted, literal text, precision, URL/final URL/capture evidence; independently checked correction or explicit human override | Original publication stays separate; initial article content date |
+| Source Updated | Source Updated/Last Updated, separate `updated_date`; same correction modes | A date fact alone is not a content update. Sorts a confirmed complete current content package only |
+| Source Revision | Source revision label, separate `revision_date`; same correction modes | A date fact alone is not a revision. Sorts a confirmed complete current revision package only |
+| Event | Dedicated activity observations, start/end, original text and precision | Dates only; never an article publication date |
+| Collection | Actual successful acquisition evidence and `collected_at`; not a human-editable article date | Labeled `Collected on` fallback when no usable publication/content date exists |
+| Content-version discovery | Earliest successful 2xx observation of that exact substantive body, equal to immutable `first_fetched_at` | Labeled `Discovered update on` fallback for a complete confirmed update with no source Updated/Revision |
+| Report | Immutable PDF/weekly `report_date` and provenance | Report membership only; no article-date fallback |
+| System operation | Actual verification, review, publication, activation, import and internal `updated_at` times | Audit only; no source date or content update claim |
+
+Only `publication_date`, `updated_date`, `revision_date` are article date override
+fields. Acquisition/report/operation times cannot be rewritten through this path.
+Unknown legacy information dates retain their original meaning. Month-only
+article dates retain literal text and `month` precision, use `YYYY-MM-15`, and
+carry `date_normalization: month_midpoint`; the 15th is a sorting convention,
+not a day asserted by the source. Year-only dates never acquire a guessed day.
+Event boundaries retain their dedicated precision and do not use this midpoint.
+PDF import time is a system operation, not evidence that the linked article was
+collected at that instant.
+
+### Explicit human date decisions
+
+Use `plan-owner-check --kind article --id RECORD --date-field publication_date
+--human-date-override` (the existing PDF article kind also works). Complete the
+existing manifest's actor, `checked_at`, instruction/audit references and
+`manual_authorization` with the human's exact instruction and `authorized_by`.
+The default `scope: record` persists across content versions; use
+`scope: content_version` plus the exact current `content_version_id` only when
+the human explicitly limits the instruction to that body version.
+
+The one observation contains only its planned `target`, `public_fields`, and
+`field_evidence`. For example:
+
+```json
+{
+  "public_fields": {"publication_date": "2026-10-02"},
+  "field_evidence": {"publication_date": {"text": "2026-10-02", "precision": "day"}}
+}
+```
+
+For month precision, use `text: "2026-10"`, `precision: "month"`,
+`date_normalization: "month_midpoint"`, and value `2026-10-15`. The human must
+specify the record, field and value; a request to investigate a date is still an
+agent check and requires independent source review. Malformed dates, ambiguous
+numeric formats, wrong targets and operation fields are rejected.
+
+Submit with existing `ingest-owner-check --input ... --queue-dir ...
+--backup-dir ... --apply`. This single transaction backs up, freezes and approves
+the exact human authorization, then refreshes the existing display. It requires
+no invented source capture, source PASS, second agent's decision or repeated
+human approval. The receipt uses `human-article-date-authorization.v1` and
+`decision: authorized`; the existing review table's storage status `pass` is a
+publication gate and must not be presented as an independent source PASS.
+Public authority is `human_override`. Immutable history retains the exact
+instruction/reference, human identity, executor/task, operation time, old/new
+value, field, baseline and record/version scope. Replacements use a new explicit
+instruction. To revoke an active override, specify `action: revoke`, target value
+`null`, and field evidence `{"text":"revoke","precision":"unknown"}`;
+the retained pre-override source value resumes without modifying source facts.
+
+For an explicit activity instruction, combine `--activity-dates-only` with
+`--human-date-override`. Keep the existing event observation shape, but supply
+only `date_kind`, `event_name`, `event_type`, `event_status`, `event_start_date`,
+`event_end_date`, `date_precision`, and canonical `date_text` in its evidence.
+For an existing activity, also supply its exact approved `event_id` from the plan's
+`activity_targets`. Select date fields with
+`field_evidence: {"activity_dates": {"fields": ["event_end_date"]}}`;
+unselected bounds and identity/status must match that event. A new named activity
+requires both bounds and precision explicitly. Date text is the exact ISO value,
+or `START to END`; month/year precision stays month/year for activities.
+Do not supply a capture, `review_status: pass`, or a source verdict. The existing
+human receipt applies; Dates labels it as a human override with source unchecked.
+Record instructions survive re-staging; content-version instructions expire with
+that body. Revoke using `activity_dates: null` and the same revoke evidence above.
+
+Automatic stages carry still-applicable human decisions. A candidate prepared
+before a newer publication-date decision cannot publish stale dates: stage it
+again against the current publication and obtain the applicable new-candidate
+approval. Source date checks cannot silently replace active human overrides.
+Re-staging the same content version retains its approved Updated/Revision
+corrections and their review evidence. A content-version human instruction expires
+on a different body; its retained source date resumes, while a record instruction
+persists. Staging, approval checks and reader date sorting use this same scope rule.
+Date-only candidates retain every other date and non-date field and cannot
+approve a new summary.
+
+### Complete content update consumer package
+
+The existing candidate's `derived_display.content_update` uses
+`article-content-update.v1`; this is a consumer contract, not a new generator or
+review/activation workflow. The exact approved candidate freezes together:
+
+- Current and previous content-version IDs, retained body SHA256s, and distinct
+  substantive bodies. Markdown/whitespace-only differences are not updates.
+- `summary`, its SHA256, `summary_content_version_id` equal to the current body,
+  and `summary_support: complete`; the display summary must be identical.
+- `change_note` and `change_evidence`: either `body_comparison` with literal
+  differing `previous_excerpt` and `current_excerpt`, or `source_explanation`
+  with literal `text` retained in the current body. Upstream generation and
+  semantic review remain responsible for the truth of the supplied explanation.
+- `first_observed_at`, equal to the first retained successful fetch of the
+  current content version. Refetch/retry/review does not advance it.
+- `date_evidence`, keyed only by `updated_date`/`revision_date`, binding each
+  value, kind, literal text, source precision/normalization, exact current body
+  version, source/final URL and capture time. An empty object explicitly means
+  no source Updated/Revision date is known.
+
+Malformed/incomplete/stale packages cannot be staged or approved. A date-only
+change or an unbound new source date never makes an incomplete summary current.
+Pending content stays behind the existing publication pointer. A complete newly
+approved package uses the newest applicable publication/update/revision date;
+where source update dates are unknown it can use the first trusted content
+observation with its explicit label. Record-level human values participate with
+their real authority and scope. Publication is preserved separately.
+
+`content_date`, basis/label, authority, precision, normalization, evidence,
+`content_update`, summary and current version travel together through direct,
+materialized, static, Wiki and Chat reads. Each reader sorts its own complete
+approved version. Display format version 5 rejects stale materializations and
+falls back to the existing approved-snapshot reader until writers rebuild it.
+A local fixture/export test does not prove production synchronization; G6 still
+verifies each live consumer separately. G7 supplies summaries/change notes and
+G10 supplies generated-content approval; G1 does not synthesize either.
+
+### Read-only legacy inventory
+
+Run `python -m climate_registry.cli inventory-date-overlays --database ABSOLUTE_DB`
+to list candidate hashes, record identities, current-public flags and typed
+evidence for legacy non-Published publication overlays. `write_performed` is
+always false. This inventory neither repairs data nor upgrades old authority.
+Historical repairs require a new exact authorized candidate. Production inventory
+and cross-surface cutover are separate authorized operations; do not infer them
+from fixture counts or a merged commit.
+
+
+### Existing Chat time queries
+
+The existing recent-article route now states its exact field/basis. “Recently
+added” uses real `first_ingested_at` and keeps the `First added` label. Explicit
+“knowledge base/Registry/system record changes” use `first_ingested_at` and
+`substantive_updated_at`, label the latter `System record changed`, and never
+claim that timestamp is a source update. A source publication-date query uses
+`publication_date`. An unqualified “recently updated content” query uses
+`content_date` only with a complete approved `content_update`, matching current
+content-version ID, covering summary/hash, and current candidate binding; it does
+not select date-only corrections, summary-only rewording or old-summary/new-date
+splices as confirmed recent source updates. Mixed “added or updated” queries use
+first-added time or the same qualified content-date basis, not record-change time.
+Unknown source-update packages are omitted from confirmed source-date results.
+The exported DTO carries `content_update_candidate_sha256`, which must match its
+`published_candidate_sha256`, and static readers check summary/version/date
+coherence before using it. Existing static files with no update package retain
+their old complete version and do not gain dynamic dates.

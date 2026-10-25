@@ -49,12 +49,12 @@ def _seed(tmp_path, source="native"):
     return database
 
 
-def _date_manifest(database, *, source="native", date="2026-10-02", date_kind="updated", alternate=False):
+def _date_manifest(database, *, source="native", date="2026-10-02", date_kind="published", alternate=False):
     manifest = plan_owner_check(database, "article" if source == "native" else "pdf_article",
         "good" if source == "native" else "pdf-good", publication_date_only=True)
     target = next(item for item in manifest["plan"]["targets"]
         if item["occurrence_id"] == ("core:good" if source == "native" else "occurrence"))
-    body = "Title good\nOriginal PDF title\nOfficial record for " + target["source_url"] + "\nLast Updated: " + date
+    body = "Title good\nOriginal PDF title\nOfficial record for " + target["source_url"] + "\nPublished: " + date
     raw = body.encode()
     actual_url = "https://example.org/research-directory" if alternate else target["source_url"]
     manifest.update(actor={"id": "date-checker", "task_id": "date-check-task"},
@@ -808,9 +808,10 @@ def test_pdf_pages_use_public_dates_and_keep_private_discovery_order(tmp_path, p
     with reader.public_snapshot():
         materialized = [reader.pdf_articles(page=page, page_size=1) for page in (1, 2)]
     for pages in (direct, materialized):
-        assert [page["items"][0]["article_id"] for page in pages] == ["pdf-good", "pdf-a-recent"]
+        assert [page["items"][0]["article_id"] for page in pages] == (["pdf-good", "pdf-a-recent"] if publication_day else ["pdf-a-recent", "pdf-good"])
         assert pages[0]["items"][0]["publication_date"] == publication_day
-        assert pages[0]["items"][0]["collected_at"] == first_collection
+        assert pages[0]["items"][0]["collected_at"] is None
+        assert pages[0]["items"][0]["content_date_basis"] == ("publication_date" if publication_day else "unknown")
         for number, page in enumerate(pages, 1):
             assert page["pagination"] == {"page": number, "page_size": 1, "total": 2, "pages": 2}
     private = RegistryReader(database, repository_root=tmp_path/"app", public=False)

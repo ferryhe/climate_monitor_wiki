@@ -33,6 +33,8 @@ def _manifest(database, *, kind="article", identity="good", occurrence="core:goo
         if key == "summary":
             proof[key]["section"] = "article_body"
             proof[key]["support"] = "complete"
+        elif key == "publication_date":
+            proof[key]["date_kind"] = "published"
     excluded = sorted(key for key, value in target["fields"].items() if value is not None and value != "" and key != "source_document_sha256" and fields.get(key) != value)
     plan.update(actor={"id": "source-checker", "task_id": "check-task"}, authorization_reference="owner-message-actual-scope",
         audit_reference="audit/capture-record", checked_at="2026-10-15T23:00:00Z", observations=[{

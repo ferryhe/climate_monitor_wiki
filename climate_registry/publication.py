@@ -462,6 +462,23 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
                 "metadata_provenance": {"categories": "reviewed_category_correction"}}
             if "manual_enrichment" in display:
                 snapshot["derived_display"]["manual_enrichment"] = display["manual_enrichment"]
+    from .owner_dates import carry_manual_dates, inherited_article_date, current_date_view
+    if OVERLAY not in snapshot and snapshot["entity_kind"] in {"article", "pdf_article"}:
+        published = current_date_view(connection, snapshot["entity_kind"], snapshot["entity_id"])
+        supplied = snapshot.get("derived_display", {}).get("manual_date_overrides", {})
+        decisions = published.get("derived_display", {}).get("manual_date_overrides", {})
+        if any(field not in decisions or decisions[field] != value for field, value in supplied.items()):
+            raise ValueError("candidate cannot introduce or change a human authorization outside the date writer")
+        for field in ("publication_date", "updated_date", "revision_date"):
+            inherited = inherited_article_date(published, field=field, incoming=snapshot)
+            if inherited:
+                display = snapshot.setdefault("derived_display", {})
+                for key in (field, field + "_evidence", field + "_verification"):
+                    display.pop(key, None)
+                display.update(inherited)
+        carry_manual_dates(snapshot, decisions)
+    from .article_dates import validate_content_update
+    validate_content_update(snapshot)
     sha = digest(snapshot)
     connection.execute("INSERT OR IGNORE INTO registry_candidates VALUES(?,?,?,?,?,?)",
         (sha, snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot, sort_keys=True, ensure_ascii=False),
@@ -609,10 +626,34 @@ def _approve(connection, sha, receipt, *, status="pass", information_groups=None
     if latest is None or (status in {"pass", "accepted_legacy"} and latest[0] != sha):
         raise ValueError("changed candidate requires another final review")
     snapshot = json.loads(row[2])
+    if status in {"pass", "accepted_legacy"}:
+        from .owner_dates import active_manual_dates, applicable_manual_dates
+        active = applicable_manual_dates(snapshot, active_manual_dates(connection, *row[:2]))
+        incoming = snapshot.get("derived_display", {}).get("manual_date_overrides", {})
+        overlay_manifest = snapshot.get("publication_date_only", {}).get("manifest", {})
+        if (incoming != active) and not overlay_manifest:
+            raise ValueError("candidate has stale human date authorizations; stage against current publication")
+        if not overlay_manifest and snapshot["entity_kind"] in {"article", "pdf_article"}:
+            from .owner_dates import inherited_article_date, current_date_view
+            current = current_date_view(connection, snapshot["entity_kind"], snapshot["entity_id"])
+            display = snapshot.get("derived_display", {})
+            for field in ("publication_date", "updated_date", "revision_date"):
+                inherited = inherited_article_date(current, field=field, incoming=snapshot)
+                actual = {key: display[key] for key in (field, field + "_evidence", field + "_verification") if key in display}
+                if inherited and actual != inherited:
+                    raise ValueError("candidate has stale approved article date; stage against current publication")
+                if field not in active and any((display.get(field + suffix) or {}).get("authority") == "human_override"
+                        for suffix in ("_evidence", "_verification")):
+                    raise ValueError("candidate has stale human date authority outside its content version")
+        from .article_dates import validate_content_update
+        validate_content_update(snapshot)
     from .owner_dates import OVERLAY, validate_date_review, _current_binding
     if OVERLAY in snapshot and status in {"pass", "accepted_legacy"}:
         if status != "pass":
             raise ValueError("date-only publication requires its independent date review receipt")
+        from .owner_dates import DATE_SEMANTICS
+        if snapshot[OVERLAY]["manifest"]["plan"].get("date_semantics") != DATE_SEMANTICS:
+            raise ValueError("new date approvals require the current typed-date policy; frozen legacy receipts remain readable")
         validate_date_review(snapshot, receipt)
         _current_binding(connection, snapshot, allow_published=True)
     elif status == "pass" and not information_ready(connection,snapshot,information_groups=information_groups):
@@ -1307,7 +1348,7 @@ def _date_evidence_dto(value):
         "table","record_id","date_basis","date_precision","date_text","report_filename","report_date","note","acquisition_item_id",
         "event_name","event_type","event_status","event_start_date","event_end_date","event_organizer",
         "event_location","event_timezone","event_url","event_summary","review_status",
-        "date_normalization","source_date_precision"}}
+        "date_normalization","source_date_precision","authority","instruction_reference","authorization_id","event_id"}}
 
 
 def _manual_dto(value):

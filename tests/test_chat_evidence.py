@@ -18,6 +18,61 @@ from climate_registry.publication import _approve, export_public_snapshot, stage
 from test_registry_publication import _database, _reader
 
 
+@pytest.mark.parametrize("start_day,end_day,source_day,first_added,source_match,added_match", [
+    ("2026-10-16", "2026-10-24", "2026-10-16", "2024-01-01T00:00:00Z", True, False),
+    ("2026-10-16", "2026-10-24", "2026-10-24", "2024-01-01T00:00:00Z", True, False),
+    ("2026-10-16", "2026-10-24", "2026-10-15", "2026-10-16T03:59:59Z", False, False),
+    ("2026-10-16", "2026-10-24", "2026-10-25", "2026-10-16T04:00:00Z", False, True),
+    ("2026-10-16", "2026-10-24", "2026-10-25", "2026-10-25T03:59:59.999999Z", False, True),
+    ("2026-10-16", "2026-10-24", "2026-10-25", "2026-10-25T04:00:00Z", False, False),
+    ("2026-11-01", "2026-11-01", "2026-11-01", "2024-01-01T00:00:00Z", True, False),
+    ("2026-11-01", "2026-11-01", "2026-10-31", "2026-11-01T03:59:59Z", False, False),
+    ("2026-11-01", "2026-11-01", "2026-11-02", "2026-11-01T04:00:00Z", False, True),
+    ("2026-11-01", "2026-11-01", "2026-11-02", "2026-11-01T05:30:00Z", False, True),
+    ("2026-11-01", "2026-11-01", "2026-11-02", "2026-11-01T06:30:00Z", False, True),
+    ("2026-11-01", "2026-11-01", "2026-11-02", "2026-11-02T04:59:59.999999Z", False, True),
+    ("2026-11-01", "2026-11-01", "2026-11-02", "2026-11-02T05:00:00Z", False, False),
+    ("2026-03-08", "2026-03-08", "2026-03-08", "2024-01-01T00:00:00Z", True, False),
+    ("2026-03-08", "2026-03-08", "2026-03-07", "2026-03-08T04:59:59Z", False, False),
+    ("2026-03-08", "2026-03-08", "2026-03-09", "2026-03-08T05:00:00Z", False, True),
+    ("2026-03-08", "2026-03-08", "2026-03-09", "2026-03-09T03:59:59.999999Z", False, True),
+    ("2026-03-08", "2026-03-08", "2026-03-09", "2026-03-09T04:00:00Z", False, False),
+])
+def test_mixed_article_window_ors_local_source_dates_with_precise_system_instants(
+        tmp_path, monkeypatch, start_day, end_day, source_day, first_added, source_match, added_match):
+    from contextlib import nullcontext
+    import hashlib
+    from test_article_content_dates import _bundle_snapshot, content_date_projection
+    freeze_chat_clock(monkeypatch, "2026-12-31T12:00:00+00:00")
+    snapshot = _bundle_snapshot()
+    bundle = snapshot["derived_display"]["content_update"]
+    current = snapshot["tables"]["article_content_versions"][1]
+    current["markdown_content"] = current["markdown_content"].replace("16 October 2026", source_day)
+    observed = source_day + "T01:00:00Z"
+    current["first_fetched_at"] = observed
+    snapshot["tables"]["article_content_versions"][0]["first_fetched_at"] = "2026-01-01T00:00:00Z"
+    snapshot["tables"]["article_fetches"][0]["fetched_at"] = observed
+    bundle.update(body_sha256=hashlib.sha256(current["markdown_content"].encode()).hexdigest(), first_observed_at=observed)
+    bundle["date_evidence"]["updated_date"].update(value=source_day, text=source_day, captured_at=observed)
+    item = dict(article_id="good", title="Climate insurance findings", canonical_url="https://example.org/good",
+        publication_date="2026-01-01", published_candidate_sha256="a"*64, **snapshot["derived_display"])
+    item.update(content_date_projection(item, snapshot))
+    class Reader:
+        def public_snapshot(self, *, direct=False): return nullcontext()
+        def knowledge_chronology(self):
+            return {"article:good": {"first_ingested_at": first_added, "substantive_updated_at": "2020-01-01T00:00:00Z"}}
+        def articles(self, **kwargs): return {"items": [copy.deepcopy(item)], "pagination": {"pages": 1}}
+        def pdf_articles_all(self): return []
+        def article(self, identity): return copy.deepcopy(item)
+    chat = owner(tmp_path); chat.reader_factory = Reader
+    for wording, expected in (("updated", source_match), ("added", added_match), ("added or updated", source_match or added_match)):
+        result = chat.answer(f"What climate insurance content was recently {wording} from {start_day} to {end_day}?")
+        ids = [row.get("evidence_id") for row in result["sources"]]
+        assert ("good" in ids) is expected, (wording, ids, first_added, source_day)
+    system = chat.answer(f"What knowledge base climate insurance content was recently updated from {start_day} to {end_day}?")
+    assert any(row.get("evidence_id") == "good" for row in system["sources"]) is added_match
+
+
 @pytest.fixture
 def mock_reader_policy(monkeypatch):
     """Pair controlled fetch results with a policy seam; no live policy claim."""
@@ -700,10 +755,10 @@ def test_quality_discovery_description_uses_subject_not_audience(tmp_path, monke
     "What climate and insurance content was recently added?",
     "What recently added climate and insurance content is available?",
     "What content was recently added?",
-    "What content was recently updated?",
-    "What recently updated climate insurance content is available?",
+    "What knowledge base content was recently updated?",
+    "What recently updated knowledge base climate insurance content is available?",
     "最近新增了哪些气候保险内容？",
-    "最近更新了哪些气候保险内容？",
+    "知识库最近更新了哪些气候保险内容？",
 ])
 def test_offline_recent_content_uses_approved_knowledge_chronology(tmp_path, question):
     from datetime import timedelta
@@ -741,7 +796,8 @@ def test_offline_recent_content_uses_approved_knowledge_chronology(tmp_path, que
     assert len(result["sources"]) == 1 and result["sources"][0]["evidence_id"] == "actual"
     assert result["sources"][0]["version"] == "approved-article-version"
     if updated_query:
-        assert "Material update: " + ingested.isoformat() in result["text"]
+        assert "System record changed: " + ingested.isoformat() in result["text"]
+        assert "Material update: " + ingested.isoformat() not in result["text"]
     else:
         assert "First added: " + ingested.isoformat() in result["text"]
     assert "[1]" in result["text"]

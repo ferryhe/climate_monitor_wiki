@@ -768,6 +768,7 @@ class WikiDocument:
     links: list[str]
     words: int
     corpus: CorpusType
+    date_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _catalog_date(value: str) -> date | None:
@@ -904,10 +905,28 @@ def _document_catalog_presentation(doc: WikiDocument) -> dict[str, str | None]:
                 add(match.group(1), page_kind_basis[kind.group(1).lower()])
 
     selected = max(candidates, default=None)
+    content_metadata = {}
+    authoritative_unknown = False
+    explicit = re.search(r"(?m)^Content date metadata: (\{[^\n]+\})$", doc.markdown)
+    if explicit and doc.type != "daily":
+        try:
+            content_metadata = json.loads(explicit[1])
+            parsed = _catalog_date(content_metadata.get("content_date") or "")
+            is_registry_article = doc.type == "article" or (doc.corpus == "wiki"
+                and Path(doc.path).name.startswith(("article-", "pdf-article-")))
+            authoritative_unknown = (is_registry_article and "content_date" in content_metadata
+                and content_metadata["content_date"] is None and content_metadata.get("content_date_basis") == "unknown")
+            if authoritative_unknown:
+                selected = None
+            elif parsed:
+                selected = (parsed, 4, content_metadata["content_date"], content_metadata["content_date_basis"])
+        except (ValueError, TypeError, KeyError):
+            content_metadata = {}
     return {
         "display_title": display_title,
         "display_date": selected[2] if selected else None,
-        "display_date_basis": selected[3] if selected else None,
+        "display_date_basis": selected[3] if selected else "unknown" if authoritative_unknown else None,
+        **content_metadata,
     }
 
 
@@ -930,6 +949,7 @@ class WikiChunk:
     checked_source_provenance: str | None = None
     tokens: list[str] = field(default_factory=list)
     urls: list[str] = field(default_factory=list)
+    date_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -960,7 +980,9 @@ class SearchHit:
             ),
             "source_urls": self.chunk.urls[:4],
             "type": self.chunk.type,
-            "date": self.chunk.date,
+            "date": (self.chunk.date or "-") if self.chunk.date_metadata else self.chunk.date,
+            **self.chunk.date_metadata,
+            **({"date_kind": self.chunk.date_metadata["content_date_basis"]} if self.chunk.date_metadata else {}),
             "corpus": self.chunk.corpus,
         }
 
@@ -1135,7 +1157,7 @@ class WikiKnowledgeBase:
             links.extend(_local_wiki_markdown_links(markdown))
             links = list(dict.fromkeys(links))
         text = _strip_markdown(markdown)
-        return WikiDocument(
+        doc = WikiDocument(
             title=title,
             path=f"{path_root or path.parent.name}/{path.name}",
             file=path.name,
@@ -1147,6 +1169,14 @@ class WikiKnowledgeBase:
             words=len(_tokens(text)),
             corpus=corpus,
         )
+        if corpus == "wiki" and path.name.startswith(("article-", "pdf-article-")):
+            presentation = _document_catalog_presentation(doc)
+            if "content_date" in presentation:
+                from climate_registry.article_dates import CONTENT_DATE_FIELDS
+                doc.date_metadata = {key: value for key, value in presentation.items()
+                    if key in CONTENT_DATE_FIELDS or key == "published_candidate_sha256"}
+                doc.date = presentation["content_date"] or ""
+        return doc
 
     def _split_markdown_sections(self, markdown: str, title: str) -> list[tuple[str, list[str]]]:
         sections: list[tuple[str, list[str]]] = []
@@ -1269,6 +1299,7 @@ class WikiKnowledgeBase:
             heading=heading,
             type=doc.type,
             date=doc.date,
+            date_metadata=doc.date_metadata,
             text=text,
             markdown=markdown,
             links=doc.links,

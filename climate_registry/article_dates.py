@@ -106,6 +106,7 @@ def report_observation_date(value: Any, evidence: Any) -> str | None:
 def select_article_dates(observations, *, collection_times=(), acquisition_observations=()):
     """Select precise source dates before the explicitly recorded report-day fallback."""
     collected, information, reports, updates, revisions, page_publications = [], [], [], [], [], []
+    date_proofs = {}
     for item in observations:
         if item["kind"] == "collection":
             report_day = report_observation_date(item["observed_at"], item["evidence"])
@@ -123,6 +124,16 @@ def select_article_dates(observations, *, collection_times=(), acquisition_obser
             )
             if not kind:
                 information.append(information_value)
+            if kind in {"published", "updated", "revision"}:
+                if precision == "month":
+                    information_value += "-15"
+                elif precision == "year":
+                    continue  # Retain the observation, without inventing a sortable day.
+                field = {"published": "publication_date", "updated": "updated_date", "revision": "revision_date"}[kind]
+                date_proofs[(field, information_value)] = {**evidence,
+                    "text": evidence.get("date_text") or evidence.get("text") or item["observed_at"],
+                    "source_date_precision": precision or "day",
+                    **({"date_normalization": "month_midpoint"} if precision == "month" else {})}
             if kind == "published":
                 page_publications.append(information_value)
             elif kind == "updated":
@@ -135,14 +146,19 @@ def select_article_dates(observations, *, collection_times=(), acquisition_obser
         if value and value not in reports:
             collected.append(_collection_timestamp(value))
     collected_at = max(collected, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))) if collected else None
+    first_collected_at = min(collected, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))) if collected else None
     information_date = max(information) if information else None
     qualified_publication = []
     for item in acquisition_observations:
         if (item.get("publication_date_evidence")
                 and item.get("processing_status", "complete") == "complete"
-                and item.get("selection_status", "selected") == "selected"):
+                and item.get("selection_status", "selected") == "selected"
+                and _typed_date_kind(item.get("publication_date_evidence")) not in {"updated", "revision", "event"}):
             try:
-                qualified_publication.append(_information_date(item.get("publication_date")))
+                value = _information_date(item.get("publication_date"))
+                qualified_publication.append(value)
+                if isinstance(item["publication_date_evidence"], Mapping):
+                    date_proofs.setdefault(("publication_date", value), dict(item["publication_date_evidence"]))
             except ArticleDateImportError:
                 pass  # Non-day source precision remains unconfirmed, as in range selection.
     qualified_publication.extend(page_publications)
@@ -152,9 +168,199 @@ def select_article_dates(observations, *, collection_times=(), acquisition_obser
     report_date = max(reports) if reports else None
     basis = ("collection_time" if collected_at else "information_date" if information_date else
              "publication_date" if publication_date else "report_date" if report_date else "unknown")
-    return {"collected_at": collected_at, "information_date": information_date,
+    result = {"collected_at": collected_at, "first_collected_at": first_collected_at, "information_date": information_date,
             "publication_date": publication_date, "report_date": report_date, "date_basis": basis,
             "updated_date": updated_date, "revision_date": revision_date}
+    for field in ("publication_date", "updated_date", "revision_date"):
+        if (field, result[field]) in date_proofs:
+            result[field + "_evidence"] = date_proofs[(field, result[field])]
+    return result
+
+
+CONTENT_DATE_FIELDS = {"content_date", "content_date_basis", "content_date_label", "content_date_evidence",
+    "content_date_authority", "content_date_precision", "content_date_normalization", "content_update",
+    "manual_date_overrides", "first_collected_at", "updated_date_evidence", "updated_date_verification",
+    "revision_date_evidence", "revision_date_verification", "publication_date_verification", "content_update_candidate_sha256", "content_version_id"}
+
+
+def _body_text(value):
+    # Ignore Markdown presentation and whitespace; a new fetch hash alone proves no substantive change.
+    value = re.sub(r"(?im)\b(?:last\s+updated|updated|published|posted|revised|revision\s+date)\s*:\s*[^\n]*", "", value)
+    value = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", value)
+    return " ".join(re.findall(r"\w+", value.casefold()))
+
+
+def validate_content_update(snapshot):
+    """Consume a complete, exact-candidate bundle; generation and semantic review stay upstream."""
+    bundle = snapshot.get("derived_display", {}).get("content_update")
+    if bundle is None:
+        return None
+    if not isinstance(bundle, dict) or bundle.get("schema_version") != "article-content-update.v1":
+        raise ValueError("unsupported content update bundle")
+    tables = snapshot.get("tables", {})
+    articles = tables.get("articles", [])
+    article = next((row for row in articles if row.get("article_id") == snapshot["entity_id"]),
+        articles[0] if snapshot.get("entity_kind") == "article" and len(articles) == 1 else {})
+    version = article.get("current_content_version_id")
+    rows = {row["content_version_id"]: row for row in tables.get("article_content_versions", [])
+        if row.get("article_id") == article.get("article_id")}
+    current = rows.get(version)
+    previous = rows.get(bundle.get("previous_content_version_id"))
+    if (not current or not previous or current == previous or bundle.get("content_version_id") != version
+            or bundle.get("body_sha256") != hashlib.sha256(current["markdown_content"].encode()).hexdigest()
+            or bundle.get("previous_body_sha256") != hashlib.sha256(previous["markdown_content"].encode()).hexdigest()
+            or _body_text(current["markdown_content"]) == _body_text(previous["markdown_content"])):
+        raise ValueError("content update must bind distinct retained substantive bodies for this article")
+    summary = bundle.get("summary")
+    if (not isinstance(summary, str) or not summary.strip() or bundle.get("summary_content_version_id") != version
+            or bundle.get("summary_sha256") != hashlib.sha256(summary.encode()).hexdigest()
+            or bundle.get("summary_support") != "complete"):
+        raise ValueError("content update needs a complete covering summary bound to the exact body")
+    display_summary = snapshot.get("derived_display", {}).get("summary")
+    if display_summary != summary:
+        raise ValueError("content update summary and current approved display summary differ")
+    evidence = bundle.get("change_evidence", {})
+    if not isinstance(bundle.get("change_note"), str) or not bundle["change_note"].strip():
+        raise ValueError("content update needs an evidence-based change note")
+    if evidence.get("basis") == "body_comparison":
+        old, new = evidence.get("previous_excerpt"), evidence.get("current_excerpt")
+        if (not isinstance(old, str) or not old.strip() or old not in previous["markdown_content"]
+                or not isinstance(new, str) or not new.strip() or new not in current["markdown_content"]
+                or _body_text(old) == _body_text(new)):
+            raise ValueError("change note must retain different literal old and new body evidence")
+    elif evidence.get("basis") == "source_explanation":
+        explanation = evidence.get("text")
+        if (not isinstance(explanation, str) or not explanation.strip()
+                or explanation not in current["markdown_content"]):
+            raise ValueError("source update explanation must be retained in the current captured body")
+    else:
+        raise ValueError("change note needs a retained body comparison or source explanation")
+    fetches = [row for row in tables.get("article_fetches", [])
+        if row.get("article_id") == article.get("article_id") and row.get("content_version_id") == version
+        and row.get("fetch_status") == "success" and 200 <= (row.get("http_status") or 0) <= 299]
+    observed = min((_collection_timestamp(row["fetched_at"]) for row in fetches), default=None)
+    if not observed or bundle.get("first_observed_at") != observed or _collection_timestamp(current["first_fetched_at"]) != observed:
+        raise ValueError("content version discovery must equal its first trusted successful observation")
+    date_evidence = bundle.get("date_evidence")
+    if not isinstance(date_evidence, dict) or set(date_evidence) - {"updated_date", "revision_date"}:
+        raise ValueError("content update date evidence must be typed Updated or Revision")
+    for field, proof in date_evidence.items():
+        expected_kind = "updated" if field == "updated_date" else "revision"
+        if (not isinstance(proof, dict) or proof.get("content_version_id") != version
+                or _typed_date_kind(proof) != expected_kind
+                or proof.get("source_url") != article.get("canonical_url")
+                or not proof.get("final_url") or not proof.get("captured_at")
+                or not isinstance(proof.get("text"), str) or not proof["text"].strip()
+                or proof["text"] not in current["markdown_content"]):
+            raise ValueError("source date must bind the current body, type, URL and literal source evidence")
+        _collection_timestamp(proof["captured_at"])
+        from .owner_checks import _dates
+        parsed = _dates(proof["text"])
+        precision = proof.get("source_date_precision", proof.get("date_precision"))
+        expected = parsed["start_date"]
+        if precision == "month" and proof.get("date_normalization") == "month_midpoint":
+            expected = expected + "-15" if parsed["date_precision"] == "month" else None
+        elif precision != "day" or parsed["date_precision"] != "day":
+            raise ValueError("content update date must retain day or explicit month-midpoint precision")
+        if proof.get("value") != expected or parsed["end_date"] is not None:
+            raise ValueError("content update date differs from literal source date precision")
+    return bundle
+
+
+def content_date_projection(record, snapshot=None):
+    """One date contract for a reader's own complete approved version."""
+    collected = [record.get("first_collected_at"), record.get("collected_at")]
+    collected.extend(row.get("fetched_at") for row in
+        (record.get("available_content") or {}).get("collection_observations", []) if row.get("status") == "success")
+    if snapshot:
+        collected.extend(row.get("fetched_at") for row in snapshot.get("tables", {}).get("article_fetches", [])
+            if row.get("article_id") == (record.get("core_article_id") or record.get("article_id"))
+            and row.get("fetch_status") == "success"
+            and 200 <= (row.get("http_status") or 0) <= 299)
+    collected = [_collection_timestamp(value) for value in collected if value]
+    first_collected = min(collected, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")), default=None)
+    collection_fields = {"first_collected_at": first_collected} if first_collected else {}
+    if snapshot and snapshot.get("static_payload") and record.get("content_date_basis"):
+        validate_exported_content_update(record)
+        return {**{key: record[key] for key in CONTENT_DATE_FIELDS if key in record}, **collection_fields}
+    bundle = validate_content_update(snapshot) if snapshot else record.get("content_update")
+    candidates = []
+    def add(value, basis, label, evidence=None, authority=None):
+        if not value:
+            return
+        try:
+            _information_date(value)
+        except ArticleDateImportError:
+            return
+        evidence = evidence or {}
+        candidates.append((value, basis, label, evidence, authority or evidence.get("authority") or "source"))
+    from .owner_dates import applicable_manual_dates
+    decisions = record.get("manual_date_overrides", {})
+    active = applicable_manual_dates(snapshot or record, decisions)
+    publication = active.get("publication_date")
+    if publication:
+        add(publication["new_value"], "publication_date", "Published", publication["evidence"])
+    elif "publication_date" in decisions:
+        source = decisions["publication_date"]["source_effective"]
+        add(source.get("publication_date"), "publication_date", "Published", source.get("publication_date_evidence"))
+    elif (record.get("publication_date_evidence") or {}).get("authority") != "human_override":
+        add(record.get("publication_date"), "publication_date", "Published", record.get("publication_date_evidence"))
+    if bundle:
+        for field in ("updated_date", "revision_date"):
+            proof = bundle["date_evidence"].get(field)
+            override = active.get(field)
+            verification = record.get(field + "_verification", {})
+            correction = (verification.get("review_scope") == "article_date_fields_only"
+                and verification.get("content_version_id") == bundle["content_version_id"])
+            if override:
+                add(override["new_value"], field, "Updated" if field == "updated_date" else "Revised", override["evidence"])
+            elif correction:
+                add(record.get(field), field, "Updated" if field == "updated_date" else "Revised", record.get(field + "_evidence"))
+            elif proof:
+                add(proof["value"], field, "Updated" if field == "updated_date" else "Revised", proof)
+        if not bundle["date_evidence"] and not any(row[1] in {"updated_date", "revision_date"} for row in candidates):
+            add(bundle["first_observed_at"][:10], "content_version_discovery", "Discovered update on",
+                {"first_observed_at": bundle["first_observed_at"], "content_version_id": bundle["content_version_id"]}, "trusted_observation")
+    if not candidates:
+        if first_collected:
+            add(first_collected[:10], "collection_time", "Collected on", {"collected_at": first_collected}, "collection_fallback")
+    value, basis, label, evidence, authority = max(candidates, key=lambda row: (row[0], row[1] != "publication_date")) if candidates else (None, "unknown", "Date unknown", {}, "unknown")
+    return {"content_date": value, "content_date_basis": basis, "content_date_label": label,
+        **collection_fields,
+        "content_date_evidence": evidence, "content_date_authority": authority,
+        "content_date_precision": evidence.get("source_date_precision", evidence.get("date_precision", "day" if value else "unknown")),
+        "content_date_normalization": evidence.get("date_normalization"),
+        **({"content_update_candidate_sha256": record.get("published_candidate_sha256"),
+            "content_version_id": bundle["content_version_id"]} if bundle else {})}
+
+
+def validate_exported_content_update(record):
+    """Static consumers retain the exact approved bundle; no date/summary splice is accepted."""
+    bundle = record.get("content_update")
+    if bundle is None:
+        if record.get("content_date_basis") in {"updated_date", "revision_date", "content_version_discovery"}:
+            raise ValueError("dynamic content date requires a complete approved content package")
+        return None
+    version = record.get("content_version_id") or (record.get("content") or {}).get("content_version_id")
+    if (not isinstance(bundle, dict) or bundle.get("schema_version") != "article-content-update.v1"
+            or not version or bundle.get("content_version_id") != version
+            or bundle.get("summary_content_version_id") != version or bundle.get("summary_support") != "complete"
+            or bundle.get("summary") != record.get("summary") or not bundle.get("summary")
+            or bundle.get("summary_sha256") != hashlib.sha256(bundle["summary"].encode()).hexdigest()
+            or not record.get("published_candidate_sha256")
+            or record.get("content_update_candidate_sha256") != record["published_candidate_sha256"]
+            or not bundle.get("change_note") or not isinstance(bundle.get("date_evidence"), dict)
+            or bundle.get("change_evidence", {}).get("basis") not in {"body_comparison", "source_explanation"}
+            or not bundle.get("previous_content_version_id") or bundle["previous_content_version_id"] == version
+            or any(not isinstance(bundle.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", bundle[key])
+                for key in ("body_sha256", "previous_body_sha256"))):
+        raise ValueError("static content update is incomplete, stale or not bound to its current approved version")
+    _collection_timestamp(bundle.get("first_observed_at"))
+    expected = content_date_projection(record)
+    for key in ("content_date", "content_date_basis", "content_date_authority", "content_date_precision", "content_date_normalization"):
+        if record.get(key) != expected[key]:
+            raise ValueError("static content date does not match its complete approved package")
+    return bundle
 
 
 def _article_event_from_observation(item: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -188,8 +394,10 @@ def _article_event_from_observation(item: Mapping[str, Any]) -> dict[str, Any] |
     canonical = json.dumps([event_name.casefold().strip(), start, end, precision], ensure_ascii=False, separators=(",", ":"))
     event_id = "reviewed-article-event-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
     source_url = evidence.get("source_url")
+    manual = (evidence.get("authority") == "human_override" and evidence.get("authorization_id")
+        and evidence.get("instruction_reference"))
     urls = list(dict.fromkeys(value for value in (source_url, evidence.get("event_url")) if isinstance(value, str) and value.strip()))
-    return {
+    result = {
         "event_id": event_id, "article_id": item.get("article_id"),
         "name": event_name.strip(), "event_type": event_type, "status": status,
         "date_precision": precision, "start_date": start, "end_date": end,
@@ -201,6 +409,13 @@ def _article_event_from_observation(item: Mapping[str, Any]) -> dict[str, Any] |
         "verification_basis": "independent_article_date_review" if evidence.get("review_status") == "pass" else None,
         "origin": "reviewed_article_page", "collection_status": "collected", "access_status": "accessible",
     }
+    if manual:
+        from .owner_dates import MANUAL_AUTHORIZATION
+        result.update(authority="human_override", instruction_reference=evidence["instruction_reference"],
+            authorization_id=evidence["authorization_id"], verification_status="unchecked",
+            verification_basis=MANUAL_AUTHORIZATION, origin="human_instruction", access_status="unchecked", collection_status="authorized",
+            replaces_event_id=evidence.get("event_id"))
+    return result
 
 
 def select_article_events(observations: Any) -> list[dict[str, Any]]:
@@ -210,9 +425,11 @@ def select_article_events(observations: Any) -> list[dict[str, Any]]:
         if not isinstance(item, Mapping) or item.get("kind") != "page_information":
             continue
         event = _article_event_from_observation(item)
-        if event is not None and event["verification_status"] == "verified":
+        if event is not None and (event["verification_status"] == "verified" or event.get("authority") == "human_override"):
             events.append(event)
-    return events
+    manual_keys = {event.get("replaces_event_id") for event in events if event.get("authority") == "human_override"}
+    return [event for event in events if event.get("authority") == "human_override"
+        or event["event_id"] not in manual_keys]
 
 
 def validate_observations(payload: Any) -> list[dict[str, Any]]:

@@ -53,6 +53,217 @@ def _non_event_dto(value):
     return value
 
 
+def _human_activity(database, source="native", *, start="2026-11-04", end=None, precision="day", event_id=None):
+    manifest = plan_owner_check(database, "article" if source == "native" else "pdf_article",
+        "good" if source == "native" else "pdf-good", activity_dates_only=True, human_date_override=True)
+    value = {"observed_at": start, "evidence": {"date_kind": "event", "date_precision": precision,
+        "event_name": "Climate risk conference", "event_type": "conference", "event_status": "scheduled",
+        "event_start_date": start, "event_end_date": end or start, "date_text": start if not end or end == start else start + " to " + end}}
+    if event_id:
+        value["evidence"]["event_id"] = event_id
+    manifest.update(actor={"id": "instruction-operator", "task_id": "explicit-date-task"},
+        authorization_reference="human-message:277/activity", audit_reference="audit/activity",
+        checked_at="2026-10-24T12:00:00Z", manual_authorization={"instruction": "Set the Climate risk conference event_start_date/event_end_date/date_precision to " + start + "/" + (end or start) + "/" + precision,
+            "authorized_by": "owner", "scope": "record"}, observations=[{
+            "target": manifest["plan"]["targets"][0], "public_fields": {"activity_dates": [value]},
+            "field_evidence": {"activity_dates": {"fields": ["event_start_date", "event_end_date", "date_precision"]}}}])
+    return manifest
+
+
+@pytest.mark.parametrize("source", ["native", "pdf", "linked"])
+@pytest.mark.parametrize("start,precision", [("2026-11-04", "day"), ("2026-11", "month"), ("2026", "year")])
+def test_explicit_activity_instruction_uses_dedicated_scope_without_source_pass(tmp_path, source, start, precision):
+    from climate_registry.owner_dates import MANUAL_AUTHORIZATION
+    database = _seed(tmp_path, source)
+    reader = _reader(database, tmp_path); before = _item(reader, source)
+    manifest = _human_activity(database, source, start=start, precision=precision)
+    with sqlite3.connect(database) as db:
+        source_rows = {table: db.execute("SELECT * FROM " + table).fetchall() for table in
+            ("article_date_observations", "pdf_article_date_observations")}
+    result = _ingest(database, tmp_path, manifest)
+    assert result["status"] == "approved" and result["authorization_basis"] == MANUAL_AUTHORIZATION
+    def check(current):
+        after = _item(current, source)
+        for field in ("summary", "title", "categories", "keywords", "publication_date", "updated_date", "revision_date", "content_date"):
+            assert after.get(field) == before.get(field)
+        assert after["is_activity"] and len(after["activity_dates"]) == 1
+        event = after["activity_dates"][0]
+        assert event["start_date"] == start and event["date_precision"] == precision
+        assert event["authority"] == "human_override" and event["verification_status"] == "unchecked"
+        assert event["instruction_reference"] == manifest["authorization_reference"]
+        decision = after["manual_date_overrides"]["activity_dates"]
+        assert decision["actor"] == manifest["actor"] and decision["old_value"] == []
+        assert decision["baseline_candidate_sha256"] == manifest["plan"]["baseline_candidate_sha256"]
+        assert decision["executed_at"] == manifest["checked_at"] and decision["instruction"] == manifest["manual_authorization"]["instruction"]
+        meetings = current.meetings(base_date="2026-10-18", page_size=100)["items"]
+        event = next(item for item in meetings if item["name"] == "Climate risk conference")
+        assert event["start_date"] == start and event["authority"] == "human_override"
+        assert event["verification_status"] != "verified"
+    for direct in (True, False):
+        with reader.public_snapshot(direct=direct): check(reader)
+    root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
+    export_public_snapshot(database, root/"wiki/public-registry.json")
+    check(RegistryReader.from_public_export(root))
+    from climate_registry.wiki import _render_registry_meetings
+    event = reader.meetings(base_date="2026-10-18", page_size=100)["items"][0]
+    assert "Date authority: human_override; source not verified" in _render_registry_meetings([event])
+    from test_chat_evidence import owner
+    chatroot = tmp_path/"chat-manual"; chatroot.mkdir()
+    chat = owner(chatroot); chat.reader_factory = lambda: reader
+    response = chat.answer("List climate risk conferences from 2026-01-01 to 2026-12-31")
+    assert "Date authority: human_override; source not verified" in response["text"]
+    assert any(item.get("authority") == "human_override" and item.get("instruction_reference") == manifest["authorization_reference"]
+        for item in response["sources"])
+    with sqlite3.connect(database) as db:
+        for table, rows in source_rows.items(): assert db.execute("SELECT * FROM " + table).fetchall() == rows
+        receipt = json.loads(db.execute("SELECT receipt_json FROM registry_reviews WHERE candidate_sha256=?", (result["candidate_sha256"],)).fetchone()[0])
+        assert receipt["decision"] == "authorized" and "reviewed_at" not in receipt
+
+
+@pytest.mark.parametrize("mutation", ["wrong_identity", "field", "ambiguous", "bounds", "precision", "source_pass", "capture", "empty_instruction", "mixed"])
+def test_invalid_human_activity_instruction_cannot_write(tmp_path, mutation):
+    database = _seed(tmp_path)
+    manifest = _human_activity(database)
+    entry = manifest["observations"][0]; proof = entry["public_fields"]["activity_dates"][0]["evidence"]
+    if mutation == "wrong_identity": proof["event_id"] = "other-event"
+    elif mutation == "field": entry["field_evidence"]["activity_dates"]["fields"] = ["event_organizer"]
+    elif mutation == "ambiguous": proof["date_text"] = "11/04/2026"
+    elif mutation == "bounds": proof["event_end_date"] = "2026-11-03"
+    elif mutation == "precision": proof["date_precision"] = "month"
+    elif mutation == "source_pass": proof["review_status"] = "pass"
+    elif mutation == "capture": entry["capture"] = {"text": "fabricated"}
+    elif mutation == "empty_instruction": manifest["manual_authorization"]["instruction"] = ""
+    else: entry["public_fields"]["publication_date"] = "2026-11-04"
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+    with pytest.raises(RegistryInputError): _ingest(database, tmp_path, manifest)
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+
+
+def test_human_activity_correction_restage_replace_and_revoke_preserve_source_history(tmp_path):
+    from climate_registry.publication import stage_snapshot, snapshot_entity, _approve as approve_snapshot
+    from climate_registry.owner_dates import MANUAL_AUTHORIZATION
+    database = _seed(tmp_path, "linked")
+    source = _manifest(database, "linked")
+    source["observations"][0]["public_fields"]["activity_dates"][0]["evidence"].update(event_organizer="Climate risk conference")
+    staged = _ingest(database, tmp_path, source)
+    _approve(database, tmp_path, _date_review(database, tmp_path, staged["candidate_sha256"]))
+    reader = _reader(database, tmp_path)
+    original = reader.article("good")["activity_dates"][0]
+    with sqlite3.connect(database) as db:
+        old_candidates = dict(db.execute("SELECT candidate_sha256,snapshot_json FROM registry_candidates"))
+        old_receipts = dict(db.execute("SELECT review_id,receipt_json FROM registry_reviews"))
+    human = _human_activity(database, start="2026-10-21", end="2026-10-24", event_id=original["event_id"])
+    human["observations"][0]["field_evidence"]["activity_dates"]["fields"] = ["event_end_date"]
+    first = _ingest(database, tmp_path, human)
+    after = reader.article("good")["activity_dates"]
+    assert len(after) == 1 and after[0]["end_date"] == "2026-10-24"
+    assert after[0]["organizer"] == original["organizer"]
+    assert reader.pdf_article("pdf-good")["activity_dates"] == after
+    with sqlite3.connect(database) as db:
+        next_candidate = stage_snapshot(db, snapshot_entity(db, "article", "good"))
+        assert next_candidate == first["candidate_sha256"]
+    from test_article_content_dates import _stage_complete_bundle
+    next_candidate, _ = _stage_complete_bundle(database)
+    with sqlite3.connect(database) as db:
+        approve_snapshot(db, next_candidate, {"basis": "new complete approved content fixture"})
+    assert reader.article("good")["activity_dates"] == after
+    replacement = _human_activity(database, start="2026-10-21", end="2026-10-28", event_id=after[0]["event_id"])
+    replacement["observations"][0]["field_evidence"]["activity_dates"]["fields"] = ["event_end_date"]
+    second = _ingest(database, tmp_path, replacement)
+    assert reader.article("good")["activity_dates"][0]["end_date"] == "2026-10-28"
+    automation = _ingest(database, tmp_path, _manifest(database))
+    with pytest.raises(RegistryInputError):
+        _approve(database, tmp_path, _date_review(database, tmp_path, automation["candidate_sha256"]))
+    revoke = _human_activity(database)
+    revoke["manual_authorization"].update(action="revoke", instruction="Revoke this record's Climate risk conference date instruction.")
+    revoke["observations"][0].update(public_fields={"activity_dates": None},
+        field_evidence={"activity_dates": {"text": "revoke", "precision": "unknown"}})
+    _ingest(database, tmp_path, revoke)
+    assert reader.article("good")["activity_dates"] == [original]
+    assert not reader.article("good").get("manual_date_overrides")
+    with sqlite3.connect(database) as db:
+        for sha, encoded in old_candidates.items(): assert db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (sha,)).fetchone()[0] == encoded
+        for identity, encoded in old_receipts.items(): assert db.execute("SELECT receipt_json FROM registry_reviews WHERE review_id=?", (identity,)).fetchone()[0] == encoded
+        for result in (first, second):
+            receipt = json.loads(db.execute("SELECT receipt_json FROM registry_reviews WHERE candidate_sha256=?", (result["candidate_sha256"],)).fetchone()[0])
+            assert receipt["schema_version"] == MANUAL_AUTHORIZATION and receipt["decision"] == "authorized"
+
+
+def test_version_limited_human_activity_expires_only_when_next_body_is_approved(tmp_path):
+    from test_article_content_dates import _stage_complete_bundle, _stage_next_complete_bundle
+    from climate_registry.publication import _approve as approve_snapshot
+    database = _seed(tmp_path)
+    candidate, bundle = _stage_complete_bundle(database)
+    with sqlite3.connect(database) as db: approve_snapshot(db, candidate, {"basis": "body-b fixture pass"})
+    manifest = _human_activity(database)
+    manifest["manual_authorization"].update(scope="content_version", content_version_id="body-b")
+    _ingest(database, tmp_path, manifest)
+    reader = _reader(database, tmp_path)
+    before = reader.article("good")["activity_dates"]
+    stale = _human_activity(database, event_id=before[0]["event_id"])
+    candidate, _ = _stage_next_complete_bundle(database, bundle)
+    assert reader.article("good")["activity_dates"] == before
+    with sqlite3.connect(database) as db: approve_snapshot(db, candidate, {"basis": "body-c fixture pass"})
+    for direct in (True, False):
+        with reader.public_snapshot(direct=direct):
+            item = reader.article("good")
+            assert item["content_version_id"] == "body-c" and not item["is_activity"] and not item["activity_dates"]
+            assert not item.get("manual_date_overrides") and not item.get("activity_dates_verification")
+    before_hash = hashlib.sha256(database.read_bytes()).hexdigest()
+    with pytest.raises(RegistryInputError, match="stale"):
+        _ingest(database, tmp_path, stale)
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before_hash
+
+
+def test_human_activity_cannot_change_an_unselected_bound(tmp_path):
+    database = _seed(tmp_path)
+    staged = _ingest(database, tmp_path, _manifest(database))
+    _approve(database, tmp_path, _date_review(database, tmp_path, staged["candidate_sha256"]))
+    prior = _reader(database, tmp_path).article("good")["activity_dates"][0]
+    manifest = _human_activity(database, start="2026-10-20", end="2026-10-24", event_id=prior["event_id"])
+    manifest["observations"][0]["field_evidence"]["activity_dates"]["fields"] = ["event_end_date"]
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+    with pytest.raises(RegistryInputError, match="unselected"):
+        _ingest(database, tmp_path, manifest)
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+
+
+def test_human_activity_keeps_unrelated_active_activity_without_reapproval(tmp_path):
+    database = _seed(tmp_path)
+    first = _ingest(database, tmp_path, _human_activity(database))
+    reader = _reader(database, tmp_path)
+    existing = reader.article("good")["activity_dates"][0]
+    second = _human_activity(database, start="2026-11-20")
+    second["observations"][0]["public_fields"]["activity_dates"][0]["evidence"]["event_name"] = "Other named activity"
+    second["manual_authorization"]["instruction"] = "Set Other named activity dates to 2026-11-20, day precision."
+    _ingest(database, tmp_path, second)
+    after = reader.article("good")["activity_dates"]
+    assert len(after) == 2 and next(event for event in after if event["name"] == existing["name"]) == existing
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM registry_reviews WHERE candidate_sha256=?", (first["candidate_sha256"],)).fetchone()[0] == 1
+
+
+def test_human_activity_exact_identity_keeps_other_same_named_event(tmp_path):
+    database = _seed(tmp_path)
+    staged = _ingest(database, tmp_path, _manifest(database, dates=("2026-10-21", "2026-10-28")))
+    _approve(database, tmp_path, _date_review(database, tmp_path, staged["candidate_sha256"]))
+    reader = _reader(database, tmp_path)
+    first, other = sorted(reader.article("good")["activity_dates"], key=lambda event: event["start_date"])
+    _ingest(database, tmp_path, _human_activity(database, start="2026-10-21", event_id=first["event_id"]))
+    same = next(event for event in reader.meetings(base_date="2026-10-18", page_size=100)["items"]
+        if event["start_date"] == "2026-10-21")
+    assert same["authority"] == "human_override" and same["verification_status"] != "verified"
+    _ingest(database, tmp_path, _human_activity(database, start="2026-10-22", event_id=first["event_id"]))
+    after = reader.article("good")["activity_dates"]
+    assert len(after) == 2 and other in after
+    changed = next(event for event in after if event.get("authority") == "human_override")
+    assert changed["start_date"] == "2026-10-22" and changed["replaces_event_id"] == first["event_id"]
+    _ingest(database, tmp_path, _human_activity(database, start="2026-10-23", event_id=changed["event_id"]))
+    after = reader.article("good")["activity_dates"]
+    assert len(after) == 2 and other in after
+    assert next(event for event in after if event.get("authority") == "human_override")["start_date"] == "2026-10-23"
+
+
 @pytest.mark.parametrize("source", ["native", "pdf", "linked"])
 def test_activity_only_preserves_dtos_and_moves_article_to_dates(tmp_path, source):
     database = _seed(tmp_path, source)

@@ -21,7 +21,7 @@ ZONE = ZoneInfo("America/New_York")
 URLS = re.compile(r"https?://[^\s<>\]\)]+")
 ISO_DATES = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
 MEETINGS = re.compile(r"\b(meetings?|conferences?|deadlines?|consultations?|expert.review|opportunit\w*|upcoming|agenda)\b", re.I)
-RECENT = re.compile(r"\b(new|added|materially updated|newly|recent(?:ly)?(?:\s+updated)?)\b.*\b(reports?|articles?|publications?|content)\b|\b(reports?|articles?|content)\b.*\b(added|materially updated|recently updated)\b|最近.{0,12}(?:新增|更新).{0,12}(?:内容|文章|报告)|(?:内容|文章|报告).{0,12}(?:新增|更新)", re.I)
+RECENT = re.compile(r"\b(new|added|materially updated|newly|recent(?:ly)?(?:\s+updated)?)\b.*\b(reports?|articles?|publications?|content)\b|\b(reports?|articles?|content)\b.*\b(added|materially updated|recently updated)\b|\b(?:articles?|reports?|publications?)\b.*\bpublished\b.*(?:\b(?:last|past|recent|from)\b|\d{4}-\d{2})|最近.{0,12}(?:新增|更新|发布|修订).{0,12}(?:内容|文章|报告)|(?:内容|文章|报告).{0,12}(?:新增|更新|发布|修订)", re.I)
 KNOWLEDGE_CHANGE = re.compile(r"\b(added|ingested|updated)\b|\bmaterial(?:ly)?[-\s]+updates?\b", re.I)
 REFERENCES = re.compile(r"\b(its?|that|this|second|first|third|above|previous|former|latter)\b", re.I)
 REFRESH = re.compile(r"\b(verify|reverify|recheck|current status|latest agenda|check again|up.to.date|still|currently|now|today)\b|\b(is|are)\b.{0,30}\b(open|closed|available)\b", re.I)
@@ -209,9 +209,48 @@ def visible_source_order(text, entries):
 
 
 def article_text(detail, facts):
-    text = "\n".join(f"{key}: {detail.get(key) or 'unknown'}" for key in ("publisher", "author", "publication_date", "summary", "categories", "keywords"))
-    text += f"\nFirst added: {facts.get('first_ingested_at') or 'unknown'}\nMaterial update: {facts.get('substantive_updated_at') or 'unknown'}"
+    text = "\n".join(f"{key}: {detail.get(key) or 'unknown'}" for key in ("publisher", "author", "publication_date", "updated_date", "revision_date", "summary", "categories", "keywords"))
+    for field in ("publication_date", "updated_date", "revision_date"):
+        if detail.get(field):
+            text += "\n" + field + " evidence/authority: " + json.dumps(detail.get(field + "_evidence") or {}, ensure_ascii=False)
+    text += f"\nFirst added: {facts.get('first_ingested_at') or 'unknown'}\nSystem record changed: {facts.get('substantive_updated_at') or 'unknown'}"
+    text += f"\nCurrent content date: {detail.get('content_date_label') or 'Date unknown'} {detail.get('content_date') or ''}; basis: {detail.get('content_date_basis') or 'unknown'}; authority: {detail.get('content_date_authority') or 'unknown'}"
+    text += "\nDate precision and evidence: " + json.dumps(detail.get("content_date_evidence") or {}, ensure_ascii=False)
+    if detail.get("content_update"):
+        text += "\nContent version: " + detail["content_update"]["content_version_id"] + "\nChange note: " + detail["content_update"]["change_note"]
     return text + "\nCommittee relevance: use the cited findings/categories; no committee commitment is recorded."
+
+
+def article_time_basis(question):
+    if re.search(r"knowledge[-\s]*(?:base|record)|registry\s+record|system\s+record|first[-\s]*ingested|知识库|记录变更", question, re.I):
+        return "system_records"
+    added = bool(re.search(r"\badded\b|新增|收录|入库", question, re.I))
+    updated = bool(re.search(r"updat|revis|更新|修订|动态", question, re.I))
+    if updated and not added:
+        return "content_updates"
+    if added and not updated:
+        return "first_added"
+    if re.search(r"\bpublished\b|\bpublication\s+date\b|发布", question, re.I) and not added and not updated:
+        return "publication"
+    return "added_or_content"
+
+
+def article_window_times(item, facts, basis):
+    """Source dynamics require the same complete approved bundle the article list consumes."""
+    if basis == "system_records":
+        return [timestamp(facts.get(key)) for key in ("first_ingested_at", "substantive_updated_at")]
+    times = [timestamp(facts.get("first_ingested_at"))] if basis in {"first_added", "added_or_content"} else []
+    value = item.get("publication_date") if basis == "publication" else None
+    from climate_registry.article_dates import validate_exported_content_update
+    try:
+        bundle = validate_exported_content_update(item)
+    except (ValueError, TypeError, KeyError):
+        bundle = None
+    if basis in {"content_updates", "added_or_content"} and bundle:
+        value = item.get("content_date")
+    if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        times.append(timestamp(value + "T00:00:00Z"))
+    return times
 
 
 def reader_url(url):
@@ -230,7 +269,9 @@ def verification_guidance(question, sources, answer=""):
     linked = [source for source in relevant if str(source.get("url", "")).startswith(("https://", "http://"))]
     targets = list(dict.fromkeys(source["url"] if source.get("title") == source["url"] else f"{source['title']}: {source['url']}" for source in linked))[:3]
     if KNOWLEDGE_CHANGE.search(question):
-        return "Manual verification: check the approved Registry's first-ingested/material-update history for the requested window; publisher publication/update dates cannot establish when an item entered this knowledge base."
+        if article_time_basis(question) == "content_updates":
+            return "Manual verification: check the current approved content version, its covering summary, change evidence and content-date authority; system record changes do not establish a source content update."
+        return "Manual verification: check the approved Registry's first-ingested/system-record-change history separately from complete approved source content updates; publisher dates cannot establish when an item entered this knowledge base."
     if sources and all(source.get("heading") in {"article", "pdf_article", "web"} for source in sources) and re.search(r"\bpublication\s+date\b|\bpublished\b", question, re.I):
         return ("Manual verification: open " + ("; ".join(targets) or "the official article page")
             + " and check its publication date. If the page does not state it, ask the publisher to confirm the publication date.")
@@ -418,7 +459,7 @@ class EvidenceTurn:
         source = {"index": index, "title": (item.get("name") or item.get("title") or "Read source")[:300],
             "path": item.get("path") or "", "heading": kind, "url": (item.get("url") or item.get("path") or "") if kind == "wiki" else urls[0] if urls else "",
             "canonical_url": item.get("canonical_url") or (item.get("final_url") if kind == "web" else None),
-            "snippet": body[:600], "source_urls": urls, "type": item.get("type") or kind, "date": item.get("publication_date") or item.get("start_date") or item.get("date") or "-",
+            "snippet": body[:600], "source_urls": urls, "type": item.get("type") or kind, "date": item.get("content_date") or item.get("publication_date") or item.get("start_date") or item.get("date") or "-",
             "corpus": item.get("corpus") or ("wiki" if kind == "wiki" else "source"), "matched_section": item.get("heading"), "evidence_id": stable,
             "version": version, "retrieved_at": item.get("retrieved_at"), "truncated": len(body) < len(text) or item.get("truncated", False)
                 or (kind == "web" and len(body) < len(item["body"]))}
@@ -444,7 +485,16 @@ class EvidenceTurn:
             source["article_id"] = article_id
             source["article_source"] = item.get("article_source") or ("pdf" if kind == "pdf_article" else "registry")
         source["date_kind"] = "wiki_document_date" if kind == "wiki" else "event_start" if kind == "meeting" and item.get("start_date") else "publication_date" if item.get("publication_date") else "unknown"
+        if article_id or (kind == "wiki" and "content_date_basis" in item):
+            from climate_registry.article_dates import CONTENT_DATE_FIELDS
+            source.update({key: item[key] for key in CONTENT_DATE_FIELDS if key in item})
+            source.update({key: item[key] for key in ("publication_date", "content_version_id", "published_candidate_sha256") if key in item})
+            source["date_kind"] = item.get("content_date_basis") or source["date_kind"]
+            if "content_date" in item:
+                source["date"] = item["content_date"] or "-"
         source["verification_status"] = item.get("verification_status")
+        if item.get("authority") == "human_override":
+            source.update(authority="human_override", instruction_reference=item.get("instruction_reference"))
         document = next((doc for doc in [*self.owner.responder.kb.documents, *self.owner.responder.kb.source_documents]
             if doc.path == source["path"] or "wiki/" + doc.path == source["path"]), None)
         heading = re.search(r"^#\s+(.+)$", document.markdown, re.M) if document else None
@@ -460,7 +510,7 @@ class EvidenceTurn:
                     "precision": item.get("date_precision"), "deadlines": [{"type": row.get("deadline_type"), "date": row.get("deadline_date"), "urls": source_urls(row)}
                         for row in [item, *(item.get("pdf_observations") or [])] if row.get("deadline_date")], "knowledge_version": version}
             else:
-                value["date_kind"] = "wiki_document_date" if kind == "wiki" else "publication_date"
+                value["date_kind"] = source["date_kind"]
             self.candidates[stable] = value
             return value
         if kind == "web":
@@ -598,6 +648,8 @@ class EvidenceTurn:
             "raw_time_text", "event_timezone", "location", "online_url", "status", "verification_status", "relevance_reason")
         text = "\n".join(f"{key}: {item.get(key) or 'unknown'}" +
             (" (stored approved status; not current verification)" if key == "status" else "") for key in fields)
+        if item.get("authority") == "human_override":
+            text += "\nDate authority: human_override; source not verified; instruction reference: " + item["instruction_reference"]
         deadlines = []
         for observation in [item, *(item.get("pdf_observations") or [])]:
             if observation.get("deadline_date"):
@@ -818,7 +870,12 @@ class EvidenceTurn:
                     self.clarification = True
                 self.notes.append(str(exc))
                 return result
-            self.notes.append(f"Added/material-update window: {start.isoformat()} through {end.isoformat()} (America/New_York).")
+            basis = article_time_basis(self.question)
+            field_label = {"system_records": "first_ingested_at / substantive_updated_at (system records)",
+                "first_added": "first_ingested_at (system collection into knowledge base)",
+                "publication": "publication_date (source publication)", "content_updates": "content_date (complete approved source update)",
+                "added_or_content": "first_ingested_at or complete approved content_date"}[basis]
+            self.notes.append(f"Article time window ({field_label}): {start.isoformat()} through {end.isoformat()} (America/New_York); source content dates and system record times are separate.")
             try:
                 reader = self.reader()
                 with reader.public_snapshot(direct=True):
@@ -826,8 +883,15 @@ class EvidenceTurn:
                     selected, unknown, page = [], [], 1
                     def select(item, kind):
                         facts = chronology.get("article:" + item["article_id"], {})
-                        times = [timestamp(facts.get(key)) for key in ("first_ingested_at", "substantive_updated_at")]
-                        if any(at and start <= at <= end for at in times):
+                        times = article_window_times(item, facts, basis)
+                        if basis == "added_or_content":
+                            # The first entry is a system instant; remaining entries are source calendar dates.
+                            matches = bool(times[0] and start <= times[0] <= end) or any(
+                                at and start.date() <= at.date() <= end.date() for at in times[1:])
+                        else:
+                            matches = any(at and (start.date() <= at.date() <= end.date()
+                                if basis in {"content_updates", "publication"} else start <= at <= end) for at in times)
+                        if matches:
                             selected.append((item, facts, kind))
                         elif not any(times):
                             unknown.append((item, facts, kind))
@@ -852,15 +916,20 @@ class EvidenceTurn:
                     except Exception as exc:
                         self.notes.append(f"PDF article data unavailable ({type(exc).__name__}); coverage is incomplete.")
                     if unknown:
-                        self.notes.append(f"{len(unknown)} scanned article/PDF record rows have unknown added/material-update time; records can share article IDs, so this is not a unique-article count. last_seen, collection and publication dates are not substitutes.")
+                        label = "no applicable " + field_label if basis in {"content_updates", "publication"} else "unknown added/material-update time (system-added / complete source-content basis)"
+                        self.notes.append(f"{len(unknown)} scanned article/PDF record rows have {label}; records can share article IDs, so this is not a unique-article count. last_seen, collection and publication dates do not establish when a record entered this knowledge base. System operations, refetches and unbound source labels do not establish content updates.")
+                    if basis in {"content_updates", "publication"}:
+                        unknown = []
                     if not selected:
-                        self.notes.append("No confirmed matches in this knowledge-time window. Below are approved items with unknown chronology, not confirmed recent additions.")
-                    selected.sort(key=lambda pair: max((timestamp(pair[1].get(key)) or datetime.min.replace(tzinfo=timezone.utc))
-                        for key in ("first_ingested_at", "substantive_updated_at")), reverse=True)
+                        self.notes.append("No confirmed complete approved matches in this source-date window." if basis in {"content_updates", "publication"} else
+                            "No confirmed matches in this knowledge-time window. Below are approved items with unknown chronology, not confirmed recent additions.")
+                    selected.sort(key=lambda pair: max((at or datetime.min.replace(tzinfo=timezone.utc)
+                        for at in article_window_times(pair[0], pair[1], basis)), default=datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
                     if len(selected) > 8:
                         self.notes.append(f"Showing 8 of {len(selected)} confirmed recent items; answer coverage is incomplete.")
                     from .wiki_agent import _tokens
                     words = set(_tokens(query)) - {"summarize", "explain", "reports", "report", "articles", "article", "content", "contents", "added", "materially", "updated", "recent", "recently", "new", "newly", "was", "last", "days", "first", "ingested", "first-ingested", "time", "publication", "date", "committee", "findings", "relevance", "sources", "include", "separately", "this", "that", "climate"}
+                    words -= {"knowledge", "base", "knowledge-base", "record", "records", "system", "published", "source", "publisher"}
                     words = {word for word in words if not any(character.isdigit() for character in word) and word != "were"}
                     if not re.search(r"[a-z]{2,}", query, re.I):
                         words = set()

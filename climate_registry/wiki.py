@@ -109,8 +109,8 @@ def _article_date_text(value, evidence: dict | None = None) -> str:
             and evidence.get("source_date_precision") == "month"):
         source_text = evidence.get("text") or evidence.get("date_text")
         if source_text:
-            return f"{source_text} (normalized to {value} for sorting)"
-    return str(value)
+            return f"{source_text} (normalized to {value} for sorting)" + (" (human override)" if evidence.get("authority") == "human_override" else "")
+    return str(value) + (" (human override)" if evidence.get("authority") == "human_override" else "")
 
 
 def _reviewed_date_text(record: dict, field: str) -> str | None:
@@ -157,6 +157,8 @@ def _render_registry_article(article: dict) -> str | None:
     if publication_date:
         blocks.append("Publication date: " + _article_date_text(
             publication_date, article.get("publication_date_evidence")))
+    elif article.get("first_collected_at"):
+        blocks.append(f"Publication date fallback (first collection date): {article['first_collected_at'][:10]}")
     elif article.get("collected_at"):
         blocks.append(f"Publication date fallback (collection date): {article['collected_at'][:10]}")
     elif article.get("information_date"):
@@ -165,15 +167,30 @@ def _render_registry_article(article: dict) -> str | None:
         blocks.append(f"Report date: {article['report_date']} (article publication date unconfirmed)")
     if article.get("collected_at"):
         blocks.append(f"Collected at: {article['collected_at']}")
+    if article.get("content_date"):
+        blocks.append(f"Content sort date: {article['content_date']}")
+        blocks.append(f"Current content date: {article['content_date_label']}: " + _article_date_text(
+            article["content_date"], article.get("content_date_evidence")))
+        blocks.append(f"Content date basis: {article['content_date_basis']}; authority: {article['content_date_authority']}")
+    if "content_date_basis" in article:
+        blocks.append("Content date metadata: " + json.dumps({key: article.get(key) for key in
+            ("content_date", "content_date_basis", "content_date_label", "content_date_authority", "content_date_precision", "content_date_normalization",
+             "content_date_evidence", "published_candidate_sha256", "content_version_id")}, ensure_ascii=False))
+    if article.get("content_update"):
+        blocks.append(f"Content version: {article['content_update']['content_version_id']}")
+        blocks.append("Change note: " + article["content_update"]["change_note"])
     for field, label in (("updated_date", "Updated"), ("revision_date", "Version revised")):
         value = _reviewed_date_text(article, field)
         if value:
             blocks.append(f"{label}: {value}")
+    if (article.get("updated_date") or article.get("revision_date")) and not article.get("content_update"):
+        blocks.append("These source date facts do not establish a complete content update; the current content sorting basis is retained.")
     if date_observations:
         blocks.extend(["", "## Date observations", ""])
         for observation in date_observations:
             evidence = observation["evidence"]
-            label = ("Report observation date" if evidence.get("date_basis")=="daily_or_weekly_report_date" else
+            label = ("Human activity date override" if evidence.get("authority") == "human_override" else
+                     "Report observation date" if evidence.get("date_basis")=="daily_or_weekly_report_date" else
                      "Collection time" if observation["kind"] == "collection" else "Page information date")
             detail = f"{label}: {observation['observed_at']}"
             if all(evidence.get(key) for key in ("source_system","table","record_id")):
@@ -448,6 +465,8 @@ def _render_registry_meetings(meetings: list[dict]) -> str | None:
         else:
             blocks += ["## " + item["name"], "Date(s): " + str(item.get("start_date") or item.get("raw_time_text") or "Unknown"),
                 item.get("relevance_reason") or "", "Status: " + str(item.get("status") or "Unknown")]
+            if item.get("authority") == "human_override":
+                blocks.append("Date authority: human_override; source not verified; instruction reference: " + item["instruction_reference"])
             if item.get("owner_agent_verification"):
                 blocks.append("Public facts: owner-agent source verification; independently reviewed.")
             blocks += [label + ": " + str(item[field]) for field, label in (

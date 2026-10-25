@@ -450,7 +450,7 @@ def test_article_api_uses_one_approved_core_pdf_snapshot(tmp_path,monkeypatch,en
     else:
         item=next(item for item in response.json()["items"] if item["article_id"]=="a")
         assert item["title"]==expected["title"] and item["pdf_occurrence_count"]==1
-        assert "summary" not in item and "pdf_occurrences" not in item
+        assert item["summary"] == expected["summary"] and "pdf_occurrences" not in item
 
 
 def test_native_review_requires_actual_full_snapshot_inspection(tmp_path, monkeypatch):
@@ -3922,7 +3922,8 @@ def test_render_real_audit_seed_reuses_existing_hostname_for_new_git_article(tmp
 
 
 @pytest.mark.parametrize("with_report",[False,True])
-def test_article_information_date_never_manufactures_report_coverage(tmp_path,monkeypatch,with_report):
+@pytest.mark.parametrize("has_content_date",[False,True])
+def test_article_information_date_never_manufactures_report_coverage(tmp_path,monkeypatch,with_report,has_content_date):
     from agentic_wiki import AgenticWikiResponder
     from climate_registry.persistent import update_registry
     database=_database(tmp_path)
@@ -3933,6 +3934,13 @@ def test_article_information_date_never_manufactures_report_coverage(tmp_path,mo
         update_registry(sources,database,tmp_path/"backups")
     with sqlite3.connect(database) as db:
         from verified_fixtures import seed_verified_articles
+        if has_content_date:
+            body="Approved retained climate article body."
+            body_sha=hashlib.sha256(body.encode()).hexdigest()
+            db.execute("INSERT INTO article_content_versions VALUES('report-coverage-body','a',?,?,?,'text/markdown',?,'fixture','v1','2026-09-01T12:00:00Z')",
+                (body_sha,body,body_sha,len(body)))
+            db.execute("UPDATE articles SET current_content_version_id='report-coverage-body' WHERE article_id='a'")
+            db.execute("INSERT INTO article_fetches(fetch_id,article_id,requested_url,final_url,fetched_at,fetch_status,http_status,content_version_id) VALUES('report-coverage-fetch','a','https://example.org/a','https://example.org/a','2026-09-01T12:00:00Z','success',200,'report-coverage-body')")
         seed_verified_articles(db)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit report/date fixture approval"}, status="accepted_legacy")
         snapshot=snapshot_entity(db,"article","a")
@@ -3941,7 +3949,9 @@ def test_article_information_date_never_manufactures_report_coverage(tmp_path,mo
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
     responder=AgenticWikiResponder(wiki_dir=wiki,source_dir=sources);responder.client=None
     article=next(doc for doc in responder.kb.documents if doc.file=="article-a.md")
-    assert article.date=="2026-09-01" and article.type!="daily"
+    assert article.date==("2026-09-01" if has_content_date else "") and article.type!="daily"
+    assert article.date_metadata["content_date"]==("2026-09-01" if has_content_date else None)
+    assert article.date_metadata["content_date_basis"]==("collection_time" if has_content_date else "unknown")
     expected=["2026-09-14"] if with_report else []
     assert sorted(path.name.removeprefix("climate-monitor-").removesuffix(".md") for path in sources.glob("climate-monitor-*.md"))==expected
     assert responder.kb.report_dates==expected

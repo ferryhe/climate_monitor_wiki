@@ -745,6 +745,23 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
                     publication_date_evidence=owner.get("publication_date_evidence"))
     if verdict.get("reviewed_summary"):
         view["derived_display"].update(verdict["reviewed_summary"])
+    from .article_dates import validate_content_update
+    bundle = validate_content_update(snapshot)
+    if bundle:
+        # The exact approved bundle carries its covering summary and retained comparison together.
+        view["derived_display"].update(summary=bundle["summary"], content_update=deepcopy(bundle))
+        view["tables"]["article_content_versions"] = deepcopy(snapshot["tables"]["article_content_versions"])
+        for field, proof in bundle["date_evidence"].items():
+            view["derived_display"].update({field: proof["value"], field + "_evidence": proof})
+    from .owner_dates import carry_manual_dates, inherited_article_date
+    for field in ("publication_date", "updated_date", "revision_date"):
+        if snapshot.get("derived_display", {}).get(field):
+            inherited = inherited_article_date(snapshot, field=field, incoming=view)
+            if inherited:
+                for key in (field, field + "_evidence", field + "_verification"):
+                    view["derived_display"].pop(key, None)
+                view["derived_display"].update(inherited)
+    carry_manual_dates(view, snapshot.get("derived_display", {}).get("manual_date_overrides", {}))
     return view
 
 
