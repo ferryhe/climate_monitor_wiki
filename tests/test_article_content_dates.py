@@ -1006,6 +1006,7 @@ def test_same_body_successful_refetch_retains_complete_package_with_fresh_approv
     assert reader.article("good")["published_candidate_sha256"] == before["published_candidate_sha256"]
     with sqlite3.connect(database) as db:
         _approve(db, staged, {"basis": "fresh exact refetch candidate review"})
+        assert stage_snapshot(db, snapshot_entity(db, "article", "good")) == staged
         refresh_display(db)
         assert db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (sha,)).fetchone()[0] == frozen
         materialized = DisplayReader(db).article("good")

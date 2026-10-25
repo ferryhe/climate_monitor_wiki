@@ -648,7 +648,7 @@ def inherited_article_date(snapshot, *, field="publication_date", incoming=None,
         for row in snapshot.get("tables", {}).get("acquisition_items", [])]
     values = select_article_dates(observations, acquisition_observations=acquisitions)
     inherited = {key: values[key] for key in keys if values.get(key) is not None}
-    if incoming is not None and not any(key in incoming.get("derived_display", {}) for key in keys):
+    if inherited and incoming is not None and not any(key in incoming.get("derived_display", {}) for key in keys):
         # An unchanged raw source fact must not become a new overlay after its first approval.
         incoming_source = inherited_article_date({**incoming, "derived_display": {}}, field=field)
         if inherited == incoming_source:
