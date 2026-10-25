@@ -3589,6 +3589,12 @@ class RegistryReader:
             display = next((item.get("verified_primary_display") for item in occurrences if item.get("verified_primary_display")), {})
             payload.update(title=display.get("title") or "Verified article reference", summary=None, metadata_only=True,
                 verified_primary_reference=reference)
+        if core_article_id and not payload.get("metadata_only"):
+            from .article_dates import validate_content_update
+            bundle = validate_content_update(snapshot)
+            for field, proof in (bundle or {}).get("date_evidence", {}).items():
+                payload[field] = proof["value"]
+                payload[field + "_evidence"] = proof
         self._apply_reviewed_date_fields(payload, date_snapshot)
         payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or self._published_candidate_sha(snapshot)
         reference_id = (tables["articles"][0]["article_id"]

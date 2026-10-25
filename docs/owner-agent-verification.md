@@ -149,10 +149,12 @@ approval commands, locks, backup requirement and bounded atomic batches apply.
 
 Use exactly one observation with `public_fields: {"publication_date": "YYYY-MM-DD"}`,
 `excluded_fields: []`, and `original_comparisons` for the old publication date only
-(empty when absent). Its literal date evidence includes `date_kind: "updated"`
-or `"published"`; prefer the source's Updated/Last Updated date, otherwise its
-publication date. An unknown date remains unknown; collection time is not imported
-as publication date. Ordinal dates such as `23rd September 2026` retain that exact
+(empty when absent). Its literal date evidence must identify source Published/Posted
+with `date_kind: "published"`. Source Updated/Last Updated belongs in `updated_date`
+through `--date-field updated_date`; it must never replace `publication_date`.
+Frozen historical Updated-kind publication receipts remain readable only for
+history compatibility; they cannot be used for new writes or approvals.
+An unknown date remains unknown; collection time is not imported as publication date. Ordinal dates such as `23rd September 2026` retain that exact
 excerpt while parsing to an ISO calendar day.
 Year-first slash dates such as `2026/09/21` are unambiguous. Other slash dates
 require the date evidence's explicit `date_format: "MM/DD/YYYY"` or

@@ -465,6 +465,19 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
     from .owner_dates import carry_manual_dates, inherited_article_date, current_date_view
     if OVERLAY not in snapshot and snapshot["entity_kind"] in {"article", "pdf_article"}:
         published = current_date_view(connection, snapshot["entity_kind"], snapshot["entity_id"])
+        from .article_dates import validate_content_update
+        display = snapshot.get("derived_display", {})
+        if snapshot["entity_kind"] == "article" and not {"summary", "content_update"} & display.keys():
+            bundle = validate_content_update(published)
+            if bundle:
+                restored = {**snapshot, "derived_display": {**display,
+                    "summary": bundle["summary"], "content_update": bundle}}
+                try:
+                    validate_content_update(restored)
+                except ValueError:
+                    pass  # A changed body or scope needs its own complete package.
+                else:
+                    snapshot["derived_display"] = restored["derived_display"]
         supplied = snapshot.get("derived_display", {}).get("manual_date_overrides", {})
         decisions = published.get("derived_display", {}).get("manual_date_overrides", {})
         if any(field not in decisions or decisions[field] != value for field, value in supplied.items()):

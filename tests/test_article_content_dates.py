@@ -983,3 +983,117 @@ def test_pdf_same_url_date_scope_does_not_borrow_unlinked_core_update(tmp_path, 
     (root / "wiki").mkdir(parents=True)
     export_public_snapshot(database, root / "wiki/public-registry.json")
     check(RegistryReader.from_public_export(root).pdf_article("pdf-good"))
+
+
+@pytest.mark.parametrize("source", ["native", "linked"])
+@pytest.mark.parametrize("date_field", ["updated_date", "revision_date", "discovery"])
+def test_same_body_successful_refetch_retains_complete_package_with_fresh_approval(tmp_path, source, date_field):
+    from climate_registry.display import refresh_display, DisplayReader
+    database = _seed(tmp_path, source)
+    sha, bundle = _stage_complete_bundle(database, source_dates=date_field != "discovery",
+        date_field="revision_date" if date_field == "revision_date" else "updated_date")
+    with sqlite3.connect(database) as db:
+        _approve(db, sha, {"basis": "fresh complete package review"})
+    reader = _reader(database, tmp_path)
+    before = reader.article("good")
+    with sqlite3.connect(database) as db:
+        frozen = db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (sha,)).fetchone()[0]
+        db.execute("INSERT INTO article_fetches(fetch_id,article_id,requested_url,final_url,fetched_at,fetch_status,http_status,content_version_id) VALUES('same-body-refetch','good','https://example.org/good','https://example.org/good','2026-10-24T01:00:00Z','success',200,'body-b')")
+        staged = stage_snapshot(db, snapshot_entity(db, "article", "good"))
+        assert staged != sha
+        with pytest.raises(ValueError, match="changed candidate"):
+            _approve(db, sha, {"basis": "old approval must not be rebound"})
+    assert reader.article("good")["published_candidate_sha256"] == before["published_candidate_sha256"]
+    with sqlite3.connect(database) as db:
+        _approve(db, staged, {"basis": "fresh exact refetch candidate review"})
+        refresh_display(db)
+        assert db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (sha,)).fetchone()[0] == frozen
+        materialized = DisplayReader(db).article("good")
+    def check(item):
+        assert item["content_update"] == bundle and item["summary"] == bundle["summary"]
+        assert item["content_date"] == before["content_date"] == "2026-10-16"
+        assert item["content_date_basis"] == before["content_date_basis"]
+        assert item["published_candidate_sha256"] == staged
+    check(materialized)
+    for direct in (True, False):
+        with reader.public_snapshot(direct=direct):
+            check(reader.article("good"))
+            if source == "linked":
+                check(reader.pdf_article("pdf-good"))
+    root = tmp_path / "refetch-export"
+    (root / "wiki").mkdir(parents=True)
+    export_public_snapshot(database, root / "wiki/public-registry.json")
+    check(RegistryReader.from_public_export(root).article("good"))
+
+
+@pytest.mark.parametrize("change", ["body_version", "body_bytes", "summary", "bundle_scope"])
+def test_refetch_package_inheritance_never_restores_changed_body_or_explicit_summary_scope(tmp_path, change):
+    from copy import deepcopy
+    database = _seed(tmp_path)
+    sha, bundle = _stage_complete_bundle(database)
+    with sqlite3.connect(database) as db:
+        _approve(db, sha, {"basis": "complete package before changed scope"})
+        snapshot = snapshot_entity(db, "article", "good")
+        if change == "body_version":
+            snapshot["tables"]["articles"][0]["current_content_version_id"] = "body-a"
+        elif change == "body_bytes":
+            next(row for row in snapshot["tables"]["article_content_versions"] if row["content_version_id"] == "body-b")["markdown_content"] += " Different substantive estimate."
+        elif change == "summary":
+            snapshot["derived_display"] = {"summary": "Explicit replacement needs its own content package."}
+        else:
+            snapshot["derived_display"] = {"summary": bundle["summary"], "content_update": deepcopy(bundle)}
+            snapshot["derived_display"]["content_update"]["content_version_id"] = "body-a"
+            with pytest.raises(ValueError, match="content update must bind"):
+                stage_snapshot(db, snapshot)
+            return
+        staged = stage_snapshot(db, snapshot)
+        assert staged != sha
+        retained = json.loads(db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (staged,)).fetchone()[0])
+        assert not retained.get("derived_display", {}).get("content_update")
+        with pytest.raises(ValueError, match="changed candidate"):
+            _approve(db, sha, {"basis": "old receipt cannot approve changed content scope"})
+
+
+@pytest.mark.parametrize("field", ["updated_date", "revision_date"])
+@pytest.mark.parametrize("linked", [True, False])
+@pytest.mark.parametrize("manual", [False, True])
+def test_linked_pdf_complete_package_dates_precede_history_without_crossing_unlinked_scope(tmp_path, field, linked, manual):
+    from climate_registry.display import refresh_display, DisplayReader
+    database = _seed(tmp_path, "linked" if linked else "same_url")
+    proof = {"date_kind": "updated" if field == "updated_date" else "revision", "date_precision": "day",
+        "text": "Updated 3 October 2026" if field == "updated_date" else "Revised 3 October 2026",
+        "review_status": "pass", "source_url": "https://example.org/good", "target_url": "https://example.org/good", "field": field}
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO pdf_article_date_observations VALUES('older-pdf-date','pdf-good','https://example.org/good','page_information','2026-10-03','fixture','fixture','pdf','pdf-good',?,'2026-10-04T00:00:00Z')", (json.dumps(proof),))
+        from verified_fixtures import seed_verified_articles
+        seed_verified_articles(db)
+    sha, bundle = _stage_complete_bundle(database, date_field=field)
+    with sqlite3.connect(database) as db:
+        _approve(db, sha, {"basis": "fresh current package review"})
+    if manual:
+        _ingest(database, tmp_path, _manual(database, fields={field: "2026-10-22"}))
+    reader = _reader(database, tmp_path)
+    expected = "2026-10-22" if manual else "2026-10-16"
+    assert reader.article("good")[field] == expected
+    def check(item):
+        assert item["core_article_id"] == ("good" if linked else None)
+        assert item[field] == (expected if linked else "2026-10-03")
+        if linked:
+            assert item["content_update"] == bundle and item["content_date"] == expected
+            assert item[field + "_evidence"] == reader.article("good")[field + "_evidence"]
+            if manual:
+                assert item[field + "_evidence"]["authority"] == "human_override"
+        else:
+            assert not item.get("content_update") and item["content_date"] is None
+            assert item[field + "_evidence"] == {**proof, "source_date_precision": "day"}
+    with sqlite3.connect(database) as db:
+        refresh_display(db)
+        check(DisplayReader(db).article("pdf-good", pdf=True))
+        assert db.execute("SELECT observed_at,evidence_json FROM pdf_article_date_observations WHERE observation_id='older-pdf-date'").fetchone() == ("2026-10-03", json.dumps(proof))
+    for direct in (True, False):
+        with reader.public_snapshot(direct=direct):
+            check(reader.pdf_article("pdf-good"))
+    root = tmp_path / "history-export"
+    (root / "wiki").mkdir(parents=True)
+    export_public_snapshot(database, root / "wiki/public-registry.json")
+    check(RegistryReader.from_public_export(root).pdf_article("pdf-good"))
