@@ -723,6 +723,8 @@ def test_calendar_only_import_and_check_refresh_publish_without_articles(tmp_pat
     table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), .5, "black"), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
     SimpleDocTemplate(str(source)).build([Paragraph("Key Dates", style), table])
     bundle = import_pdf_reports([source])
+    # This historical overlay test uses the pre-G2 schema20 bundle contract.
+    bundle.pop("source_coverage")
     assert len(bundle["calendar_items"]) == 1 and bundle["articles"] == []
     database = tmp_path / "registry.sqlite3"
     with sqlite3.connect(database) as connection:

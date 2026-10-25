@@ -203,8 +203,15 @@ def _pdf_timestamp(value: Any) -> str | None:
 
 def _extract_text_fragments(page: Any) -> list[dict[str, Any]]:
     fragments: list[dict[str, Any]] = []
+    raw_parts: list[str] = []
+    offset = 0
 
     def collect(text: str, cm: list[float], tm: list[float], _font: Any, font_size: Any, *_: Any) -> None:
+        nonlocal offset
+        raw_parts.append(text)
+        start = offset + len(text) - len(text.lstrip())
+        end = offset + len(text.rstrip())
+        offset += len(text)
         text = _compact(text)
         if not text:
             return
@@ -220,13 +227,76 @@ def _extract_text_fragments(page: Any) -> list[dict[str, Any]]:
         fragments.append({
             "x": x, "y": y, "right": x + width, "text": text,
             "font_size": size, "font_name": font_name,
+            "source_char_start": start, "source_char_end": end,
         })
 
     try:
-        page.extract_text(visitor_text=collect)
+        extracted = page.extract_text(visitor_text=collect)
     except Exception:
         return []
+    if "".join(raw_parts) != extracted:
+        for fragment in fragments:
+            fragment.pop("source_char_start")
+            fragment.pop("source_char_end")
     return fragments
+
+
+def _fragment_lines(page: dict[str, Any], fragment: dict[str, Any]) -> list[int]:
+    """Tie visitor geometry to exact extracted text; repeated unknown spans stay ambiguous."""
+    start, end = fragment.get("source_char_start"), fragment.get("source_char_end")
+    if start is None or end is None:
+        pattern = r"\s+".join(re.escape(word) for word in fragment["text"].split())
+        matches = list(re.finditer(pattern, page["text"])) if pattern else []
+        if len(matches) != 1:
+            return []
+        start, end = matches[0].span()
+    if _compact(page["text"][start:end]) != fragment["text"]:
+        return []
+    offsets, cursor = [], 0
+    for index, line in enumerate(page["text"].splitlines(keepends=True)):
+        if cursor < end and cursor + len(line) > start:
+            offsets.append(index)
+        cursor += len(line)
+    return offsets
+
+
+def _fragment_right(fragment: dict[str, Any]) -> float:
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    try:
+        width = stringWidth(fragment["text"], fragment["font_name"].lstrip("/"), fragment["font_size"])
+    except KeyError:
+        width = fragment["right"] - fragment["x"]
+    return fragment["x"] + width
+
+
+def _link_text_lines(page: dict[str, Any], link: dict[str, Any]) -> list[int]:
+    """Locate link text by its rectangle, never by annotation or duplicate-title order."""
+    rect = link.get("rect", [])
+    if len(rect) != 4:
+        return []
+    located = set()
+    for fragment in page.get("_text_fragments", []):
+        if (rect[0] - 2 <= _fragment_right(fragment) and fragment["x"] <= rect[2] + 2
+                and rect[1] - 3 <= fragment["y"] <= rect[3] + 3):
+            lines = _fragment_lines(page, fragment)
+            if not lines:
+                return []
+            located.update(lines)
+    return sorted(located)
+
+
+def _link_anchor_line(page: dict[str, Any], link: dict[str, Any]) -> int | None:
+    lines = _link_text_lines(page, link)
+    if not lines:
+        return None
+    # A wrapped anchor is one contiguous text span; separate identical titles
+    # inside one rectangle are competing locations, not an ordinal choice.
+    text = page["text"].splitlines()
+    anchor = _compact(link.get("anchor_text", ""))
+    combined = _compact(" ".join(text[index] for index in lines))
+    if len(lines) == 1 or anchor and combined.casefold() == anchor.casefold():
+        return lines[0]
+    return None
 
 
 def _extract_links(
@@ -234,7 +304,7 @@ def _extract_links(
 ) -> list[dict[str, Any]]:
     fragments = _extract_text_fragments(page) if fragments is None else fragments
     links = []
-    for ref in page.get("/Annots") or []:
+    for annotation_index, ref in enumerate(page.get("/Annots") or []):
         try:
             annotation = ref.get_object()
             action = annotation.get("/A")
@@ -243,7 +313,7 @@ def _extract_links(
             url = str(action.get("/URI") or "").strip() if action else ""
             if not url:
                 continue
-            rect = [round(float(value), 2) for value in annotation.get("/Rect", [])]
+            rect = [float(value) for value in annotation.get("/Rect", [])]
             anchors = []
             if len(rect) == 4:
                 x0, y0, x1, y1 = rect
@@ -256,6 +326,7 @@ def _extract_links(
                 "anchor_text": _compact(" ".join(dict.fromkeys(anchors))),
                 "page": page_number,
                 "rect": rect,
+                "annotation_index": annotation_index,
             })
         except (TypeError, ValueError, KeyError):
             continue
@@ -325,23 +396,20 @@ _RECORD_MARKERS = {"updates", "news", "publications", "upcoming events", "watch 
 
 
 def _large_bold_lines(page: dict[str, Any]) -> list[int]:
-    lines = page["text"].splitlines()
     result = set()
     for fragment in page.get("_text_fragments", []):
         if fragment.get("font_size", 0) < 14 or "bold" not in fragment.get("font_name", "").casefold():
             continue
         text = _compact(fragment.get("text", "")).casefold()
         if text:
-            result.update(
-                index for index, line in enumerate(lines)
-                if text in _compact(line).casefold()
-            )
+            result.update(_fragment_lines(page, fragment))
     return sorted(result)
 
 
-def _record_context(page: dict[str, Any], anchor: str, occurrence: int = 0) -> tuple[str, str]:
+def _record_context(page: dict[str, Any], anchor: str, occurrence: int = 0, *, anchor_line: int | None = None) -> tuple[str, str]:
     lines = page["text"].splitlines()
-    anchor_line = _find_anchor_line(lines, anchor, occurrence)
+    if anchor_line is None:
+        anchor_line = _find_anchor_line(lines, anchor, occurrence)
     if anchor_line is None:
         return "\n".join(lines).strip(), "verbatim_pdf_page_context"
 
@@ -483,10 +551,21 @@ def _extract_calendar_items(document: dict[str, Any]) -> list[dict[str, Any]]:
             end = starts[ordinal] if ordinal < len(starts) else section_start or len(lines)
             row = [line.strip() for line in lines[start:end] if line.strip()]
             if len(row) >= 3 and _is_calendar_kind_line(row[1]):
-                rows.append({"ordinal": ordinal, "row": row, "links": []})
+                offsets = page["text"].splitlines(keepends=True)
+                rows.append({"ordinal": ordinal, "row": row, "links": [],
+                    "source_region": {"char_start": len("".join(offsets[:start])),
+                        "char_end": len("".join(offsets[:end]))}})
 
         fragments = page.get("_text_fragments", [])
         for link in page["links"]:
+            if "_text_fragments" in page and len(link.get("rect", [])) == 4:
+                line = _link_anchor_line(page, link)
+                offset = len("".join(page["text"].splitlines(keepends=True)[:line])) if line is not None else None
+                matches = [entry for entry in rows if offset is not None
+                    and entry["source_region"]["char_start"] <= offset < entry["source_region"]["char_end"]]
+                if len(matches) == 1:
+                    matches[0]["links"].append(link)
+                continue
             anchor = _compact(link["anchor_text"]).casefold()
             matches = [
                 entry for entry in rows
@@ -545,6 +624,8 @@ def _extract_calendar_items(document: dict[str, Any]) -> list[dict[str, Any]]:
                 "source_links": [{"url": link["url"], "rect": link.get("rect", [])} for link in page_links],
                 "source_document_sha256": document["source"]["sha256"],
                 "content_sha256": _sha256(row_text),
+                "page_sha256": _sha256(page["text"]),
+                "source_region": entry["source_region"],
             })
     return items
 
@@ -696,10 +777,10 @@ def _explicit_calendar_online_url(value: str, *, multiline: bool = False) -> str
     return None
 
 
-def _read_pdf(path: Path) -> dict[str, Any]:
-    if path.suffix.casefold() != ".pdf" or not path.is_file():
+def _read_pdf(path: Path, *, raw_pdf: bytes | None = None) -> dict[str, Any]:
+    if raw_pdf is None and (path.suffix.casefold() != ".pdf" or not path.is_file()):
         raise ValueError(f"input is not a PDF file: {path}")
-    raw = path.read_bytes()
+    raw = path.read_bytes() if raw_pdf is None else raw_pdf
     if len(raw) > MAX_PDF_BYTES:
         raise ValueError(f"PDF exceeds the {MAX_PDF_BYTES}-byte limit: {path.name}")
     if not raw.startswith(b"%PDF-"):
@@ -719,6 +800,8 @@ def _read_pdf(path: Path) -> dict[str, Any]:
             "page": page_number,
             "text": text,
             "content_sha256": _sha256(text),
+            "native_links": _extract_links(page, page_number, fragments),
+            "page_rect": [float(value) for value in page.mediabox],
             "links": _group_page_links(_extract_links(page, page_number, fragments)),
             "_text_fragments": fragments,
         })
@@ -823,9 +906,11 @@ def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 })
                 anchor_key = (page["page"], _compact(link["anchor_text"]).casefold())
                 anchor_ordinals[anchor_key] = anchor_ordinals.get(anchor_key, 0) + 1
-                context, summary_basis = _record_context(
-                    page, link["anchor_text"] or "", anchor_ordinals[anchor_key] - 1
-                )
+                if "_text_fragments" in page:
+                    line = _link_anchor_line(page, link)
+                    context, summary_basis = _record_context(page, link["anchor_text"] if line is not None else "", anchor_line=line)
+                else:
+                    context, summary_basis = _record_context(page, link["anchor_text"] or "", anchor_ordinals[anchor_key] - 1)
                 publication_date_evidence, publication_date = _reported_publication_date(
                     context, link["anchor_text"]
                 )
@@ -850,6 +935,7 @@ def _article_records(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "summary_basis": summary_basis,
                     "content_sha256": _sha256(context),
                     "page_sha256": page["content_sha256"],
+                    "link_rects": link.get("rects", [link.get("rect", [])]),
                 })
                 title = link["anchor_text"]
                 if title and (not record["title"] or len(title) > len(record["title"])):
@@ -941,6 +1027,253 @@ def _input_pdfs(inputs: Iterable[str | Path]) -> list[Path]:
     return list(found.values())
 
 
+def _coverage_id(prefix: str, value: Any) -> str:
+    return prefix + _sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def build_source_coverage(documents: list[dict[str, Any]], articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Partition every page's exact text; uncertain semantics stay visible for review.
+
+    Text offsets and the actual page rectangle are source regions, not invented
+    PDF annotations. Native link rectangles are retained separately, unchanged.
+    """
+    result = []
+    for document in documents:
+        sha = document["source"]["sha256"]
+        bindings, entries, linked_title_offsets = [], [], {}
+        unlocalized_native_links, localization_gaps = [], {}
+        for page in document["pages"]:
+            lines = page["text"].splitlines(keepends=True)
+            starts = {0}
+            starts.update(_large_bold_lines(page))
+            for index, line in enumerate(lines):
+                if re.match(r"\s*IN WINDOW\b", line, re.I) and index:
+                    starts.add(index - 1)
+                if line.strip().isdigit() or _compact(line).casefold() in _RECORD_MARKERS:
+                    starts.add(index)
+                    if index + 1 < len(lines):
+                        starts.add(index + 1)
+            # A title annotation can establish a candidate boundary; source/domain
+            # anchors remain inside their material until a reviewer splits them.
+            title_offsets = set()
+            for link in page.get("links", []):
+                anchor = _compact(link.get("anchor_text", ""))
+                line = _link_anchor_line(page, link)
+                if line is not None and anchor and not re.match(r"(?:Source:|https?://|www\.)", anchor, re.I):
+                    starts.add(line)
+                    end, title = line + 1, _compact(lines[line])
+                    while len(title) < len(anchor) and end < len(lines):
+                        title = _compact(title + " " + lines[end])
+                        end += 1
+                    if title.casefold() == anchor.casefold():
+                        rect = link["rect"]
+                        fragments = [item for item in page.get("_text_fragments", []) if len(rect) == 4
+                            and rect[0] - 2 <= item["x"] <= rect[2] + 2 and rect[1] - 3 <= item["y"] <= rect[3] + 3]
+                        right_edges = [_fragment_right(fragment) for fragment in fragments]
+                        # The anchor extractor also returns a whole line for a
+                        # clipped inline link; it is not a new material title.
+                        if right_edges and max(right_edges) <= rect[2] + 2:
+                            title_offsets.add(len("".join(lines[:line])))
+            linked_title_offsets[page["page"]] = title_offsets
+            for event in document.get("calendar_items", []):
+                if event["page"] == page["page"]:
+                    start = event.get("source_region", {}).get("char_start")
+                    if start is not None:
+                        starts.add(len(page["text"][:start].splitlines()))
+            native_locations = []
+            for index, link in enumerate(page.get("native_links", [])):
+                annotation_index = link.get("annotation_index", index)
+                located = dict(link, annotation_index=annotation_index,
+                    source_occurrence_id=_coverage_id("pdf-native-link-", [sha, page["page"], annotation_index, link]))
+                line = _link_anchor_line(page, link)
+                native_locations.append((line, located))
+                if line is None:
+                    unlocalized_native_links.append(dict(located, disposition="gap", reason="Native link has no unique text region"))
+            boundaries = sorted(starts | {len(lines)})
+            spans = list(zip(boundaries, boundaries[1:])) or [(0, 0)]
+            for first, end in spans:
+                offset = len("".join(lines[:first]))
+                raw_text = "".join(lines[first:end])
+                native_links = []
+                text_positions = []
+                for fragment in page.get("_text_fragments", []):
+                    if any(first <= line < end for line in _fragment_lines(page, fragment)):
+                        # The visitor's coordinates are actual PDF text origins;
+                        # its estimated glyph width is deliberately not evidence.
+                        text_positions.append({key: fragment[key] for key in ("x", "y", "text", "font_size", "font_name")})
+                for line, link in native_locations:
+                    if line is not None and first <= line < end:
+                        native_links.append(link)
+                evidence = {"source_document_sha256": sha, "page": page["page"],
+                    "page_sha256": page["content_sha256"], "page_rect": page.get("page_rect", []),
+                    "char_start": offset, "char_end": offset + len(raw_text),
+                    "raw_text": raw_text, "text_sha256": _sha256(raw_text),
+                    "text_positions": text_positions, "native_links": native_links}
+                binding_id = _coverage_id("pdf-binding-", evidence)
+                binding = {"binding_id": binding_id, **evidence}
+                bindings.append(binding)
+                observations = [occurrence["occurrence_id"] for article in articles for occurrence in article["occurrences"]
+                    if occurrence["source_document_sha256"] == sha and occurrence["page"] == page["page"]
+                    and any(link["url"] == occurrence["raw_url"] and link["rect"] in occurrence.get("link_rects", [])
+                        for link in native_links)]
+                observations += [event["occurrence_id"] for event in document.get("calendar_items", [])
+                    if event["page"] == page["page"] and (
+                        event.get("name") and _compact(event["name"]) in _compact(raw_text)
+                        or event.get("raw_date") and _compact(event["raw_date"]) in _compact(raw_text))]
+                entries.append({"entry_id": _coverage_id("pdf-entry-", [binding_id]),
+                    "binding_ids": [binding_id], "observation_ids": sorted(set(observations)),
+                    "disposition": "pending" if observations else "gap",
+                    "reason": "Semantic coverage requires review" if observations else "No independently localized material; review, exclude or supplement",
+                    "canonical_identity": None, "content_version_id": None,
+                    "identity_status": "pending_g4", "revisions": []})
+        observation_bindings = {}
+        occurrences = [item for article in articles for item in article["occurrences"]
+            if item["source_document_sha256"] == sha] + document.get("calendar_items", [])
+        for occurrence in occurrences:
+            page = document["pages"][occurrence["page"] - 1]
+            on_page = [item for item in bindings if item["page"] == occurrence["page"]]
+            native = [item for item in on_page if any(link["url"] == occurrence.get("raw_url")
+                and link["rect"] in occurrence.get("link_rects", []) for link in item["native_links"])]
+            region = occurrence.get("source_region")
+            if region is None:
+                raw_links = [link for link in page.get("native_links", []) if link["url"] == occurrence.get("raw_url")
+                    and link["rect"] in occurrence.get("link_rects", [])]
+                if not raw_links or any(_link_anchor_line(page, link) is None for link in raw_links):
+                    localization_gaps[occurrence["occurrence_id"]] = "Native article link has no unique source region"
+            else:
+                for link in unlocalized_native_links:
+                    if link["page"] != occurrence["page"]:
+                        continue
+                    possible = _link_text_lines(page, link)
+                    if not possible or any(region["char_start"] <= len("".join(page["text"].splitlines(keepends=True)[:line]))
+                        < region["char_end"] for line in possible):
+                        localization_gaps[occurrence["occurrence_id"]] = "Calendar source has an ambiguously located native link"
+            if region is None:
+                text = occurrence.get("summary", "")
+                matches, start = [], page["text"].find(text) if text else -1
+                while start >= 0:
+                    matches.append((start, start + len(text)))
+                    start = page["text"].find(text, start + 1)
+                matching = [span for span in matches if any(item["char_start"] < span[1]
+                    and item["char_end"] > span[0] for item in native)]
+                start, end = (matching or matches or [(0, len(page["text"]))])[0]
+                if native:
+                    # Keep the original wide summary, but localize this native
+                    # observation between independent linked-title boundaries.
+                    titles = linked_title_offsets[occurrence["page"]]
+                    first, last = min(item["char_start"] for item in native), max(item["char_start"] for item in native)
+                    start = max(start, max((offset for offset in titles if offset <= first), default=start))
+                    end = min(end, min((offset for offset in titles if offset > last), default=end))
+            else:
+                start, end = region["char_start"], region["char_end"]
+            required = [item["binding_id"] for item in on_page
+                if item["char_start"] < end and item["char_end"] > start or item in native]
+            observation_bindings[occurrence["occurrence_id"]] = required
+        result.append({"schema_version": "climate-pdf-source-coverage.v1", "source_document_sha256": sha,
+            "bindings": bindings, "entries": entries, "observation_bindings": observation_bindings,
+            "localization_gaps": localization_gaps, "unlocalized_native_links": unlocalized_native_links})
+    return result
+
+
+def reconcile_source_coverage(bundle: dict[str, Any], decisions: list[dict[str, Any]]) -> None:
+    """Append source-bound judgments; one binding can describe several materials.
+
+    Several bindings can also form one material (including across pages). These
+    associations do not decide canonical Article/Dates identity or body versions.
+    """
+    coverage = {item["source_document_sha256"]: item for item in bundle["source_coverage"]}
+    for decision in decisions:
+        if not isinstance(decision, dict) or set(decision) - {
+            "source_document_sha256", "entry_key", "binding_ids", "observation_ids", "disposition",
+            "reason", "agent", "previous_revision_id", "reuse_revision_id", "supplement_text", "downstream",
+        }:
+            raise ValueError("unsupported PDF coverage decision fields")
+        decision = dict(decision)
+        source = coverage.get(decision.get("source_document_sha256"))
+        if source is None:
+            raise ValueError("coverage decision requires relocalization to this PDF source hash")
+        bindings = {item["binding_id"]: item for item in source["bindings"]}
+        ids = decision.get("binding_ids")
+        if not isinstance(ids, list) or not ids or any(not isinstance(key, str) or key not in bindings for key in ids) or len(ids) != len(set(ids)):
+            raise ValueError("coverage decision requires exact current source bindings")
+        if any(not isinstance(decision.get(key), str) or not decision[key].strip() for key in ("entry_key", "reason", "agent")):
+            raise ValueError("coverage decision requires entry_key, reason and agent")
+        if decision.get("disposition") not in {"mapped", "excluded", "gap", "pending"}:
+            raise ValueError("coverage decision has invalid disposition")
+        if decision.get("downstream") not in {None, "G4", "G8"}:
+            raise ValueError("unsupported coverage scope must be routed to G4 or G8")
+        if decision.get("downstream") == "G8" and decision["disposition"] not in {"pending", "gap"}:
+            raise ValueError("unsupported scope remains pending")
+        known_observations = source["observation_bindings"]
+        observation_ids = decision.get("observation_ids", [])
+        if not isinstance(observation_ids, list) or any(not isinstance(key, str) or key not in known_observations for key in observation_ids):
+            raise ValueError("coverage mapping references an unknown source observation")
+        if any(key in source["localization_gaps"] for key in observation_ids):
+            raise ValueError("coverage observation requires a unique native-link source region")
+        if any(not set(known_observations[key]).issubset(ids) for key in observation_ids):
+            raise ValueError("coverage mapping requires every original text/link binding of its observation")
+        if "supplement_text" in decision and decision["supplement_text"] != "".join(bindings[key]["raw_text"] for key in ids):
+            raise ValueError("supplement must retain the exact bound PDF text")
+        if not observation_ids and "supplement_text" in decision and decision["disposition"] != "excluded":
+            # No standalone supplement-candidate contract exists in this writer.
+            decision.update(disposition="pending", downstream="G8")
+        if decision["disposition"] == "mapped":
+            if not observation_ids:
+                raise ValueError("mapped coverage requires a real source-bound observation or candidate")
+            covered = {key for identity in observation_ids for key in known_observations[identity]}
+            if not set(ids).issubset(covered):
+                raise ValueError("mapped coverage contains a region without a source-bound observation")
+        entry_id = _coverage_id("pdf-entry-", [source["source_document_sha256"], decision["entry_key"]])
+        entry = next((item for item in source["entries"] if item["entry_id"] == entry_id), None)
+        revision = dict(decision, binding_ids=list(ids), observation_ids=sorted(set(observation_ids)),
+            previous_revision_id=decision.get("previous_revision_id"), reuse_revision_id=decision.get("reuse_revision_id"),
+            downstream=decision.get("downstream"))
+        revision_id = _coverage_id("pdf-coverage-review-", revision)
+        if entry and any(item["revision_id"] == revision_id for item in entry["revisions"]):
+            continue
+        previous = entry["revisions"][-1] if entry and entry["revisions"] else None
+        if decision.get("previous_revision_id") != (previous["revision_id"] if previous else None):
+            raise ValueError("coverage review changed; re-read the current source revision")
+        if decision.get("reuse_revision_id"):
+            reused = next((item for value in source["entries"] for item in value["revisions"]
+                if item["revision_id"] == decision["reuse_revision_id"]), None)
+            if reused is None or any(reused.get(key) != revision.get(key) for key in (
+                "entry_key", "binding_ids", "observation_ids", "disposition", "supplement_text", "downstream",
+            )):
+                raise ValueError("only an explicitly referenced unchanged source judgment can be reused")
+        if entry is None:
+            entry = {"entry_id": entry_id, "canonical_identity": None, "content_version_id": None,
+                "identity_status": "pending_g4", "revisions": []}
+            source["entries"].append(entry)
+        entry.update(binding_ids=list(ids), observation_ids=sorted(set(observation_ids)),
+            disposition=decision["disposition"], reason=decision["reason"])
+        entry["revisions"].append(dict(revision, revision_id=revision_id))
+
+
+def source_coverage_status(coverage: list[dict[str, Any]]) -> dict[str, Any]:
+    """G2 milestones are independent of downstream review/publication milestones."""
+    entries, pending_bindings = [], []
+    for source in coverage:
+        reviewed = [entry for entry in source["entries"] if entry["revisions"]]
+        claimed = {key for entry in reviewed for key in entry["binding_ids"]}
+        entries.extend(reviewed)
+        entries.extend(entry for entry in source["entries"] if not entry["revisions"] and not claimed.intersection(entry["binding_ids"]))
+        pending_bindings.extend(item["binding_id"] for item in source["bindings"] if item["binding_id"] not in claimed)
+    pending = [item["entry_id"] for item in entries if item["disposition"] in {"pending", "gap"}
+        or item["disposition"] == "mapped" and not item["observation_ids"]]
+    blocked = {key for item in entries if item["entry_id"] in pending for key in item["binding_ids"]}
+    localization_gaps = {key: reason for source in coverage for key, reason in source.get("localization_gaps", {}).items()}
+    unlocalized = [link["source_occurrence_id"] for source in coverage for link in source.get("unlocalized_native_links", [])]
+    return {"source_complete": not pending_bindings and not pending and not localization_gaps and not unlocalized,
+        "handoff_entry_ids": [item["entry_id"] for item in entries if item["disposition"] == "mapped"
+            and item["observation_ids"] and not blocked.intersection(item["binding_ids"])
+            and not any(key in localization_gaps for key in item["observation_ids"])],
+        "pending_entry_ids": pending, "unreviewed_binding_ids": pending_bindings,
+        "effective_entry_ids": [item["entry_id"] for item in entries],
+        "localization_gaps": localization_gaps, "unlocalized_native_link_ids": unlocalized,
+        "canonical_identity_status": "pending_g4", "registry_complete": False, "display_complete": False}
+
+
 def import_pdf_reports(inputs: Iterable[str | Path]) -> dict[str, Any]:
     """Build a normalized bundle while preserving each PDF's text and provenance."""
     documents = [_read_pdf(path) for path in _input_pdfs(inputs)]
@@ -955,6 +1288,7 @@ def import_pdf_reports(inputs: Iterable[str | Path]) -> dict[str, Any]:
             )
     documents = list(documents_by_sha.values())
     articles = _article_records(documents)
+    source_coverage = build_source_coverage(documents, articles)
     for document in documents:
         for page in document["pages"]:
             page.pop("_text_fragments", None)
@@ -974,6 +1308,7 @@ def import_pdf_reports(inputs: Iterable[str | Path]) -> dict[str, Any]:
         "documents": documents,
         "articles": articles,
         "calendar_items": calendar_items,
+        "source_coverage": source_coverage,
     }
 
 
@@ -992,26 +1327,35 @@ def _validate_output_path(output: Path | None, inputs: list[Path], registry: Pat
         return
     protected = [*inputs, *([registry] if registry is not None else [])]
     if any(_paths_alias(output, path) for path in protected):
-        raise ValueError("--output must not overwrite an input PDF or the Registry database")
+        raise ValueError("--output must not overwrite input evidence or the Registry database")
 
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(description="Extract searchable report PDFs into a provenance-preserving JSON bundle.")
     parser.add_argument("--input", action="append", required=True, help="PDF file or directory of PDFs; may be repeated")
-    parser.add_argument("--output", type=Path, help="Optional JSON output path (requires --apply)")
+    parser.add_argument("--output", type=Path, help="Export the complete verifiable JSON bundle without requiring --apply")
+    parser.add_argument("--coverage-decisions", type=Path, help="JSON list of source-bound coverage judgments")
+    parser.add_argument("--coverage-history", type=Path, help="Previous exported bundle for append-only review continuation")
     parser.add_argument("--registry-db", type=Path, help="Existing Registry SQLite database")
     parser.add_argument("--backup-dir", type=Path, help="Directory for the pre-import Registry backup")
     parser.add_argument("--apply", action="store_true", help="Persist the bundle to the Registry after creating a backup")
     args = parser.parse_args(argv)
     if args.apply and not (args.registry_db and args.backup_dir):
         parser.error("--apply requires both --registry-db and --backup-dir")
-    if not args.apply and (args.output or args.registry_db or args.backup_dir):
-        parser.error("--output, --registry-db, and --backup-dir require --apply")
+    if not args.apply and (args.registry_db or args.backup_dir):
+        parser.error("--registry-db and --backup-dir require --apply")
     try:
         input_paths = _input_pdfs(args.input)
-        _validate_output_path(args.output, input_paths, args.registry_db)
+        _validate_output_path(args.output, input_paths + [path for path in (args.coverage_history, args.coverage_decisions) if path], args.registry_db)
         bundle = import_pdf_reports(input_paths)
+        if args.coverage_history:
+            history = json.loads(args.coverage_history.read_text(encoding="utf-8"))
+            bundle["source_coverage"] = history["source_coverage"]
+            from climate_registry.pdf_intake import validate_source_coverage
+            validate_source_coverage(bundle)
+        if args.coverage_decisions:
+            reconcile_source_coverage(bundle, json.loads(args.coverage_decisions.read_text(encoding="utf-8")))
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(bundle, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1030,6 +1374,7 @@ def main(argv: list[str] | None = None) -> int:
         "calendar_items": len(bundle["calendar_items"]),
         "typesafe": bundle["typesafe"],
         "registry": registry_result,
+        "source_coverage": source_coverage_status(bundle["source_coverage"]),
     }, ensure_ascii=False))
     return 0
 

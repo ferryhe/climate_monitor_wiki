@@ -1698,6 +1698,7 @@ def _pdf_intake_preview(bundle: dict[str, Any], writable: bool, error: str | Non
             for item in bundle["calendar_items"]
         ],
         "typesafe": bundle["typesafe"],
+        "source_coverage": bundle.get("source_coverage", []),
     }
 
 
@@ -1889,7 +1890,11 @@ def console_pdf_intake_batch(batch_id: str, user: ConsolePrincipal) -> dict[str,
     if queue[0] is None:
         raise HTTPException(status_code=503, detail=queue[1])
     try:
-        return read_pdf_batch(queue[0], batch_id)
+        status = read_pdf_batch(queue[0], batch_id)
+        if status.get("imported") and status.get("registry_database") and "source_coverage" in status:
+            reader = RegistryReader(Path(status["registry_database"]), repository_root=ROOT, public=False)
+            status["source_coverage_evidence"] = reader.pdf_source_coverage(status["document_sha256"])
+        return status
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="PDF batch was not found.") from exc
     except ValueError as exc:

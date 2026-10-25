@@ -1216,6 +1216,32 @@ class RegistryReader:
             ("calendar", row[0]) for row in calendars
             if allowed_calendar_ids is None or row[0] in allowed_calendar_ids]
 
+    def pdf_source_coverage(self, document_sha256: str) -> dict[str, Any]:
+        """Read the source-review ledger through the management Registry reader."""
+        if self.public:
+            raise RegistryQueryError("source coverage is management evidence, pending downstream review")
+        if len(document_sha256) != 64 or any(char not in "0123456789abcdef" for char in document_sha256):
+            raise RegistryQueryError("invalid PDF document id")
+        from climate_monitor.pdf_intake import source_coverage_status
+        with self.connect() as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] < 26:
+                return {"history": [], "current": None}
+            rows = connection.execute("SELECT * FROM pdf_source_coverage WHERE document_sha256=? ORDER BY rowid", (document_sha256,)).fetchall()
+        current, history, entries = None, [], {}
+        for row in rows:
+            source = json.loads(row["coverage_json"])
+            history.append({"coverage_id": row["coverage_id"], "coverage": source,
+                "registry_occurrence_bindings": json.loads(row["occurrence_bindings_json"]),
+                "published_baselines": json.loads(row["published_baselines_json"]), "recorded_at": row["recorded_at"]})
+            current = dict(source)
+            for entry in source["entries"]:
+                if entry["entry_id"] not in entries or entry["revisions"]:
+                    entries[entry["entry_id"]] = entry
+        if current is not None:
+            current["entries"] = list(entries.values())
+        return {"history": history, "current": current,
+            "status": source_coverage_status([current]) if current is not None else None}
+
     @_direct_public_read
     def adopted_pdf_summaries(self):
         """Archive summaries have their own explicit adoption, independent of item gates."""

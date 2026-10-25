@@ -201,11 +201,19 @@ deployment; rebuilding or reloading is not an approval or cutover. See
 The PDF intake adapter retains the original PDF bytes, extracted report text,
 source metadata and embedded creation/modification times,
 normalizes linked articles and calendar entries, and can add them to the
-Registry without fabricating web-fetch or meeting-run records. Without
-`--apply`, the CLI prints a dry-run summary and does not write files or change
-the Registry. The Python API `climate_monitor.pdf_intake.import_pdf_reports()`
-returns the full in-memory bundle. To persist the Registry records and JSON
-bundle, create a pre-import backup and pass `--apply`:
+Registry without fabricating web-fetch or meeting-run records. With neither
+`--output` nor `--apply`, the CLI prints a count-only dry-run summary and writes
+no files. The Python API `climate_monitor.pdf_intake.import_pdf_reports()` returns
+the full in-memory bundle. To export that complete bundle, including original
+PDF bytes and source coverage, use `--output` without `--apply`; this writes only
+the JSON file, with no Registry or backup writes:
+
+```bash
+python -m climate_monitor.pdf_intake --input docs/input --output output/pdf-intake.json
+```
+
+To also persist Registry records, supply the existing database and a backup
+directory, then explicitly pass `--apply`:
 
 ```bash
 python -m climate_monitor.pdf_intake \
@@ -218,8 +226,9 @@ python -m climate_monitor.pdf_intake \
 
 Set `CLIMATE_REGISTRY_DB` to the existing external business database first;
 current writes require the explicit schema 22 migration in the
-[deployment runbook](docs/deployment.md). `--apply` is required for any CLI file
-or database write. New automated records remain candidates until T1/T10 review.
+[deployment runbook](docs/deployment.md). `--registry-db` and `--backup-dir` are
+required only for `--apply`, which creates the pre-import backup and writes the
+Registry. New automated records remain candidates until T1/T10 review.
 The adapter records the PDF hash,
 extracted page text, links, dates, summaries and TypeSafe classification
 suggestions in PDF-specific Registry tables. Re-imports deduplicate the same

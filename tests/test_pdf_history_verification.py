@@ -44,6 +44,13 @@ def legacy_pdf_history_contract(monkeypatch):
     monkeypatch.setattr(storage,"LATEST_SCHEMA_VERSION",20)
     monkeypatch.setattr(checks,"apply_migrations",migrate)
     monkeypatch.setattr(meetings,"SCHEMA_VERSION",20)
+    from climate_monitor.pdf_intake import import_pdf_reports as current_import
+    def legacy_import(inputs):
+        bundle = current_import(inputs)
+        bundle.pop("source_coverage")
+        return bundle
+    monkeypatch.setattr(sys.modules[__name__], "import_pdf_reports", legacy_import)
+    monkeypatch.setattr(api_server, "import_pdf_reports", legacy_import)
 
 
 def test_imported_pdf_history_retains_structure_original_download_and_one_copy(tmp_path, monkeypatch):
@@ -393,6 +400,56 @@ def test_public_and_runtime_pdf_passage_merge_retains_verified_information(tmp_p
     if filename != public_filename:
         assert original["summary"] not in files._merged_markdown(public_filename)
         assert other["summary"] in files._merged_markdown(public_filename)
+
+
+def test_pdf_source_handoff_retains_published_baseline_and_late_retry_keeps_human_date(tmp_path, monkeypatch):
+    # This test exercises the current schema, independently of the archive fixture.
+    monkeypatch.undo()
+    from climate_monitor.pdf_intake import import_pdf_reports
+    from climate_registry.pdf_intake import persist_pdf_intake
+    from climate_registry.read_api import RegistryReader
+    from test_owner_publication_dates import _seed
+    from test_article_content_dates import _manual
+    from test_owner_checks import _ingest
+    from reportlab.pdfgen.canvas import Canvas
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    database = _seed(tmp_path)
+    _ingest(database, tmp_path, _manual(database))
+    reader = RegistryReader(database, repository_root=tmp_path / "application")
+    before = reader.article("good")
+    source = tmp_path / "old-original-upload.pdf"
+    canvas = Canvas(str(source), invariant=1)
+    for y, text in ((760, "UPDATES"), (740, "Old original PDF title"),
+        (720, "IN WINDOW 14 SEP 2025 REPORT"), (700, "Old verbatim PDF observation, not the current article body.")):
+        canvas.drawString(50, y, text)
+    canvas.linkURL("https://example.org/good", (48, 738, 280, 755), relative=0)
+    canvas.save()
+    bundle = import_pdf_reports([source])
+    bundle["articles"][0]["type_safe_classification"] = {"provider": "typesafe", "label": "article"}
+    persist_pdf_intake(database, tmp_path / "pdf-backups", bundle)
+    management = RegistryReader(database, repository_root=tmp_path / "application", public=False)
+    history = management.pdf_source_coverage(bundle["documents"][0]["source"]["sha256"])["history"]
+    baseline = history[0]["published_baselines"][0]
+    assert baseline["status"] == "published" and baseline["read_at"] and baseline["requires_downstream_recheck"]
+    assert baseline["public_view"]["derived_display"]["manual_date_overrides"]["publication_date"] == before["manual_date_overrides"]["publication_date"]
+    assert reader.article("good")["summary"] == before["summary"]
+    _ingest(database, tmp_path, _manual(database, fields={"publication_date": "2026-10-03"}))
+    current = reader.article("good")
+    with sqlite3.connect(database) as connection:
+        body = connection.execute("SELECT current_version_id,current_content_version_id FROM articles WHERE article_id='good'").fetchone()
+        publication = connection.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()
+    connection.close()
+    persist_pdf_intake(database, tmp_path / "pdf-backups", bundle)
+    after = reader.article("good")
+    assert after["publication_date"] == "2026-10-03"
+    assert after["manual_date_overrides"] == current["manual_date_overrides"]
+    assert after["summary"] == before["summary"]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT current_version_id,current_content_version_id FROM articles WHERE article_id='good'").fetchone() == body
+        assert connection.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone() == publication
+    connection.close()
+    # The original observed baseline remains historical; downstream must re-read it.
+    assert management.pdf_source_coverage(bundle["documents"][0]["source"]["sha256"])["history"] == history
 
 
 @pytest.mark.parametrize("instant,runs", [("2026-10-06T09:00:00Z", True), ("2026-10-06T10:00:00Z", True),

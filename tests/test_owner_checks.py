@@ -186,7 +186,7 @@ def test_owner_correction_requires_distinct_new_candidate_review_and_projects_ev
         check(reader)
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT * FROM article_versions").fetchall() == original
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 25
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 26
         assert db.execute("SELECT count(*) FROM registry_reviews WHERE status='pass'").fetchone()[0] == 1
         projected = public_connection(db)
         try:
@@ -213,7 +213,7 @@ def test_native_article_report_json_roundtrip_survives_ingest_and_independent_re
     database = _database(tmp_path)
     _seed_native_article_report_context(database, tmp_path, monkeypatch)
     with sqlite3.connect(database) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 25
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 26
         current = snapshot_entity(db, "article", "good")
     assert current["report_fallbacks"]["2026-09-14"]["articles"]
     assert current["fallback_annotations"]["https://example.org/good"]["categories"] == ("Physical Risk", "Insurance Risk")
