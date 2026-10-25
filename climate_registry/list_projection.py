@@ -7,6 +7,7 @@ import sqlite3
 from climate_monitor.publisher_mapping import publisher_name
 from climate_monitor.taxonomy import load_article_taxonomy
 from .read_api import RegistryQueryError, _pagination, _pdf_article_search_text, filter_pdf_articles, validate_page, validate_report_date
+from .article_dates import CONTENT_DATE_FIELDS
 
 
 ARTICLE_FIELDS = {
@@ -14,6 +15,7 @@ ARTICLE_FIELDS = {
     "publication_date", "publication_date_evidence", "updated_date", "revision_date", "is_activity", "collected_at", "first_seen", "last_seen", "pdf_occurrence_count", "occurrence_count", "checked_source_url",
     "original_source_url", "owner_agent_verification",
 }
+ARTICLE_FIELDS |= CONTENT_DATE_FIELDS | {"summary", "content_version_id", "current_version_id", "published_candidate_sha256"}
 REPORT_FIELDS = {
     "report_id", "document_sha256", "source_kind", "report_title", "report_date", "filename",
     "source_label", "article_count", "calendar_count", "page_count", "cadence", "report_format",
@@ -169,7 +171,7 @@ class RegistryListProjection:
         total = self.connection.execute(f"SELECT COUNT(*) FROM {self.prefix}articles a WHERE " + where, params).fetchone()[0]
         column = "merged_card" if include_pdf else "core_card"
         date = (
-            "COALESCE(NULLIF(json_extract(a." + column + ", '$.publication_date'), ''), "
+            "COALESCE(NULLIF(json_extract(a." + column + ", '$.content_date'), ''), NULLIF(json_extract(a." + column + ", '$.publication_date'), ''), "
             "NULLIF(substr(json_extract(a." + column + ", '$.collected_at'), 1, 10), ''))"
         )
         order = f"{date} IS NULL, {date} DESC, a.article_id ASC"

@@ -1675,8 +1675,20 @@ function displayDateLabel(row) {
     report_date: "report date",
     topic_update_date: "topic update date",
     page_update_date: "last updated date",
+    updated_date: "source updated date",
+    revision_date: "source revision date",
+    content_version_discovery: "first observed content update",
+    collection_time: "first collection date",
   }[row.displayDateBasis] || "date basis unknown";
-  return `${row.displayDate} (${basis})`;
+  const proof = row.content_date_evidence || {};
+  const value = registryArticleDateLabel({ content_date: row.displayDate, content_date_evidence: {
+    ...proof,
+    text: proof.text || proof.date_text,
+    source_date_precision: row.content_date_precision || proof.source_date_precision || proof.date_precision,
+    date_normalization: row.content_date_normalization || proof.date_normalization,
+    authority: row.content_date_authority || proof.authority,
+  } }, "content_date");
+  return `${value} (${basis})`;
 }
 
 function renderDetail(path) {
@@ -2400,9 +2412,9 @@ function registryArticleDateLabel(article, field) {
   const date = article?.[field];
   const evidence = article?.[`${field}_evidence`];
   if (evidence?.date_normalization === "month_midpoint" && evidence.source_date_precision === "month") {
-    return `${evidence.text || date} (normalized to ${date} for sorting)`;
+    return `${evidence.text || date} (normalized to ${date} for sorting)${evidence.authority === "human_override" ? " · human override" : ""}`;
   }
-  return date;
+  return `${date}${evidence?.authority === "human_override" ? " · human override" : ""}`;
 }
 
 function registryDateEndBound(date, precision) {
@@ -2419,9 +2431,13 @@ function registryDateEndBound(date, precision) {
 function registryArticleDateSummary(article) {
   const summary = [article.publication_date
     ? `Published ${registryArticleDateLabel(article, "publication_date")}`
+    : article.first_collected_at ? `First collected ${article.first_collected_at.slice(0, 10)}`
     : article.collected_at ? `Collected ${article.collected_at.slice(0, 10)}` : "Date unknown"];
-  if (article.updated_date) summary.push(`Updated ${registryArticleDateLabel(article, "updated_date")}`);
-  if (article.revision_date) summary.push(`Version revised ${registryArticleDateLabel(article, "revision_date")}`);
+  if (article.updated_date) summary.push(`${article.content_update ? "Updated" : "Source Updated date"} ${registryArticleDateLabel(article, "updated_date")}`);
+  if (article.revision_date) summary.push(`${article.content_update ? "Version revised" : "Source Revision date"} ${registryArticleDateLabel(article, "revision_date")}`);
+  if (article.content_date && article.content_date_basis === "content_version_discovery") {
+    summary.push(`${article.content_date_label} ${article.content_date}${article.content_date_authority === "human_override" ? " · human override" : ""}`);
+  }
   return summary.join(" · ");
 }
 
@@ -2521,8 +2537,8 @@ function appendInformationCheck(container, item, concise = false) {
   const labels = { unchecked: "Pending check", accessible: "URL accessible", unavailable: "URL unavailable",
     failed: "URL check failed", partial: "Partially checked", conflict: "Conflicting information", verified: "Verified / collected" };
   container.append(registryElement("p", "registry-card__meta", [
-    item.origin === "web_collection" ? (item.pdf_observations?.length ? "Web collection · PDF import" : "Web collection") : "PDF import",
-    labels[item.access_status] || "URL unchecked", labels[item.verification_status] || "Pending check",
+    item.origin === "human_instruction" ? "Human date instruction" : item.origin === "web_collection" ? (item.pdf_observations?.length ? "Web collection · PDF import" : "Web collection") : "PDF import",
+    labels[item.access_status] || "URL unchecked", item.authority === "human_override" ? "Human override · source not verified" : labels[item.verification_status] || "Pending check",
     item.owner_agent_verification ? "Owner-agent source check · Independently reviewed public scope" : "",
     item.checked_at ? `Checked ${item.checked_at}` : "",
   ].filter(Boolean).join(" · ")));
@@ -3315,6 +3331,9 @@ async function loadRegistryArticles() {
             : `${article.publisher} · ${article.source_label || "Registry"} · ${dateSummary}${article.pdf_occurrence_count ? ` · ${article.pdf_occurrence_count} PDF ${article.pdf_occurrence_count === 1 ? "mention" : "mentions"}` : ""}`,
         ),
       );
+      if (article.content_update?.change_note) {
+        button.append(registryElement("span", "registry-card__meta", article.content_update.change_note));
+      }
       els.registryArticles.append(button);
     });
     updateRegistryPagination("articles", payload.pagination);
@@ -3654,10 +3673,10 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
       metrics.push(registryMetric("Publication date", registryArticleDateLabel(article, "publication_date")));
     }
     if (article.updated_date) {
-      metrics.push(registryMetric("Updated", registryArticleDateLabel(article, "updated_date")));
+      metrics.push(registryMetric(article.content_update ? "Updated" : "Source Updated date", registryArticleDateLabel(article, "updated_date")));
     }
     if (article.revision_date) {
-      metrics.push(registryMetric("Version revised", registryArticleDateLabel(article, "revision_date")));
+      metrics.push(registryMetric(article.content_update ? "Version revised" : "Source Revision date", registryArticleDateLabel(article, "revision_date")));
     }
     if (!article.publication_date && article.report_date) {
       metrics.push(registryMetric("Report date (publication unconfirmed)", article.report_date));
@@ -3666,6 +3685,12 @@ async function loadRegistryArticle(articleId, articleSource = "registry", fallba
       metrics.push(registryMetric("Date basis", "Unconfirmed"));
     }
     els.registryArticleMeta.append(...metrics);
+    if (article.content_date) {
+      els.registryArticleMeta.append(registryMetric(article.content_date_label || "Content date", `${article.content_date} · ${article.content_date_authority}`));
+    }
+    if (article.content_update?.change_note) {
+      els.registryArticleMeta.append(registryMetric("What changed", article.content_update.change_note));
+    }
     if (els.registryArticleInfo) els.registryArticleInfo.hidden = false;
     const summaryPresentation = registrySummaryPresentation(article);
     if (pdfSource && article.type_safe_classification?.label) {

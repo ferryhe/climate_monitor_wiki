@@ -58,20 +58,25 @@ def _plan(connection, database, kind, identity):
         "source_snapshot_sha256": digest(snapshot), "targets": snapshot["information_targets"]}
 
 
-def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False, publication_date_only=False, date_fields=None, activity_dates_only=False):
+def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False, publication_date_only=False, date_fields=None, activity_dates_only=False, human_date_override=False):
     """Read-only live binding; observations are templates, never a factual PASS."""
     database = resolve_database(database)
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as connection:
         require_publication_migration(connection)
         connection.execute("BEGIN")
         plan = _plan(connection, database, kind, identity)
+        if human_date_override and (not (date_fields or activity_dates_only) or publication_date_only or with_editorial_metadata):
+            raise ValueError("human date override requires explicitly selected article date fields")
         if sum(bool(value) for value in (publication_date_only, date_fields, activity_dates_only)) > 1:
             raise ValueError("article date scopes cannot be combined")
         if activity_dates_only:
             if with_editorial_metadata:
                 raise ValueError("activity date scope cannot include editorial metadata")
             from .owner_dates import date_plan
-            return date_plan(connection, plan, activity_dates_only=True)
+            result = date_plan(connection, plan, activity_dates_only=True)
+            if human_date_override:
+                result["manual_authorization"] = {"instruction": "", "authorized_by": "", "scope": "record"}
+            return result
         if publication_date_only:
             if with_editorial_metadata:
                 raise ValueError("publication date scope cannot include editorial metadata")
@@ -81,7 +86,10 @@ def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False,
             if with_editorial_metadata:
                 raise ValueError("selected date fields cannot include editorial metadata")
             from .owner_dates import date_plan
-            return date_plan(connection, plan, fields=date_fields)
+            result = date_plan(connection, plan, fields=date_fields)
+            if human_date_override:
+                result["manual_authorization"] = {"instruction": "", "authorized_by": "", "scope": "record"}
+            return result
     if with_editorial_metadata:
         if kind not in {"article", "pdf_article"}:
             raise ValueError("editorial metadata is available only for article sources")
@@ -159,7 +167,7 @@ def _dates(text):
     return _parse_calendar_date(value)
 
 
-def validate_observation(target, entry, *, publication_date_only=False, date_fields_only=False, activity_dates_only=False):
+def validate_observation(target, entry, *, publication_date_only=False, date_fields_only=False, activity_dates_only=False, strict_date_types=False):
     """Validate actual archived UTF-8 tool output and literal public field scope.
 
     Semantic record association is the checker's and independent reviewer's job.
@@ -210,13 +218,13 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
         if kind != "articles" or not isinstance(fields, dict) or set(fields) != allowed:
             raise ValueError("date-only scope requires exactly an article publication_date")
         proof = evidence.get("publication_date") if isinstance(evidence, dict) else None
-        if not isinstance(proof, dict) or proof.get("date_kind") not in {"updated", "published"}:
-            raise ValueError("date-only evidence must identify updated or published date")
+        if not isinstance(proof, dict) or proof.get("date_kind") not in ({"published"} if strict_date_types else {"updated", "published"}):
+            raise ValueError("publication date evidence must identify a published date")
     if date_fields_only:
         allowed = {"publication_date", "updated_date", "revision_date"}
         if kind != "articles" or not isinstance(fields, dict) or not fields or set(fields) - allowed:
             raise ValueError("date-field scope requires one or more supported article date fields")
-        expected_kinds = {"publication_date": {"published", "updated"},
+        expected_kinds = {"publication_date": {"published"} if strict_date_types else {"published", "updated"},
             "updated_date": {"updated"}, "revision_date": {"revision"}}
         if any(not isinstance(evidence.get(key), dict)
                 or evidence[key].get("date_kind") not in expected_kinds[key] for key in fields):
@@ -234,6 +242,8 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
         proof = evidence[key]
         if not isinstance(proof, dict):
             raise ValueError("field evidence must be an object")
+        if strict_date_types and key == "publication_date" and proof.get("date_kind") != "published":
+            raise ValueError("publication date evidence must identify a published date")
         excerpt = proof.get("excerpt")
         if not _nonempty(excerpt) or excerpt not in text or proof.get("value") != value or not _nonempty(proof.get("record_context")) or proof["record_context"] not in text:
             raise ValueError("public field lacks literal record-specific capture evidence: " + key)
@@ -307,7 +317,7 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
         "verification_status": "verified" if fields else "conflict" if original == "conflict" else "unchecked"}
 
 
-def validate_manifest(manifest, *, require_current_taxonomy=True):
+def validate_manifest(manifest, *, require_current_taxonomy=True, strict_date_types=False):
     from .owner_dates import DATE_CHECK_VERSION, validate_date_manifest
     if isinstance(manifest, dict) and manifest.get("schema_version") == DATE_CHECK_VERSION:
         return validate_date_manifest(manifest)
@@ -344,7 +354,7 @@ def validate_manifest(manifest, *, require_current_taxonomy=True):
         if target not in targets or key in seen:
             raise ValueError("owner check contains a duplicate or unplanned target")
         seen.add(key)
-        validate_observation(target, entry)
+        validate_observation(target, entry, strict_date_types=strict_date_types)
         if version == EDITORIAL_CHECK_VERSION:
             _validate_editorial_metadata(entry.get("editorial_metadata"), taxonomy_identity=taxonomy,
                 public_fields=entry["public_fields"], capture=entry["capture"])
@@ -448,7 +458,7 @@ def ingest_owner_check(database, manifest, *, queue_dir, backup_dir=None, apply=
             raise ValueError("owner check batch must contain 1 to 100 manifests")
         keys = set()
         for item in manifests:
-            validate_manifest(item)
+            validate_manifest(item, strict_date_types=True)
             if Path(item["plan"]["registry_database"]).resolve() != database:
                 raise ValueError("owner plan belongs to another Registry")
             if len({entry["target"]["check_kind"] for entry in item["observations"]}) != 1:
@@ -670,6 +680,7 @@ def _approve_one(connection, database, receipt, apply):
         for row in snapshot["tables"].get(prefix + "_check_attempts", []):
             packet = json.loads(row["packet_json"])
             if packet.get("schema_version") in {CHECK_VERSION, EDITORIAL_CHECK_VERSION} and row["attempt_id"] in {item["attempt_id"] for item in receipt["source_checks"]}:
+                validate_observation(packet["owner_observation"]["target"], packet["owner_observation"], strict_date_types=True)
                 baseline = packet["baseline"]["expected_state"]
                 if plan["expected_state"]["is_visible"] != baseline["is_visible"] or (not repeat and plan["expected_state"]["published_candidate_sha256"] != baseline["published_candidate_sha256"]):
                     raise ValueError("owner review publication or visibility binding changed")

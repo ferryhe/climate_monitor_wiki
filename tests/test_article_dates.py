@@ -126,7 +126,7 @@ def test_typed_update_and_revision_dates_keep_source_precision_with_collection(t
         {"kind": "page_information", "observed_at": revised["observed_at"], "evidence": revised["evidence"]},
     ], collection_times=[collected["observed_at"]])
     assert selected["updated_date"] == "2026-10-15"
-    assert selected["revision_date"] == "2018-01"
+    assert selected["revision_date"] == "2018-01-15"
     assert selected["information_date"] is None
     assert selected["collected_at"] == "2026-10-16T12:00:00Z"
 
@@ -143,7 +143,7 @@ def test_typed_publication_dates_preserve_precision_and_win_over_collection(valu
         "evidence": checked["evidence"],
     }], collection_times=["2026-10-16T12:00:00Z"])
 
-    assert selected["publication_date"] == value
+    assert selected["publication_date"] == (value + "-15" if precision == "month" else None if precision == "year" else value)
     assert selected["information_date"] is None
     assert selected["collected_at"] == "2026-10-16T12:00:00Z"
 
@@ -277,7 +277,7 @@ def test_pdf_article_typed_dates_are_staged_and_exposed_safely(tmp_path):
         with reader.connect() as connection:
             snapshot = snapshot_entity(connection, "pdf_article", "pdf-a")
         detail = reader._pdf_article_from_snapshot(snapshot)
-    assert detail["updated_date"] == "2026-10"
+    assert detail["updated_date"] == "2026-10-15"
     assert detail["revision_date"] == "2026-09-14"
     public = _pdf_dto(detail)
     revised_public = next(item for item in public["date_observations"] if item["observed_at"] == "2026-09-14")
@@ -322,9 +322,9 @@ def test_linked_pdf_dates_flow_to_the_core_article_detail_and_card(tmp_path):
         detail = reader._article_from_snapshot(snapshot)
         card = reader._article_card_from_snapshot(snapshot)
     for payload in (detail, card):
-        assert payload["publication_date"] == "2026-09"
+        assert payload["publication_date"] == "2026-09-15"
         assert payload["updated_date"] == "2026-10-15"
-        assert payload["revision_date"] == "2026-08"
+        assert payload["revision_date"] == "2026-08-15"
 
 
 def test_pdf_date_import_stages_core_owner_when_core_article_id_is_null(tmp_path):
@@ -367,7 +367,7 @@ def test_independently_reviewed_typed_dates_survive_public_approval(tmp_path):
 
     reader = RegistryReader(database, repository_root=tmp_path / "application")
     detail = reader.article("article-a")
-    assert detail["publication_date"] == "2026-09"
+    assert detail["publication_date"] == "2026-09-15"
     assert detail["updated_date"] == "2026-10-15"
     assert detail.get("revision_date") is None
     assert {item["evidence"]["date_kind"] for item in detail["date_observations"]} == {"published", "updated"}

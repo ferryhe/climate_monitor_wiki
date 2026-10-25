@@ -192,11 +192,18 @@ def _pdf_article_search_text(item: dict[str, Any]) -> str:
 
 
 def sort_articles_by_publication_date(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Sort by approved publication day, then recorded collection day, with stable ties."""
+    """Sort each reader's complete approved content version, with stable ties."""
     items.sort(key=lambda item: item["article_id"])
-    items.sort(key=lambda item: (item.get("publication_date") or
-        (item.get("collected_at") or "")[:10]), reverse=True)
-    items.sort(key=lambda item: not (item.get("publication_date") or item.get("collected_at")))
+    from .article_dates import content_date_projection, validate_exported_content_update
+    for item in items:
+        try:
+            validate_exported_content_update(item)
+        except ValueError as exc:
+            raise RegistryContractError("invalid approved article content update") from exc
+        if "content_date_basis" not in item:
+            item.update(content_date_projection(item))
+    items.sort(key=lambda item: item.get("content_date") or "", reverse=True)
+    items.sort(key=lambda item: not item.get("content_date"))
     return items
 
 
@@ -1719,6 +1726,8 @@ class RegistryReader:
                             key = field + suffix
                             if detail.get(key) is not None:
                                 item[key] = detail[key]
+                    from .article_dates import CONTENT_DATE_FIELDS
+                    item.update({key: detail[key] for key in CONTENT_DATE_FIELDS if key in detail})
                     items.append(item)
             sort_articles_by_publication_date(items)
             offset = (page - 1) * page_size
@@ -1891,15 +1900,23 @@ class RegistryReader:
     @staticmethod
     def _apply_reviewed_date_fields(value, snapshot):
         display = (snapshot.get("derived_display") or snapshot.get("static_payload") or {}) if snapshot else {}
-        for field in ("publication_date", "updated_date", "revision_date"):
+        if snapshot and snapshot.get("static_payload") and display.get("content_update"):
+            from .article_dates import validate_exported_content_update
+            bundle = validate_exported_content_update(display)
+            for field, proof in bundle["date_evidence"].items():
+                value[field] = proof["value"]
+                value[field + "_evidence"] = proof
+        for field in ("publication_date", "updated_date", "revision_date", "activity_dates"):
             verification = display.get(field + "_verification", {})
-            if (verification.get("review_scope") not in {"article_publication_date_only", "article_date_fields_only"}
+            if (verification.get("review_scope") not in {"article_publication_date_only", "article_date_fields_only", "article_activity_dates_only"}
                     or display.get(field) is None):
                 continue
             value[field] = display[field]
             if display.get(field + "_evidence") is not None:
                 value[field + "_evidence"] = display[field + "_evidence"]
             value[field + "_verification"] = verification
+            if field == "activity_dates":
+                value["is_activity"] = bool(value[field])
 
     @staticmethod
     def _pdf_occurrences(
@@ -2016,6 +2033,28 @@ class RegistryReader:
                     "evidence": evidence, "knowledge_id": supplements[-1]["knowledge_id"]})
         if snapshot is not None:
             display = approved_display(snapshot)
+            date_snapshot = snapshot
+            if snapshot["entity_kind"] == "article" and not core_article_id:
+                from .article_dates import CONTENT_DATE_FIELDS
+                display = {key: value for key, value in display.items()
+                    if key not in CONTENT_DATE_FIELDS | {"publication_date", "publication_date_evidence", "updated_date", "revision_date"}
+                    and (key != "summary" or not display.get("content_update"))}
+                date_snapshot = {"tables": {"pdf_article_date_observations": [item for item in
+                    snapshot.get("tables", {}).get("pdf_article_date_observations", []) if item.get("article_id") == row["article_id"]]}}
+            if core_article_id and snapshot["entity_kind"] == "article" and len(snapshot.get("tables", {}).get("articles", [])) == 1:
+                core_article_id = snapshot["tables"]["articles"][0]["article_id"]
+            core = next((item for item in snapshot.get("tables", {}).get("articles", [])
+                if item.get("article_id") == core_article_id), {})
+            dates = RegistryReader._article_date_fields_for_snapshot(date_snapshot, article_id=core_article_id or row["article_id"],
+                current_version_id=core.get("current_content_version_id"))
+            payload["collected_at"] = dates["collected_at"]
+            if dates["first_collected_at"] is not None:
+                payload["first_collected_at"] = dates["first_collected_at"]
+            for field in ("publication_date", "updated_date", "revision_date"):
+                if dates.get(field) is not None:
+                    payload[field] = dates[field]
+                    if dates.get(field + "_evidence"):
+                        payload[field + "_evidence"] = dates[field + "_evidence"]
             payload.update(display)
             payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or digest(snapshot)
             payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"],
@@ -2024,6 +2063,9 @@ class RegistryReader:
             display = occurrences[0].get("verified_primary_display") or {}
             payload.update(metadata_only=True, summary=None, title=display.get("title") or payload.get("title"),
                 verified_primary_reference=occurrences[0].get("verified_primary_reference"))
+        if snapshot is not None:
+            from .article_dates import content_date_projection
+            payload.update(content_date_projection(payload, date_snapshot))
         return payload
 
     @_direct_public_read
@@ -2054,11 +2096,7 @@ class RegistryReader:
                 if not include_linked and original["canonical_url"] in core_urls:
                     continue
                 item = deepcopy(original)
-                imported_at = [row.get("imported_at") for row in item.get("occurrences", []) if row.get("imported_at")]
-                if imported_at:
-                    item["collected_at"] = max(imported_at, key=self._timestamp_key)
-                else:
-                    item.setdefault("collected_at", None)
+                item.setdefault("collected_at", None)
                 items.append(item)
             return items
 
@@ -2503,7 +2541,8 @@ class RegistryReader:
         for row in values:
             try:
                 evidence = json.loads(row["evidence_json"])
-                if (not isinstance(evidence, dict) or evidence.get("review_status") != "pass"
+                if (not isinstance(evidence, dict) or not (evidence.get("review_status") == "pass"
+                        or evidence.get("authority") == "human_override" and evidence.get("authorization_id") and evidence.get("instruction_reference"))
                         or not all(isinstance(evidence.get(key), str) and evidence[key].strip()
                             for key in ("source_url", "target_url", "field", "text"))
                         or not isinstance(row.get("owner_url"), str)
@@ -2523,14 +2562,17 @@ class RegistryReader:
             event["date_evidence_text"] = event["raw_date"]
             event["date_evidence_url"] = evidence.get("source_url")
             existing = events.get(event["event_id"])
-            if existing is None:
+            if existing is None or event.get("authority") == "human_override":
                 events[event["event_id"]] = event
             else:
                 existing["source_urls"] = list(dict.fromkeys(existing["source_urls"] + event["source_urls"]))
                 existing["source_count"] = len(existing["source_urls"])
                 existing["source_article_ids"] = list(dict.fromkeys(
                     existing.get("source_article_ids", [existing["source_article_id"]]) + [row["article_id"]]))
-        return list(events.values())
+        manual_keys = {event.get("replaces_event_id") for event in events.values()
+            if event.get("authority") == "human_override"}
+        return [event for event in events.values() if event.get("authority") == "human_override"
+            or event["event_id"] not in manual_keys]
 
     def _merge_reviewed_article_activity_items(self, collected: dict[str, dict[str, Any]], base_date: str) -> None:
         from .range_reports import _calendar_end_date
@@ -3074,13 +3116,16 @@ class RegistryReader:
             try:
                 observations = payload.get("date_observations", [])
                 payload.update(select_article_dates(observations,
-                    collection_times=[payload.get("collected_at"), (payload.get("available_content") or {}).get("collected_at")],
+                    collection_times=[payload.get("first_collected_at"), payload.get("collected_at"),
+                        (payload.get("available_content") or {}).get("collected_at")],
                     acquisition_observations=payload.get("acquisition_observations", [])))
                 payload["activity_dates"] = select_article_events(observations)
                 payload["is_activity"] = bool(payload["activity_dates"])
             except ArticleDateImportError as exc:
                 raise RegistryContractError("invalid article date evidence") from exc
             self._apply_reviewed_date_fields(payload, snapshot)
+            from .article_dates import content_date_projection
+            payload.update(content_date_projection(payload, snapshot))
             return payload
 
         tables = snapshot.get("tables", {})
@@ -3293,6 +3338,8 @@ class RegistryReader:
         pdf_occurrences = self._pdf_occurrences_from_snapshot(snapshot)
         if pdf_occurrences:
             payload["pdf_occurrences"] = pdf_occurrences
+        from .article_dates import content_date_projection
+        payload.update(content_date_projection(payload, snapshot))
         return payload
 
     def _article_card_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -3309,6 +3356,8 @@ class RegistryReader:
             payload.setdefault("published_candidate_sha256", self._published_candidate_sha(snapshot))
             payload["record_reference"] = {"entity_kind": "article", "entity_id": snapshot["entity_id"],
                 "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
+            from .article_dates import content_date_projection
+            payload.update(content_date_projection(payload, snapshot))
             return payload
         tables = snapshot.get("tables", {})
         article = next((row for row in tables.get("articles", []) if row.get("article_id") == snapshot["entity_id"]), None)
@@ -3392,15 +3441,18 @@ class RegistryReader:
         payload.update(self._article_date_fields_for_snapshot(snapshot, article_id=article_id,
             current_version_id=article.get("current_content_version_id")))
         payload.update(approved_display(snapshot))
+        from .article_dates import content_date_projection
+        payload.update(content_date_projection(payload, snapshot))
         return payload
 
-    def _article_date_fields_for_snapshot(self, snapshot, *, article_id=None,
+    @staticmethod
+    def _article_date_fields_for_snapshot(snapshot, *, article_id=None,
         current_version_id=None, payload=None):
         """Select the same approved date fields as detail reads without rendering content."""
         if payload is not None:
             observations = payload.get("date_observations", [])
             acquisitions = payload.get("acquisition_observations", [])
-            collection_times = [payload.get("collected_at"),
+            collection_times = [payload.get("first_collected_at"), payload.get("collected_at"),
                 (payload.get("available_content") or {}).get("collected_at")]
         else:
             tables = snapshot.get("tables", {})
@@ -3465,8 +3517,7 @@ class RegistryReader:
             raise RegistryContractError("invalid PDF article classification data") from exc
         host = (urlsplit(canonical_url).hostname or "unknown").removeprefix("www.").lower()
         dates = [item.get("report_date") for item in occurrences if item.get("report_date")]
-        collected_at = max((item.get("imported_at") for item in occurrences if item.get("imported_at")),
-            key=self._timestamp_key, default=None)
+        collected_at = None  # PDF import time is a system operation, not article collection evidence.
         payload = {"article_id": row["article_id"], "canonical_url": canonical_url,
             "title": row.get("title") or occurrences[0].get("anchor_text") or occurrences[0].get("title"),
             "summary": next((item.get("display_summary") or item.get("summary") for item in occurrences if not item.get("metadata_only")), None), "source": host, "publisher": host,
@@ -3484,7 +3535,25 @@ class RegistryReader:
                 manual_enrichment={**pending, "generator_kind": "manual", "evidence": evidence,
                     "knowledge_id": supplements[-1]["knowledge_id"]})
         display = approved_display(snapshot)
+        date_snapshot = snapshot
+        if snapshot["entity_kind"] == "article" and not row.get("core_article_id"):
+            from .article_dates import CONTENT_DATE_FIELDS
+            display = {key: value for key, value in display.items()
+                if key not in CONTENT_DATE_FIELDS | {"publication_date", "publication_date_evidence", "updated_date", "revision_date"}
+                and (key != "summary" or not display.get("content_update"))}
+            date_snapshot = {"tables": {"pdf_article_date_observations": [item for item in
+                tables.get("pdf_article_date_observations", []) if item.get("article_id") == row["article_id"]]}}
         payload.update(display)
+        core_article_id = (tables["articles"][0]["article_id"] if row.get("core_article_id") and snapshot["entity_kind"] == "article"
+            and len(tables.get("articles", [])) == 1 else row.get("core_article_id"))
+        if core_article_id:
+            core = next((item for item in tables.get("articles", [])
+                if item.get("article_id") == core_article_id), {})
+            dates = self._article_date_fields_for_snapshot(snapshot, article_id=core_article_id,
+                current_version_id=core.get("current_content_version_id"))
+            for field in ("collected_at", "first_collected_at"):
+                if dates[field] is not None:
+                    payload[field] = dates[field]
         date_observations = []
         for item in tables.get("pdf_article_date_observations", []):
             try:
@@ -3504,9 +3573,14 @@ class RegistryReader:
             except ArticleDateImportError as exc:
                 raise RegistryContractError("invalid PDF article date observation data") from exc
             payload["date_observations"] = date_observations
+            for field in ("collected_at", "first_collected_at"):
+                if selected_dates[field] is not None:
+                    payload[field] = selected_dates[field]
             for field in ("publication_date", "updated_date", "revision_date"):
                 if selected_dates.get(field) is not None:
                     payload[field] = selected_dates[field]
+                    if selected_dates.get(field + "_evidence"):
+                        payload[field + "_evidence"] = selected_dates[field + "_evidence"]
             from .article_dates import select_article_events
             payload["activity_dates"] = select_article_events(date_observations)
             payload["is_activity"] = bool(payload["activity_dates"])
@@ -3515,12 +3589,20 @@ class RegistryReader:
             display = next((item.get("verified_primary_display") for item in occurrences if item.get("verified_primary_display")), {})
             payload.update(title=display.get("title") or "Verified article reference", summary=None, metadata_only=True,
                 verified_primary_reference=reference)
-        self._apply_reviewed_date_fields(payload, snapshot)
+        if core_article_id and not payload.get("metadata_only"):
+            from .article_dates import validate_content_update
+            bundle = validate_content_update(snapshot)
+            for field, proof in (bundle or {}).get("date_evidence", {}).items():
+                payload[field] = proof["value"]
+                payload[field + "_evidence"] = proof
+        self._apply_reviewed_date_fields(payload, date_snapshot)
         payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or self._published_candidate_sha(snapshot)
         reference_id = (tables["articles"][0]["article_id"]
             if snapshot["entity_kind"] == "article" else row["article_id"])
         payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": reference_id,
             "candidate_sha256": payload["published_candidate_sha256"], "version_id": None}
+        from .article_dates import content_date_projection
+        payload.update(content_date_projection(payload, date_snapshot))
         return payload
 
     def _acquisition_snapshot_projection(self, snapshot, article_id, current_version_id, display_policy):
@@ -3649,6 +3731,11 @@ class RegistryReader:
             item = next((item for item in self.static_snapshot.get("articles", []) if item["article_id"] == article_id), None)
             if item is None:
                 raise RegistryNotFoundError("article not found")
+            from .article_dates import validate_exported_content_update
+            try:
+                validate_exported_content_update(item)
+            except ValueError as exc:
+                raise RegistryContractError("invalid static article content update") from exc
             return dict(item)
         if getattr(self, "_snapshot_direct", False):
             with self.connect() as connection:
@@ -3672,13 +3759,16 @@ class RegistryReader:
                     try:
                         observations = payload.get("date_observations", [])
                         payload.update(select_article_dates(observations,
-                            collection_times=[payload.get("collected_at"),
+                            collection_times=[payload.get("first_collected_at"), payload.get("collected_at"),
                                 (payload.get("available_content") or {}).get("collected_at")],
                             acquisition_observations=payload.get("acquisition_observations", [])))
                         payload["activity_dates"] = select_article_events(observations)
                         payload["is_activity"] = bool(payload["activity_dates"])
                     except ArticleDateImportError as exc:
                         raise RegistryContractError("invalid article date evidence") from exc
+                    self._apply_reviewed_date_fields(payload, snapshot)
+                    from .article_dates import content_date_projection
+                    payload.update(content_date_projection(payload, snapshot))
                     return payload
             article = connection.execute(
                 """
@@ -4029,4 +4119,7 @@ class RegistryReader:
                         "selection_basis": "approved_git_wiki", "static_snapshot_sha256": snapshot["git_wiki"]["sha256"]}
         if pdf_occurrences:
             payload["pdf_occurrences"] = pdf_occurrences
+        if self.public:
+            from .article_dates import content_date_projection
+            payload.update(content_date_projection(payload, snapshot))
         return payload

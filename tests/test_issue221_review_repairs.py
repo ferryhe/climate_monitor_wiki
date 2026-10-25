@@ -313,12 +313,14 @@ def test_pdf_approved_occurrences_keep_legacy_latest_order_in_http_search(tmp_pa
     payload = response.json()
     assert payload["pagination"]["total"] == 1
     assert payload["items"][0]["article_id"] == "pdf-one"
-    assert "summary" not in payload["items"][0] and "latest_occurrence" not in payload["items"][0]
     client = TestClient(api_server.app)
+    detail = client.get("/api/registry/pdf-intake/articles/pdf-one").json()
+    assert payload["items"][0]["summary"] == detail["summary"]
+    assert payload["items"][0]["content_date"] is None and payload["items"][0]["content_date_basis"] == "unknown"
+    assert "latest_occurrence" not in payload["items"][0]
     categories = client.get("/api/registry/article-categories").json()["items"]
     item = next(item for item in categories if item["article_id"] == "pdf-one")
     assert "summary" not in item and "latest_occurrence" not in item
-    detail = client.get("/api/registry/pdf-intake/articles/pdf-one").json()
     assert detail["occurrences"][0]["occurrence_id"] == "newer-occ"
     assert detail["published_candidate_sha256"] == item["published_candidate_sha256"]
 
@@ -920,6 +922,8 @@ def test_unlinked_same_url_pdf_remains_in_collection_and_wiki_sources(tmp_path, 
 
     collection = reader.pdf_articles_all(include_linked=False)
     assert [item["article_id"] for item in collection] == ["pdf-a"]
+    assert reader.pdf_article("pdf-a")["core_article_id"] is None
+    assert collection[0]["core_article_id"] is None
     pages = public_wiki_pages(database)
     assert "registry-source-observation-occurrence.md" in pages
     assert "registry-source-observations.md" in pages

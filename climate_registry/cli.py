@@ -161,6 +161,8 @@ def _parser() -> argparse.ArgumentParser:
                 help="Inherit approved article facts and selectively review one date field; repeat for multiple fields")
             owner.add_argument("--activity-dates-only", action="store_true",
                 help="Inherit approved article facts and independently review source-backed activity dates")
+            owner.add_argument("--human-date-override", action="store_true",
+                help="Use explicit human date authorization with --date-field or the dedicated --activity-dates-only scope")
         elif name == "plan-owner-review":
             owner.add_argument("--candidate-sha256", required=True)
         else:
@@ -168,6 +170,8 @@ def _parser() -> argparse.ArgumentParser:
             owner.add_argument("--queue-dir", required=True, type=Path)
             owner.add_argument("--backup-dir", type=Path)
             owner.add_argument("--apply", action="store_true")
+    date_inventory = subcommands.add_parser("inventory-date-overlays")
+    date_inventory.add_argument("--database", required=True, type=Path)
     return parser
 
 
@@ -204,14 +208,17 @@ def _weekly_failure(args: argparse.Namespace, *, kind: str, message: str) -> dic
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
-        if args.command in {"plan-owner-check", "plan-owner-review", "ingest-owner-check", "approve-owner-check"}:
+        if args.command == "inventory-date-overlays":
+            from .owner_dates import inventory_date_overlays
+            result = inventory_date_overlays(args.database)
+        elif args.command in {"plan-owner-check", "plan-owner-review", "ingest-owner-check", "approve-owner-check"}:
             from .owner_checks import plan_owner_check, owner_review_template, ingest_owner_check, approve_owner_check
             try:
                 if args.command == "plan-owner-check":
                     result = plan_owner_check(args.database, args.kind, args.id,
                         with_editorial_metadata=args.with_editorial_metadata,
                         publication_date_only=args.publication_date_only, date_fields=args.date_field,
-                        activity_dates_only=args.activity_dates_only)
+                        activity_dates_only=args.activity_dates_only, human_date_override=args.human_date_override)
                 elif args.command == "plan-owner-review":
                     result = owner_review_template(args.database, args.candidate_sha256)
                 else:

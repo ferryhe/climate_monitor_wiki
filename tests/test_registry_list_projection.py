@@ -254,15 +254,15 @@ def test_static_export_article_api_orders_before_core_and_merged_pagination(monk
     assert [item["article_id"] for item in reader.articles(page=1, page_size=4)["items"]] == [
         "newer", "collected", "older", "unknown"]
     pdf_cards = reader.pdf_articles(page=1, page_size=10)["items"]
-    assert [item["article_id"] for item in pdf_cards] == ["pdf-collected", "pdf-published"]
-    assert pdf_cards[0]["collected_at"] == "2026-10-20T12:00:00Z"
-    assert reader.pdf_article("pdf-collected")["collected_at"] == pdf_cards[0]["collected_at"]
+    assert [item["article_id"] for item in pdf_cards] == ["pdf-published", "pdf-collected"]
+    assert pdf_cards[1]["collected_at"] is None
+    assert reader.pdf_article("pdf-collected").get("collected_at") is None
     monkeypatch.setattr(api_server, "_registry_reader", lambda: reader)
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
 
     for include_pdf, expected in (
         (False, ["newer", "collected", "older", "unknown"]),
-        (True, ["pdf-collected", "pdf-published", "newer", "collected", "older", "unknown"]),
+        (True, ["pdf-published", "newer", "collected", "older", "pdf-collected", "unknown"]),
     ):
         pages = [api_server.registry_articles(page=str(page), page_size="1", include_pdf=include_pdf)
             for page in range(1, len(expected) + 1)]
