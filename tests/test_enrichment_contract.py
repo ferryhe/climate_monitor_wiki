@@ -164,7 +164,7 @@ def test_full_g3_review_inherits_only_approved_owner_editorial_fields(tmp_path, 
     a = _ingest(database, tmp_path, manifest)["candidate_sha256"]
     receipt = _review(database, tmp_path, a)
     receipt["reviewed_at"] = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
-    approve_owner_check(database, receipt, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, receipt, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     before = _reader(database, tmp_path).article("good")
     assert before["categories"] == ["Physical Risk"]
     assert before["keywords"] == ["flood", "exposure", "study region"]
@@ -389,7 +389,7 @@ def test_unchanged_g3_content_accepts_real_owner_source_recheck(tmp_path, monkey
     assert contract["scope"] == "owner_source_fields." + ("v1" if source == "v1" else "v2")
     receipt = _review(database, tmp_path, sha)
     receipt["reviewed_at"] = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
-    approve_owner_check(database, receipt, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, receipt, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     for direct in (True, False):
         with reader.public_snapshot(direct=direct):
             actual = reader.article("good")
@@ -492,7 +492,7 @@ def test_owner_recheck_date_category_and_refetch_keep_separate_approvals(tmp_pat
         sha = _ingest(database, tmp_path, manifest)["candidate_sha256"]
         receipt = _review(database, tmp_path, sha)
         receipt["reviewed_at"] = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
-        approve_owner_check(database, receipt, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        approve_owner_check(database, receipt, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
         assert reader.article("good")["summary"] == summary
         if index == 0:
             _ingest(database, tmp_path, _manual(database, fields={"publication_date": "2026-10-22"}))
@@ -701,7 +701,7 @@ def test_native_g3_editorial_approval_survives_owner_source_only_hold_with_exact
             assert authority["native_taxonomy_bindings"] == original_contract["native_taxonomy_bindings"]
         receipt = _review(database, tmp_path, sha)
         receipt["reviewed_at"] = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
-        assert approve_owner_check(database, receipt, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+        assert approve_owner_check(database, receipt, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
         expected_categories, expected_keywords = before["categories"], before["keywords"]
         for direct in (True, False):
             with reader.public_snapshot(direct=direct):
@@ -762,7 +762,7 @@ def test_unreviewed_source_report_taxonomy_is_cleared_by_owner_hold(tmp_path, mo
     held = _ingest(database, tmp_path, manifest)["candidate_sha256"]
     receipt = _review(database, tmp_path, held)
     receipt["reviewed_at"] = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
-    approve_owner_check(database, receipt, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, receipt, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     for direct in (True, False):
         with reader.public_snapshot(direct=direct):
             actual = reader.article("good")
@@ -788,7 +788,7 @@ def _approve_same_body_owner(database, tmp_path, sha):
     from datetime import datetime, timedelta, timezone
     receipt = _review(database, tmp_path, sha)
     receipt["reviewed_at"] = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
-    assert approve_owner_check(database, receipt, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+    assert approve_owner_check(database, receipt, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
 
 
 @pytest.mark.parametrize("kind", ["initial", "complete"])
@@ -953,7 +953,7 @@ def test_g3_approved_editorial_and_human_dates_survive_configured_taxonomy_chang
     old = _ingest(database, tmp_path, manifest)["candidate_sha256"]
     receipt = _review(database, tmp_path, old)
     receipt["reviewed_at"] = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
-    approve_owner_check(database, receipt, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, receipt, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     _ingest(database, tmp_path, _manual(database, fields={"publication_date": "2026-10-22"}))
     before = _reader(database, tmp_path).article("good")
     _, snapshot = _stage_update(database)
@@ -1397,7 +1397,7 @@ def test_owner_proposed_publication_date_sort_matches_exact_approved_version(tmp
     assert proposed["content_date_evidence"]["text"] == "2026-10-09"
     review = _review(database, tmp_path, sha)
     review["reviewed_at"] = "2099-10-15T23:01:00Z"
-    approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     actual = _reader(database, tmp_path).article("good")
     for field in ("content_date", "content_date_basis", "content_date_authority", "content_date_precision"):
         assert proposed[field] == actual[field]

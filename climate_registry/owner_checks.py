@@ -173,6 +173,8 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
     Semantic record association is the checker's and independent reviewer's job.
     Literal excerpts prevent a new assertion from masquerading as captured text.
     """
+    if not isinstance(target, dict) or not isinstance(target.get("fields"), dict):
+        raise ValueError("owner target fields must be an object")
     if entry.get("target") != target:
         raise ValueError("owner target differs from the exact frozen source binding")
     capture = entry["capture"]
@@ -199,6 +201,8 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
             raise ValueError("date-only capture needs literal same-article source identity for independent review")
     fields = entry["public_fields"]
     evidence = entry["field_evidence"]
+    if not isinstance(evidence, dict):
+        raise ValueError("owner field_evidence must be an object")
     comparisons = entry["original_comparisons"]
     if not isinstance(comparisons, dict) or any(not isinstance(value, dict) for value in comparisons.values()):
         raise ValueError("original field dispositions must be objects")
@@ -319,10 +323,12 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
 
 def validate_manifest(manifest, *, require_current_taxonomy=True, strict_date_types=False):
     from .owner_dates import DATE_CHECK_VERSION, validate_date_manifest
-    if isinstance(manifest, dict) and manifest.get("schema_version") == DATE_CHECK_VERSION:
-        return validate_date_manifest(manifest)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("plan"), dict):
         raise ValueError("owner check and plan must be objects")
+    if not all(_nonempty(manifest["plan"].get(key)) for key in ("entity_kind", "entity_id")):
+        raise ValueError("owner plan entity_kind and entity_id must be nonempty strings")
+    if manifest.get("schema_version") == DATE_CHECK_VERSION:
+        return validate_date_manifest(manifest)
     version = manifest.get("schema_version")
     if version not in {CHECK_VERSION, EDITORIAL_CHECK_VERSION} or manifest["plan"].get("schema_version") != PLAN_VERSION:
         raise ValueError("unsupported owner-agent check format")
@@ -340,6 +346,8 @@ def validate_manifest(manifest, *, require_current_taxonomy=True, strict_date_ty
     for key in ("authorization_reference", "audit_reference"):
         if not _nonempty(manifest.get(key)):
             raise ValueError("owner authorization and audit references are required")
+    if not isinstance(manifest.get("checked_at"), str):
+        raise ValueError("owner checked_at must be a timestamp string")
     timestamp(manifest["checked_at"])
     entries = manifest["observations"]
     if not isinstance(entries, list) or not entries:
@@ -448,6 +456,43 @@ def _ingest_one(connection, database, manifest, apply):
     sha = stage_snapshot(connection, snapshot_entity(connection, plan["entity_kind"], plan["entity_id"]))
     return {"status": "staged", "run_id": run_id, "candidate_sha256": sha,
         "review_schema_version": review_version, "fact_publication": "awaiting_independent_owner_review"}
+
+def prepare_owner_checks(database, manifests, *, root):
+    """Read-only preflight into complete ready/held/invalid owner manifests."""
+    from .item_lifecycle import partition_items, record_items
+    database = resolve_database(database)
+    if not isinstance(manifests, list) or not manifests or len(manifests) > 100:
+        raise RegistryInputError("owner preparation needs 1 to 100 complete manifests")
+    valid, invalid = [], []
+    keys = [(item["plan"].get("entity_kind"), item["plan"].get("entity_id")) for item in manifests
+        if isinstance(item, dict) and isinstance(item.get("plan"), dict)]
+    with _transaction(database, root, False) as connection:
+        for index, manifest in enumerate(manifests):
+            try:
+                validate_manifest(manifest, strict_date_types=True)
+                plan = manifest["plan"]
+                key = (plan["entity_kind"], plan["entity_id"])
+                if Path(plan["registry_database"]).resolve() != database or keys.count(key) != 1:
+                    raise ValueError("owner preparation requires unique canonical entities in this Registry")
+                if len({entry["target"]["check_kind"] for entry in manifest["observations"]}) != 1:
+                    raise ValueError("one owner check run must use one information kind")
+                _ingest_one(connection, database, manifest, False)
+                valid.append((index, manifest, plan["expected_state"]["latest_candidate_sha256"]))
+            except (ValueError, KeyError, TypeError, RegistryInputError) as exc:
+                plan = manifest.get("plan") if isinstance(manifest, dict) else None
+                plan = plan if isinstance(plan, dict) else {}
+                identity = {key: plan.get(key) if _nonempty(plan.get(key)) else None for key in ("entity_kind", "entity_id")}
+                invalid.append({"index": index, **identity,
+                    "classification": "invalid", "reason": str(exc)})
+        partition = partition_items(connection, root, [sha for _, manifest, sha in valid if not manifest.get("manual_authorization")],
+            require_information=False, invalid_entities=invalid)
+    record_items(root, database, [sha for _, _, sha in valid])
+    ready = {item["candidate_sha256"] for item in partition["ready"]}
+    return {"ready": [manifest for _, manifest, sha in valid if sha in ready or manifest.get("manual_authorization")],
+        "held": partition["held"], "invalid": [*invalid, *partition["invalid"]],
+        "lifecycle_root": str(Path(root).resolve()), "registry_database": str(database),
+        "execution": "not_dispatched"}
+
 
 def ingest_owner_check(database, manifest, *, queue_dir, backup_dir=None, apply=False):
     """One object or a bounded list: preflight all, one backup, atomic writes."""
@@ -725,7 +770,43 @@ def _approve_one(connection, database, receipt, apply):
     return {"status": "approved", "review_id": review_id, "candidate_sha256": sha}
 
 
-def approve_owner_check(database, receipt, *, queue_dir, backup_dir=None, apply=False):
+def _require_owner_lifecycle(connection, database, receipts, lifecycle_root):
+    from .item_lifecycle import _load, _snapshot, _key, _reference, partition_items
+    from .owner_dates import OVERLAY
+    ordinary = {}
+    for receipt in receipts:
+        sha = receipt["candidate_sha256"]
+        snapshot = _snapshot(connection, sha)
+        if not snapshot.get(OVERLAY, {}).get("manifest", {}).get("manual_authorization"):
+            ordinary[sha] = snapshot
+    if not ordinary:
+        return  # G1 validates its exact human instruction and inherited non-date scope.
+    if lifecycle_root is None:
+        raise ValueError("owner approval requires an explicit lifecycle_root")
+    root = Path(lifecycle_root).resolve()
+    state = _load(root, database, require_existing=True)
+    for sha, snapshot in ordinary.items():
+        # Ingest creates a new SHA; preparation registered this check's exact input.
+        references = {sha}
+        if OVERLAY in snapshot:
+            references.add(snapshot[OVERLAY]["manifest"]["plan"]["expected_state"]["latest_candidate_sha256"])
+        else:
+            attempts = {binding["attempt_id"] for binding in review_bindings(snapshot)}
+            for prefix in ("article", "meeting"):
+                for row in snapshot["tables"].get(prefix + "_check_attempts", []):
+                    if row["attempt_id"] in attempts:
+                        references.add(json.loads(row["packet_json"])["baseline"]["expected_state"]["latest_candidate_sha256"])
+        retained = state["items"].get(_key(database, snapshot["entity_kind"], snapshot["entity_id"]), {}).get("candidates", {})
+        if not any(reference in retained and retained[reference]["bindings"] == _reference(_snapshot(connection, reference))
+                for reference in references):
+            raise ValueError("selected exact owner candidate/input scope is absent from lifecycle state")
+    partition = partition_items(connection, root, ordinary, require_information=False)
+    held = [item for item in partition["held"] if item.get("reason") != "date_scope_uses_existing_owner_date_writer"]
+    if held or partition["invalid"]:
+        raise ValueError("selected complete owner scope or required dependency is held or invalid")
+
+
+def approve_owner_check(database, receipt, *, queue_dir, lifecycle_root=None, backup_dir=None, apply=False):
     try:
         database = resolve_database(database)
         receipts = receipt if isinstance(receipt, list) else [receipt]
@@ -734,6 +815,7 @@ def approve_owner_check(database, receipt, *, queue_dir, backup_dir=None, apply=
         if apply and backup_dir is None:
             raise ValueError("apply requires a backup directory")
         with _transaction(database, queue_dir, apply) as connection:
+            _require_owner_lifecycle(connection, database, receipts, lifecycle_root)
             results = [_approve_one(connection, database, item, False) for item in receipts]
             backup = None
             if apply and any(item["status"] != "no-op" for item in results):
@@ -742,5 +824,5 @@ def approve_owner_check(database, receipt, *, queue_dir, backup_dir=None, apply=
             if isinstance(receipt, list):
                 return {"status": "approved" if apply else "dry_run", "results": results, "backup_path": backup}
             return {**results[0], "backup_path": backup}
-    except (ValueError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, OSError, UnicodeError) as exc:
         raise RegistryInputError(str(exc)) from exc

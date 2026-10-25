@@ -303,7 +303,9 @@ def test_t10_partial_approval_correction_and_writer_request(tmp_path,monkeypatch
     ready = WebIngestPipeline(queue, database, runtime, _ack(queue),
         repository_root=tmp_path / "application").process(request["batch_id"])
     assert ready["chat_ready"], ready["error"]
-    revised = review.correct_candidate(run / "acquisition-review", "a-1", {"summary": "Derived correction"}, reason="Actual evidence correction")
+    _native(native, "cron_actual_correction_author")
+    revised = review.correct_candidate(run / "acquisition-review", "a-1", {"summary": "Derived correction"}, reason="Actual evidence correction",
+        session_id="cron_actual_correction_author", execution_id="correction", hermes_database=native)
     assert set(revised["item_reviews"]) == {"b-1"}
     request2 = review.activate_approved(run / "acquisition-review", queue_dir=queue, database=database, repository_root=tmp_path / "application")
     assert {i["acquisition_item_id"] for i in request2["web_items"]} == {"b-1"}

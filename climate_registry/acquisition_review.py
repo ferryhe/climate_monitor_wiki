@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -31,6 +32,45 @@ def timestamp(value: str) -> datetime:
 
 def now_stamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _negative_review_receipts(root, database):
+    """Read durable source failures, even after ready-set refresh drops work labels."""
+    failures = {}
+    for path in Path(root).glob("*/acquisition-review/receipts/*.json"):
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        reviews = receipt.get("conclusions", {}).get("items", {})
+        if not any(review.get("status") in {"needs_correction", "rejected"} for review in reviews.values()):
+            continue
+        claim = receipt["claim"]
+        packet_sha = claim["packet_sha256"]
+        packet = json.loads((path.parent.parent / "packets" / (packet_sha + ".json")).read_text(encoding="utf-8"))
+        if (digest(receipt) != path.stem or digest(packet) != packet_sha
+                or packet.get("schema_version") != "climate-acquisition-review.v1"
+                or claim.get("session_source") != "cron" or not claim.get("session_id", "").startswith("cron_")
+                or not all(claim.get(key) for key in ("token", "execution_id", "reviewer", "hermes_database"))
+                or not receipt.get("events_sha256")):
+            raise ValueError("acquisition failure receipt differs from its exact native claim/packet")
+        if Path(packet["registry_database"]).resolve() != Path(database).resolve():
+            continue
+        for candidate in packet["candidates"]:
+            item = candidate["identity"]
+            review = reviews.get(item["acquisition_item_id"], {})
+            sha = candidate.get("registry_candidate_sha256")
+            if not sha or review.get("status") not in {"needs_correction", "rejected"}:
+                continue
+            if (review.get("candidate_sha256") != candidate["candidate_sha256"]
+                    or candidate["candidate_sha256"] != digest([item, sha]) or not review.get("reason")):
+                raise ValueError("acquisition failure differs from its exact candidate identity")
+            failures.setdefault(sha, []).append({**review, "registry_candidate_sha256": sha,
+                "acquisition_item_id": item["acquisition_item_id"], "article_id": item["article_id"],
+                "raw_candidate_sha256": digest(item), "claim": claim,
+                "run_id": packet["run_id"], "batch_id": packet["batch_id"], "task_version": packet["task_version"],
+                "receipt_path": str(path.resolve()), "receipt_sha256": path.stem,
+                "recorded_at": receipt["recorded_at"]})
+    for reviews in failures.values():
+        reviews.sort(key=lambda review: (timestamp(review["recorded_at"]), review["receipt_sha256"]))
+    return failures
 
 
 def knowledge_fields(fields):
@@ -238,6 +278,11 @@ def claim_review(root: Path, packet: dict, *, session_id: str, execution_id: str
             import sqlite3
             with sqlite3.connect(f"{database.as_uri()}?mode=ro",uri=True) as connection:
                 require_review_information(connection,packet)
+                if not packet["candidates"] and packet.get("excluded_candidate_sha256s"):
+                    raise ValueError("candidate awaits completed source-bound T1 information improvement or an actual business reply")
+                from .item_lifecycle import require_item_readiness
+                lifecycle_root = Path(root).parent if packet.get("schema_version") == "registry-final-review.v1" else Path(root).parents[1]
+                require_item_readiness(connection, lifecycle_root, packet, session_id=session_id)
     session, _ = native_events(hermes_database, session_id)
     if not execution_id or not reviewer or timeout_seconds < 1:
         raise ValueError("native execution identity and positive timeout are required")
@@ -295,10 +340,11 @@ def queue_acquisition_review(binding_path: Path, binding: dict, payload: dict, *
             loaded = {"items": [], "searches": []}
         registry_candidates = {}
         from .information_checks import _writer
-        from .publication import enabled, stage_entities
+        from .publication import enabled, _prepare_entities
+        preparation = {"ready": [], "held": [], "invalid": [], "staged": []}
         with _writer(database) as connection:
             if enabled(connection):
-                stage_entities(connection)
+                preparation = _prepare_entities(connection, root.parents[1])
                 registry_candidates = {row[0]: (row[1], row[2]) for row in connection.execute("""SELECT p.entity_id,c.candidate_sha256,c.snapshot_json
                     FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.latest_candidate_sha256
                     WHERE p.entity_kind='article'""")}
@@ -318,12 +364,16 @@ def queue_acquisition_review(binding_path: Path, binding: dict, payload: dict, *
                     candidates[-1].update(registry_candidate_sha256=sha, registry_snapshot_path=str(registry_path.resolve()),
                         registry_readable_text=freeze_readable(registry_path.with_suffix(".readable.json"), text),
                         candidate_sha256=digest([item, sha]))
+        ready = {item["candidate_sha256"] for item in preparation["ready"]}
+        excluded = [candidate for candidate in candidates if candidate.get("registry_candidate_sha256") not in ready]
+        candidates = [candidate for candidate in candidates if candidate not in excluded]
         packet = {"schema_version": "climate-acquisition-review.v1", "run_id": binding["run_id"],
             "registry_database": binding["registry_database"],
             "batch_id": binding["acquisition_batch_id"], "attempt": binding["attempt"],
             "task_version": binding["task_version"], "binding_sha256": digest(binding),
             "source_keys": binding["source_keys"], "rotation": binding.get("rotation"),
             "candidates": candidates, "source_outcomes": payload.get("source_outcomes", []),
+            "excluded_candidate_sha256s": [candidate.get("registry_candidate_sha256") or candidate["candidate_sha256"] for candidate in excluded],
             "searches": loaded["searches"], "error": error,
             "attempt_result_path": str(Path(binding_path).parent / f"attempt-{binding['attempt']}-result.json"),
             "tool_provenance": str(Path(binding_path).parent / f"attempt-{binding['attempt']}-tool-provenance.json")}
@@ -336,10 +386,10 @@ def queue_acquisition_review(binding_path: Path, binding: dict, payload: dict, *
             "failure_reason": error or "source outcome missing", "attempts": []} for key in binding["source_keys"] if key not in present_sources]
         state_path = root / "state.json"
         state = json.loads(state_path.read_text()) if state_path.exists() else {"item_reviews": {}, "history": []}
-        previous_candidates = {c["identity"]["acquisition_item_id"]: c for c in state.get("packet", {}).get("candidates", [])}
+        previous_candidates = {c["identity"]["acquisition_item_id"]: c for c in state.get("packet", {}).get("candidates", []) + state.get("excluded_candidates", [])}
         if state.get("packet", {}).get("parent_context"):
             packet["parent_context"] = state["packet"]["parent_context"]
-        for candidate in candidates:
+        for candidate in candidates + excluded:
             old = previous_candidates.get(candidate["identity"]["acquisition_item_id"])
             if old and digest(old["identity"]) == digest(candidate["identity"]) and old.get("display"):
                 snapshot = json.loads(Path(candidate["registry_snapshot_path"]).read_text()) if candidate.get("registry_snapshot_path") else {}
@@ -355,17 +405,22 @@ def queue_acquisition_review(binding_path: Path, binding: dict, payload: dict, *
         current = {row["identity"]["acquisition_item_id"]: row["candidate_sha256"] for row in candidates}
         state["item_reviews"] = {key: review for key, review in state["item_reviews"].items()
             if current.get(key) == review["candidate_sha256"]}
-        state.update(packet_sha256=revision, packet=packet, status="pending_review")
+        state.update(packet_sha256=revision, packet=packet, status="pending_review", excluded_candidates=excluded,
+            preparation={key: value for key, value in preparation.items() if key != "staged"})
         atomic_write_json(state_path, state)
+        from .item_lifecycle import record_items
+        record_items(root.parents[1], database, preparation["staged"])
         return state
 
 
 
-def refresh_acquisition_reviews(database: Path, runs_root: Path):
+def refresh_acquisition_reviews(database: Path, runs_root: Path, *, review_root=None):
     """Re-freeze completed original source packets after T1; retain every receipt."""
-    from .publication import resolve_database, require_review_information
+    from .publication import resolve_database
     from .acquisition import load_acquisition_batch
     for state_path in sorted(Path(runs_root).glob("*/acquisition-review/state.json")):
+        if review_root is not None and state_path.parent != Path(review_root):
+            continue
         state = json.loads(state_path.read_text())
         packet = state["packet"]
         if Path(packet["registry_database"]).resolve()!=database:
@@ -386,6 +441,8 @@ def refresh_acquisition_reviews(database: Path, runs_root: Path):
         binding = json.loads(binding_path.read_text())
         if digest(binding)!=packet["binding_sha256"]:
             raise ValueError("source review binding changed")
+        if not Path(packet["attempt_result_path"]).is_file():
+            continue
         attempt = json.loads(Path(packet["attempt_result_path"]).read_text())
         runtime_path = root.parent / "runtime.json"
         runtime = json.loads(runtime_path.read_text()) if runtime_path.exists() else {}
@@ -398,41 +455,79 @@ def refresh_acquisition_reviews(database: Path, runs_root: Path):
             raise ValueError("source review payload changed")
         with sqlite3.connect(f"{database.as_uri()}?mode=ro",uri=True) as connection:
             current = dict(connection.execute("SELECT entity_id,latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article'"))
-            refreshed = {**packet,"candidates":[{**item,"registry_candidate_sha256":current.get(item["identity"]["article_id"])} for item in packet["candidates"]]}
-            try:
-                require_review_information(connection,refreshed)
-            except ValueError:
-                continue
-        if any(old.get("registry_candidate_sha256")!=new.get("registry_candidate_sha256") for old,new in zip(packet["candidates"],refreshed["candidates"])):
+            original = packet["candidates"] + state.get("excluded_candidates", [])
+            refreshed = {**packet,"candidates":[{**item,"registry_candidate_sha256":current.get(item["identity"]["article_id"])} for item in original]}
+            from .item_lifecycle import partition_items
+            shas = [item["registry_candidate_sha256"] for item in refreshed["candidates"] if item.get("registry_candidate_sha256")]
+            ready = {item["candidate_sha256"] for item in partition_items(connection, root.parents[1], shas)["ready"]}
+            prior_ready = {item.get("registry_candidate_sha256") for item in packet["candidates"]}
+        if ready != prior_ready or any(old.get("registry_candidate_sha256")!=new.get("registry_candidate_sha256") for old,new in zip(original,refreshed["candidates"])):
             queue_acquisition_review(binding_path,binding,payload,error=packet.get("error"))
 
 
-def correct_candidate(root: Path, item_id: str, changes: dict, *, reason: str):
+def correct_candidate(root: Path, item_id: str, changes: dict, *, reason: str,
+        session_id=None, execution_id=None, hermes_database=None):
     """A display correction retains raw acquisition evidence and sibling approvals."""
     root = Path(root)
     if not reason or not changes or set(changes) - {"title", "summary"} or any(not isinstance(v, str) or not v.strip() for v in changes.values()):
         raise ValueError("only nonempty derived title/summary corrections are supported")
+    from .publication import resolve_database
+    state = json.loads((root / "state.json").read_text())
+    resolve_database(frozen=state["packet"]["registry_database"])
+    if not session_id or not execution_id or not hermes_database:
+        raise ValueError("correction requires explicit native session, execution and Hermes database identity")
+    if os.environ.get("HERMES_SESSION_ID") and os.environ["HERMES_SESSION_ID"] != session_id:
+        raise ValueError("correction session does not match the current native context")
+    try:
+        native_events(hermes_database, session_id)
+    except sqlite3.Error as exc:
+        raise ValueError("correction requires a readable native Hermes identity database") from exc
+    author = {"session_id": session_id, "execution_id": execution_id,
+        "hermes_database": str(Path(hermes_database).resolve())}
     with exclusive_lock(root, "review"):
         state = json.loads((root / "state.json").read_text())
-        from .publication import resolve_database
         database = resolve_database(frozen=state["packet"]["registry_database"])
-        candidate = next((c for c in state["packet"]["candidates"] if c["identity"]["acquisition_item_id"] == item_id), None)
+        candidate = next((c for c in state["packet"]["candidates"] + state.get("excluded_candidates", [])
+            if c["identity"]["acquisition_item_id"] == item_id), None)
         if not candidate:
             raise ValueError("candidate is not in this review packet")
         candidate["display"] = {**candidate.get("display", {}), **changes}
         candidate["revision"] = candidate.get("revision", 1) + 1
         candidate["corrected_at"] = now_stamp()
+        claim_path = root / "claim.json"
+        claim = json.loads(claim_path.read_text()) if claim_path.exists() else None
         if candidate.get("registry_candidate_sha256"):
             from .publication import snapshot_entity, stage_snapshot
             from .information_checks import _writer
             with _writer(database) as connection:
                 item = candidate["identity"]
+                snapshot = snapshot_entity(connection, "article", item["article_id"])
+                from .read_api import select_snapshot_article_content
+                article = next((row for row in snapshot["tables"]["articles"] if row["article_id"] == item["article_id"]), {})
+                selected, body = select_snapshot_article_content(snapshot, item["article_id"], article.get("current_content_version_id"))
+                scope = ("acquisition_item_id", "batch_id", "article_id", "fetch_id", "content_version_id", "selection_status",
+                    "discovery_kind", "discovery_ref")
+                retained = next((row for row in snapshot["tables"].get("acquisition_items", [])
+                    if row["acquisition_item_id"] == item_id), {})
+                if (snapshot["entity_id"] != item["article_id"] or article.get("canonical_url") != item["canonical_url"]
+                        or item["batch_id"] != state["packet"]["batch_id"] or item["selection_status"] != "selected"
+                        or any(retained.get(key) != item.get(key) for key in scope)
+                        or article.get("current_content_version_id") not in {None, item["content_version_id"]}
+                        or selected.get("content_version_id") != item["content_version_id"] or not body
+                        or body["content_sha256"] != item["content_sha256"] or body["markdown_content"] != item["markdown_content"]):
+                    raise ValueError("correction scope/body is stale; reconcile the retained acquisition item")
                 fields = {field: item.get(field) for field in ("title", "summary", "publication_date")}
                 fields["content"] = item.get("markdown_content") or ""
                 fields.update(candidate["display"])
-                record_knowledge(connection, kind="article", entity_id=item["article_id"], source_kind=item["discovery_kind"],
-                    source_ref=item_id, fields=fields, evidence={"correction_reason": reason, "content_sha256": item["content_sha256"]},
+                correction_context = {**author, "item_id": item_id,
+                    "content_version_id": item["content_version_id"], "display": candidate["display"]}
+                knowledge_id = record_knowledge(connection, kind="article", entity_id=item["article_id"], source_kind=item["discovery_kind"],
+                    source_ref=item_id, fields=fields, evidence={"correction_reason": reason, "content_sha256": item["content_sha256"],
+                        "correction_context": correction_context},
                     recorded_at=candidate["corrected_at"])
+                recorded = connection.execute("SELECT evidence_json FROM knowledge_versions WHERE knowledge_id=?", (knowledge_id,)).fetchone()
+                if not recorded or json.loads(recorded[0]).get("correction_context") != correction_context:
+                    raise ValueError("correction has no exact actual author binding; supply a distinct correction")
                 snapshot = snapshot_entity(connection, "article", item["article_id"])
                 snapshot["derived_display"] = candidate["display"]
                 sha = stage_snapshot(connection, snapshot)
@@ -444,12 +539,13 @@ def correct_candidate(root: Path, item_id: str, changes: dict, *, reason: str):
             candidate["candidate_sha256"] = digest([candidate["identity"], sha])
         else:
             candidate["candidate_sha256"] = digest([candidate["identity"], candidate["display"]])
+        state["packet"]["excluded_candidate_sha256s"] = [item.get("registry_candidate_sha256") or item["candidate_sha256"]
+            for item in state.get("excluded_candidates", [])]
         state["item_reviews"].pop(item_id, None)
         state["history"].append({"status": "candidate_corrected", "item_id": item_id, "reason": reason,
-            "revision": candidate["revision"], "candidate_sha256": candidate["candidate_sha256"]})
-        if (root / "claim.json").exists():
-            claim = json.loads((root / "claim.json").read_text())
-            state["packet"]["parent_context"] = claim["session_id"]
+            "revision": candidate["revision"], "candidate_sha256": candidate["candidate_sha256"], "correction_context": author})
+        state["packet"]["parent_context"] = session_id
+        if claim:
             atomic_write_json(root / "claim.json", {**claim, "released_at": now_stamp()})
         state.update(packet_sha256=digest(state["packet"]), status="pending_review")
         atomic_write_json(root / "packets" / (state["packet_sha256"] + ".json"), state["packet"])
@@ -465,6 +561,9 @@ def review_acquisition(root: Path, token: str, conclusions: dict, *, now=None):
         from .publication import resolve_database
         database = resolve_database(frozen=packet["registry_database"])
         claim, events = validate_claim(root, packet, token, now=now)
+        from .item_lifecycle import require_no_disputes
+        with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as connection:
+            require_no_disputes(connection, root.parents[1], packet, session_id=claim["session_id"])
         inspections, proposal_evidence = [], []
         reviews = conclusions.get("items", {})
         for candidate in packet["candidates"]:
@@ -491,7 +590,8 @@ def review_acquisition(root: Path, token: str, conclusions: dict, *, now=None):
                     from .information_checks import _writer
                     from .publication import _approve, stage_entities, resolve_database
                     with _writer(database) as connection:
-                        stage_entities(connection)
+                        stage_entities(connection, entities={("article", item["article_id"])})
+                        require_no_disputes(connection, root.parents[1], packet, session_id=claim["session_id"])
                         receipt = {"claim": claim, "conclusion": review, "inspection": registry_inspected, "events_sha256": digest(events)}
                         try:
                             _approve(connection, candidate["registry_candidate_sha256"], receipt)
@@ -549,7 +649,11 @@ def review_acquisition(root: Path, token: str, conclusions: dict, *, now=None):
         incomplete = any(c["identity"]["acquisition_item_id"] not in state["item_reviews"] for c in packet["candidates"])
         incomplete |= any(key not in merged_sources for key in packet["source_keys"])
         state.update(sources=merged_sources, proposals=proposals, status="pending_review" if incomplete else "reviewed_partial")
-        atomic_write_json(root / "receipts" / (digest(receipt) + ".json"), receipt)
+        # The final Registry writer checks these facts under the same database lock.
+        # Publish the immutable receipt before mutable work state or claim release.
+        from .persistent import _exclusive_database_lock
+        with _exclusive_database_lock(database):
+            atomic_write_json(root / "receipts" / (digest(receipt) + ".json"), receipt)
         atomic_write_json(root / "state.json", state)
         atomic_write_json(root / "claim.json", {**claim, "released_at": now_stamp()})
         return state
@@ -557,6 +661,9 @@ def review_acquisition(root: Path, token: str, conclusions: dict, *, now=None):
 
 def claim_acquisition(root: Path, **context):
     root = Path(root)
+    state = json.loads((root / "state.json").read_text())
+    from .publication import resolve_database
+    refresh_acquisition_reviews(resolve_database(frozen=state["packet"]["registry_database"]), root.parents[1], review_root=root)
     with exclusive_lock(root, "review"):
         state = json.loads((root / "state.json").read_text())
         if state["status"] not in {"pending_review", "reviewed_partial", "recovering", "reviewing"}:
@@ -568,6 +675,8 @@ def claim_acquisition(root: Path, **context):
         runtime = json.loads(runtime_path.read_text()) if runtime_path.exists() else {}
         if attempt.get("run_id") != state["packet"]["run_id"] or attempt.get("attempt") != state["packet"]["attempt"] or not attempt.get("finished_at") or runtime.get("state") in {"running", "launching"}:
             raise ValueError("an acquiring/live batch cannot be reviewed")
+        if not state["packet"]["candidates"] and state.get("excluded_candidates"):
+            raise ValueError("candidate awaits completed source-bound T1 information improvement or an actual business reply")
         claim = claim_review(root, state["packet"], **context)
         state.update(status="reviewing", claim=claim)
         atomic_write_json(root / "state.json", state)

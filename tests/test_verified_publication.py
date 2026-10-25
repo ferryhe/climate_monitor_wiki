@@ -184,10 +184,14 @@ def test_t10_peek_emits_report_without_claiming_review(tmp_path, capsys):
     database = _database(tmp_path)
     _approve_all(database)
     from scripts.review_pipeline import main
+    registry_before = database.read_bytes()
     assert main(['peek', '--kind', 'acquisition', '--root', str(tmp_path/'runs'), '--database', str(database)]) == 0
     result = json.loads(capsys.readouterr().out)
     assert not result['wakeAgent']
     assert result['verification_report']['status'] == 'written'
+    assert database.read_bytes() == registry_before
+    assert not list((tmp_path/'runs').rglob('state.json'))
+    assert not list((tmp_path/'runs').rglob('packet.json'))
     human = Path(result['verification_report']['human_report_path']).read_text(encoding='utf-8')
     assert human.startswith('# T10 verification and publication inventory')
     assert not any('\u4e00' <= char <= '\u9fff' for char in human)

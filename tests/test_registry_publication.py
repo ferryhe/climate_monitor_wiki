@@ -4007,7 +4007,14 @@ def test_terminal_partial_t1_is_per_item_and_running_missing_or_stale_evidence_w
     statuses={item["entity_id"]:"pass" if item["entity_id"]=="pdf-one" else "needs_correction" for item in packet["candidates"]}
     _approve_native_packet(database,root,tmp_path/"hermes.sqlite3","cron_terminal_partial",statuses=statuses)
     assert _reader(database,tmp_path).pdf_articles_all()==[]  # A T10 PASS with failed T1 remains hidden.
-    assert len(prepare_review(database,root)["candidates"])==1
+    assert prepare_review(database,root)["candidates"]==[]
+    from climate_registry.item_lifecycle import item_status
+    rejected = next(item["candidate_sha256"] for item in packet["candidates"] if item["entity_id"]=="pdf-two")
+    held, = item_status(root.parent,database,candidate_sha256s=[rejected])["held"]
+    assert held["candidate_sha256"]==rejected and held["stage"]=="needs_correction" and held["next_owner"]=="author"
+    assert held["reviews"][-1]["status"]=="needs_correction"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='pdf_article' AND entity_id='pdf-two'").fetchone()[0] is None
 
 
 def test_storage_only_21_to_22_preserves_pdf_rows_packets_and_every_public_pointer(tmp_path):
@@ -4161,6 +4168,8 @@ def test_actual_source_queue_waits_for_t1_and_refreezes_only_the_same_original_b
     atomic_write_json(run/"attempt-1-result.json",{"run_id":"source-run","attempt":1,"finished_at":"2026-09-30T12:05:00Z"})
     state=queue_acquisition_review(run/"binding.json",binding,payload);review=run/"acquisition-review"
     old=state["packet"];old_sha=state["packet_sha256"]
+    old_candidates=state["excluded_candidates"]
+    assert old["candidates"]==[] and len(old_candidates)==1
     before={str(path):path.read_bytes() for path in run.rglob("*") if path.is_file()};raw=database.read_bytes()
     assert pending("acquisition",runs) is None
     with pytest.raises(ValueError,match="completed source-bound T1"):
@@ -4172,8 +4181,8 @@ def test_actual_source_queue_waits_for_t1_and_refreezes_only_the_same_original_b
     current=json.loads((review/"state.json").read_text())
     assert current["packet_sha256"]!=old_sha
     assert current["packet"]["binding_sha256"]==old["binding_sha256"]==digest(binding)
-    assert current["packet"]["candidates"][0]["identity"]==old["candidates"][0]["identity"]
-    assert current["packet"]["candidates"][0]["registry_candidate_sha256"]!=old["candidates"][0]["registry_candidate_sha256"]
+    assert current["packet"]["candidates"][0]["identity"]==old_candidates[0]["identity"]
+    assert current["packet"]["candidates"][0]["registry_candidate_sha256"]!=old_candidates[0]["registry_candidate_sha256"]
     assert (review/"packets"/(old_sha+".json")).read_bytes()==before[str(review/"packets"/(old_sha+".json"))]
     assert (run/"binding.json").read_bytes()==before[str(run/"binding.json")]
     assert current["history"]==state["history"] and not (review/"claim.json").exists()

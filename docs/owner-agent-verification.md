@@ -111,9 +111,18 @@ pass`, and a useful `reason`. Keep its `source_checks` exact. Review is
 of the old candidate does not approve the new one.
 
 ```sh
-python -m climate_registry approve-owner-check --database /data/registry.sqlite3 --queue-dir /data/intake --input reviews.json
-python -m climate_registry approve-owner-check --database /data/registry.sqlite3 --queue-dir /data/intake --input reviews.json --backup-dir /data/backups --apply
+python scripts/review_pipeline.py prepare-owner --kind acquisition --root /data/review-runs --database /data/registry.sqlite3 --result checks.json > prepared.json
+python -m climate_registry approve-owner-check --database /data/registry.sqlite3 --lifecycle-root /data/review-runs --queue-dir /data/intake --input reviews.json
+python -m climate_registry approve-owner-check --database /data/registry.sqlite3 --lifecycle-root /data/review-runs --queue-dir /data/intake --input reviews.json --backup-dir /data/backups --apply
 ```
+
+Prepare before ingesting the selected `ready` manifests. Carry its normalized
+`lifecycle_root` and `registry_database` into approval; they are execution context,
+not new fields in the manifests or review receipts. Approval requires the actual
+readable, Registry-matched lifecycle ledger and exact selected candidate/input
+scope. A missing or invalid ledger fails before backup or publication. It rechecks
+the whole selected list and its required dependencies inside the existing writer
+transaction, so a later unresolved dispute retains the prior public version.
 
 The wrapper verifies the current live candidate, source state, evidence bindings,
 independent identities, supported public scope, and then uses the existing exact

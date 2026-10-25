@@ -549,20 +549,14 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, en
     return sha
 
 
-def stage_entities(connection, *, article_ids=None, pdf_article_ids=None, annotations=None, source_dir=None):
-    if not enabled(connection):
-        return []
-    staged = []
-    report_cache = {}
-    information_groups = _information_groups(connection)
-    from .annotations import load_article_annotations
-    if annotations is None:
-        annotations = load_article_annotations(Path(os.getenv("ARTICLE_METADATA_DIR") or Path(__file__).resolve().parents[1] / "article_metadata"))
+def _entity_ids(connection, *, article_ids=None, pdf_article_ids=None, entities=None):
     for kind, table, column in (("article", "articles", "article_id"),
         ("pdf_article", "pdf_intake_articles", "article_id"), ("meeting", "climate_events", "event_id"),
         ("pdf_meeting", "pdf_intake_calendar_items", "event_id")):
         for (entity_id,) in connection.execute(f"SELECT DISTINCT {column} FROM {table} ORDER BY {column}").fetchall():
             if canonical_entity(connection, kind, entity_id) != (kind, entity_id):
+                continue
+            if entities is not None and (kind, entity_id) not in entities:
                 continue
             if article_ids is not None or pdf_article_ids is not None:
                 if kind == "article" and article_ids is not None:
@@ -573,8 +567,45 @@ def stage_entities(connection, *, article_ids=None, pdf_article_ids=None, annota
                         continue
                 else:
                     continue
-            staged.append(stage_snapshot(connection, snapshot_entity(connection, kind, entity_id, annotations=annotations,source_dir=source_dir,report_cache=report_cache,information_groups=information_groups)))
+            yield kind, entity_id
+
+
+def stage_entities(connection, *, article_ids=None, pdf_article_ids=None, annotations=None, source_dir=None, entities=None):
+    if not enabled(connection):
+        return []
+    staged = []
+    report_cache = {}
+    information_groups = _information_groups(connection)
+    from .annotations import load_article_annotations
+    if annotations is None:
+        annotations = load_article_annotations(Path(os.getenv("ARTICLE_METADATA_DIR") or Path(__file__).resolve().parents[1] / "article_metadata"))
+    for kind, entity_id in _entity_ids(connection, article_ids=article_ids, pdf_article_ids=pdf_article_ids, entities=entities):
+        staged.append(stage_snapshot(connection, snapshot_entity(connection, kind, entity_id, annotations=annotations,source_dir=source_dir,report_cache=report_cache,information_groups=information_groups)))
     return staged
+
+
+def _prepare_entities(connection, root):
+    """Isolate a whole failed staging operation before freezing a ready packet."""
+    from .annotations import load_article_annotations
+    from .item_lifecycle import partition_items
+    from .errors import RegistryInputError
+    if not enabled(connection):
+        return {"ready": [], "held": [], "invalid": [], "staged": []}
+    annotations = load_article_annotations(Path(os.getenv("ARTICLE_METADATA_DIR") or Path(__file__).resolve().parents[1] / "article_metadata"))
+    groups, cache, staged, invalid = _information_groups(connection), {}, [], []
+    for kind, identity in _entity_ids(connection):
+        connection.execute("SAVEPOINT prepare_item")
+        try:
+            snapshot = snapshot_entity(connection, kind, identity, annotations=annotations, report_cache=cache, information_groups=groups)
+            staged.append(stage_snapshot(connection, snapshot))
+        except (ValueError, KeyError, TypeError, sqlite3.IntegrityError, RegistryInputError) as exc:
+            connection.execute("ROLLBACK TO prepare_item")
+            invalid.append({"entity_kind": kind, "entity_id": identity, "classification": "invalid", "reason": str(exc)})
+        finally:
+            connection.execute("RELEASE prepare_item")
+    partition = partition_items(connection, root, staged, invalid_entities=invalid)
+    partition["invalid"].extend(invalid)
+    return {**partition, "staged": staged}
 
 
 def information_ready(connection, snapshot, *, information_groups=None):
@@ -855,14 +886,14 @@ def prepare_review(database, root):
             resolve_database(database,frozen=packet["registry_database"])
             return packet  # The native owner finishes its exact immutable packet.
     with _writer(database) as connection:
-        stage_entities(connection)
-        groups = _information_groups(connection)
+        preparation = _prepare_entities(connection, root.parent)
+        ready = {item["candidate_sha256"] for item in preparation["ready"] if item.get("stage") != "approved"}
         candidates = []
         for row in connection.execute("""SELECT c.* FROM registry_publication p JOIN registry_candidates c
             ON c.candidate_sha256=p.latest_candidate_sha256
             WHERE p.published_candidate_sha256 IS NOT p.latest_candidate_sha256"""):
             snapshot = json.loads(row[3])
-            if not information_ready(connection,snapshot,information_groups=groups):
+            if row[0] not in ready:
                 continue
             path = root / "evidence" / (row[0] + ".json")
             atomic_write_json(path, snapshot)
@@ -874,9 +905,24 @@ def prepare_review(database, root):
     packet = {"schema_version": "registry-final-review.v1", "registry_database": str(database), "run_id": "registry-review", "candidates": candidates}
     atomic_write_json(root / "packets" / (digest(packet)+".json"),packet)
     atomic_write_json(root / "packet.json", packet)
+    from .item_lifecycle import record_items
+    record_items(root.parent, database, preparation["staged"])
+    atomic_write_json(root / "preparation.json", {key: value for key, value in preparation.items() if key != "staged"})
     from .acquisition_review import refresh_acquisition_reviews
     refresh_acquisition_reviews(database,root.parent)
     return packet
+
+
+def claim_registry_review(root, **context):
+    """Freeze ready work only at actual ownership, under the short review lock."""
+    from climate_delivery.io import transaction_lock
+    from .acquisition_review import claim_review
+    root = Path(root)
+    with transaction_lock(root, "review"):
+        previous = json.loads((root / "packet.json").read_text(encoding="utf-8"))
+        packet = prepare_review(resolve_database(frozen=previous["registry_database"]), root)
+        claim = claim_review(root, packet, **context)
+        return {**claim, "packet": packet}
 
 
 def review_candidates(root, token, conclusions):
@@ -888,7 +934,9 @@ def review_candidates(root, token, conclusions):
     claim, events = validate_claim(root, packet, token)
     outcomes = []
     with _writer(resolve_database(frozen=packet["registry_database"])) as connection:
-        stage_entities(connection)
+        stage_entities(connection, entities={(item["entity_kind"], item["entity_id"]) for item in packet["candidates"]})
+        from .item_lifecycle import require_no_disputes
+        require_no_disputes(connection, root.parent, packet, session_id=claim["session_id"])
         groups = _information_groups(connection)
         for item in packet["candidates"]:
             sha = item["candidate_sha256"]

@@ -52,6 +52,8 @@ def _ingest(database, tmp_path, manifest):
 
 
 def _review(database, tmp_path, sha):
+    from climate_registry.item_lifecycle import record_items
+    record_items(tmp_path / "runs", database, [sha])
     review = owner_review_template(database, sha)
     review.update(actor={"id": "independent-reviewer", "task_id": "separate-review-task"},
         authorization_reference="owner-message-actual-scope", audit_reference="audit/independent-report",
@@ -167,8 +169,8 @@ def test_owner_correction_requires_distinct_new_candidate_review_and_projects_ev
     review = _review(database, tmp_path, result["candidate_sha256"])
     bad = deepcopy(review); bad["actor"] = manifest["actor"]
     with pytest.raises(RegistryInputError, match="independent"):
-        approve_owner_check(database, bad, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
-    approved = approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        approve_owner_check(database, bad, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approved = approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     assert approved["status"] == "approved"
     def check(current):
         article = current.article("good")
@@ -230,9 +232,9 @@ def test_native_article_report_json_roundtrip_survives_ingest_and_independent_re
 
     # The reviewer identity and receipt content are test fixtures, bound to the actual candidate template.
     review = _review(database, tmp_path, staged["candidate_sha256"])
-    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue")["status"] == "dry_run"
-    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
-    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "no-op"
+    assert approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue")["status"] == "dry_run"
+    assert approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+    assert approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "no-op"
 
 
 @pytest.mark.parametrize("mutation", ["source", "report_fallback", "annotation"])
@@ -253,7 +255,7 @@ def test_native_article_json_guards_reject_real_live_drift_before_writes(tmp_pat
         if operation == "repeat_ingest":
             ingest_owner_check(database, manifest, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
         else:
-            approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+            approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
 
     assert hashlib.sha256(database.read_bytes()).hexdigest() == before
     assert set((tmp_path/"backups").glob("*")) == backups_before
@@ -279,14 +281,14 @@ def test_v2_editorial_metadata_requires_new_review_and_projects_from_exact_captu
     validate_manifest(manifest)
     staged = _ingest(database, tmp_path, manifest)
     assert staged["status"] == "staged"
-    review = owner_review_template(database, staged["candidate_sha256"])
+    review = _review(database, tmp_path, staged["candidate_sha256"])
     assert review["schema_version"] == EDITORIAL_REVIEW_VERSION
     assert review["review_scope"] == "source_fields_and_article_editorial_metadata"
     review.update(actor={"id": "metadata-reviewer", "task_id": "metadata-review-task"},
         authorization_reference="owner-message-actual-scope", audit_reference="audit/editorial-review",
         reviewed_at="2026-10-15T23:01:00Z", decision="pass", reason="Reviewed each exact source and metadata value")
-    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue")["status"] == "dry_run"
-    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+    assert approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue")["status"] == "dry_run"
+    assert approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
     article = _reader(database, tmp_path).article("good")
     assert article["categories"] == ["Physical Risk"]
     assert article["keywords"] == ["flood", "exposure", "study region"]
@@ -328,12 +330,12 @@ def test_v2_null_is_explicit_source_only_and_bad_metadata_bindings_are_rejected(
     review["schema_version"] = "owner-agent-information-review.v1"
     review.pop("review_scope")
     with pytest.raises(RegistryInputError, match="schema does not match"):
-        approve_owner_check(database, review, queue_dir=tmp_path/"queue")
+        approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue")
     v2_review = owner_review_template(database, staged["candidate_sha256"])
     v2_review.update(actor={"id": "metadata-hold-reviewer", "task_id": "metadata-hold-review-task"},
         authorization_reference="owner-message-actual-scope", audit_reference="audit/editorial-hold",
         reviewed_at="2026-10-15T23:01:00Z", decision="pass", reason="Confirmed source-only metadata hold")
-    assert approve_owner_check(database, v2_review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+    assert approve_owner_check(database, v2_review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
     article = _reader(database, tmp_path).article("good")
     assert article["categories"] == [] and article["keywords"] == []
     assert article["owner_agent_verification"]["editorial_metadata"] is None
@@ -359,11 +361,11 @@ def test_v2_pdf_article_primary_projects_reviewed_metadata_to_pdf_report(tmp_pat
             (DOC, "e"*64, "f"*64, json.dumps(raw)))
     manifest = _editorial_manifest(database, kind="pdf_article", identity="pdf-good", occurrence="pdf-occ")
     staged = _ingest(database, tmp_path, manifest)
-    review = owner_review_template(database, staged["candidate_sha256"])
+    review = _review(database, tmp_path, staged["candidate_sha256"])
     review.update(actor={"id": "pdf-metadata-reviewer", "task_id": "pdf-metadata-review-task"},
         authorization_reference="owner-message-actual-scope", audit_reference="audit/pdf-editorial-review",
         reviewed_at="2026-10-15T23:01:00Z", decision="pass", reason="Reviewed the exact PDF article source scope")
-    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
+    assert approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "approved"
     item = _reader(database, tmp_path).pdf_report(DOC)["articles"][0]
     assert item["categories"] == ["Physical Risk"] and item["keywords"] == ["flood", "exposure", "study region"]
     assert "PRIVATE PDF" not in json.dumps(item)
@@ -410,7 +412,7 @@ def test_owner_meeting_does_not_publish_original_extra_facts_and_keeps_report_me
         body="IAIS Annual Conference 2027\n10–12 June 2027\nPRIVATE TOOL FOOTER")
     result = _ingest(database, tmp_path, manifest)
     review = _review(database, tmp_path, result["candidate_sha256"])
-    approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     reader = _reader(database, tmp_path)
     def check(current):
         meetings = current.meetings_all(base_date="2026-10-15")
@@ -446,7 +448,7 @@ def test_owner_reviewed_final_url_is_public_meeting_link_and_keeps_requested_url
         if row["occurrence_id"] == "target-occ"))
     assert not pending_item.get("checked_source_url") and pending_item["source_urls"] == ["https://example.org/target"]
     approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]),
-        queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     reader = _reader(database, tmp_path)
     meeting = reader.meetings_all(base_date="2026-10-15")[0]
     assert meeting["source_urls"] == [final_url]
@@ -488,7 +490,7 @@ def _owner_cop31_with_unchecked_report_reference(tmp_path, *, fields=None, final
         manifest["observations"][0]["field_evidence"]["deadline_date"]["excerpt"] = "31 October 2026"
     staged = _ingest(database, tmp_path, manifest)
     approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]),
-        queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     return database, event, primary, association, fields, raw
 
 
@@ -594,7 +596,7 @@ def test_owner_publication_date_paraphrase_and_range_roundtrip(tmp_path):
     manifest["observations"][0]["field_evidence"]["summary"]["excerpt"] = "Flood exposure increased in the study region."
     manifest["observations"][0]["field_evidence"]["publication_date"]["excerpt"] = "2 October 2026"
     result = _ingest(database, tmp_path, manifest)
-    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]), queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]), lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     reader = _reader(database, tmp_path)
     assert reader.article("good")["information_date"] == "2026-10-02"
     live = _range_source(reader, "2026-10-02", "2026-10-02")
@@ -614,14 +616,14 @@ def test_owner_review_rejects_live_change_without_staging_and_preserves_prior_pu
     manifest = _manifest(database)
     result = _ingest(database, tmp_path, manifest)
     review = _review(database, tmp_path, result["candidate_sha256"])
-    approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
-    assert approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "no-op"
+    approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    assert approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["status"] == "no-op"
     old = _reader(database, tmp_path).article("good")["published_candidate_sha256"]
     with sqlite3.connect(database) as db:
         db.execute("INSERT INTO article_versions VALUES('new-version','good','New title','New title','New unverified fact','new-fingerprint','report-title-summary','2026-10-16','2026-10-16')")
         db.execute("UPDATE articles SET current_version_id='new-version' WHERE article_id='good'")
     with pytest.raises(RegistryInputError, match="live source"):
-        approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     with pytest.raises(RegistryInputError, match="changed live"):
         _ingest(database, tmp_path, manifest)
     assert _reader(database, tmp_path).article("good")["published_candidate_sha256"] == old
@@ -731,13 +733,13 @@ def test_batch_owner_preflight_is_atomic_and_uses_one_backup_per_phase(tmp_path)
     receipts = [_review(database, tmp_path, item["candidate_sha256"]) for item in result["results"]]
     bad = deepcopy(receipts); bad[1]["actor"] = manifests[1]["actor"]
     with pytest.raises(RegistryInputError, match="independent"):
-        approve_owner_check(database, bad, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        approve_owner_check(database, bad, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     assert _reader(database, tmp_path).articles()["items"] == []
     assert len(list((tmp_path/"backups").glob("*"))) == 1
-    result = approve_owner_check(database, receipts, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    result = approve_owner_check(database, receipts, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     assert len(result["results"]) == 2 and len(list((tmp_path/"backups").glob("*"))) == 2
     assert len(_reader(database, tmp_path).articles()["items"]) == 2
-    assert approve_owner_check(database, receipts, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["backup_path"] is None
+    assert approve_owner_check(database, receipts, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)["backup_path"] is None
 
 
 def test_owner_linked_core_and_three_reports_keep_unchecked_copies_metadata_only(tmp_path):
@@ -754,7 +756,7 @@ def test_owner_linked_core_and_three_reports_keep_unchecked_copies_metadata_only
     manifest = _manifest(database, kind="pdf_article", identity="pdf-good", occurrence="occurrence")
     assert manifest["plan"]["entity_kind"] == "article" and len(manifest["plan"]["targets"]) == 4
     result = _ingest(database, tmp_path, manifest)
-    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]), queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]), lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     def check(current):
         core = current.article("good")
         assert core["summary_provenance"] == "owner_agent_verified_source"
@@ -796,7 +798,7 @@ def test_owner_reviewed_final_url_drives_article_citation_but_raw_url_stays_prov
         body="Climate risk findings\nFlood exposure increased.", final_url=final_url)
     result = _ingest(database, tmp_path, manifest)
     approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]),
-        queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     occurrence = _reader(database, tmp_path).pdf_article("pdf-only")["occurrences"][0]
     assert occurrence["raw_url"] == requested and occurrence["checked_source_url"] == final_url
     markdown = next(iter(_registry_source_observation_pages([_reader(database, tmp_path).pdf_article("pdf-only")]).values()))
@@ -815,7 +817,7 @@ def test_owner_actual_api_chat_and_frozen_range_consume_only_reviewed_scope(tmp_
         body="IAIS Annual Conference 2027\n10–12 June 2027\nThis conference brings together supervisors.\nPRIVATE TOOL FOOTER")
     manifest["observations"][0]["field_evidence"]["event_type"]["excerpt"] = "This conference brings together supervisors."
     result = _ingest(database, tmp_path, manifest)
-    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]), queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]), lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     reader = _reader(database, tmp_path)
     monkeypatch.setattr(api_server, "_registry_reader", lambda: reader)
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
@@ -841,7 +843,7 @@ def test_failed_owner_scope_cannot_replace_prior_approved_version(tmp_path):
     database = _database(tmp_path)
     first = _manifest(database)
     staged = _ingest(database, tmp_path, first)
-    approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]), queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]), lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     prior = _reader(database, tmp_path).article("good")["published_candidate_sha256"]
     failed = _manifest(database)
     failed["checked_at"] = "2026-10-15T23:02:00Z"
@@ -853,7 +855,7 @@ def test_failed_owner_scope_cannot_replace_prior_approved_version(tmp_path):
     review["reviewed_at"] = "2026-10-15T23:03:00Z"
     before = hashlib.sha256(database.read_bytes()).hexdigest()
     with pytest.raises(RegistryInputError, match="no eligible"):
-        approve_owner_check(database, review, queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        approve_owner_check(database, review, lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     assert hashlib.sha256(database.read_bytes()).hexdigest() == before
     assert _reader(database, tmp_path).article("good")["published_candidate_sha256"] == prior
 
@@ -893,7 +895,7 @@ def test_native_owner_meeting_keeps_supported_facts_and_truthful_provenance(tmp_
     for key in ("event_type", "status"):
         manifest["observations"][0]["field_evidence"][key]["excerpt"] = "The conference is scheduled."
     result = _ingest(database, tmp_path, manifest)
-    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]), queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]), lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     reader = _reader(database, tmp_path)
     requested_url = manifest["observations"][0]["target"]["source_url"]
     def check(current):
@@ -952,7 +954,7 @@ def _owner_article_with_private_metadata(tmp_path, source, final_url=None, *, re
         final_url=final_url)
     manifest["observations"][0]["field_evidence"]["publication_date"]["excerpt"] = "2 October 2026"
     staged = _ingest(database, tmp_path, manifest)
-    approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]), queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]), lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     return database, originals
 
 
@@ -1421,7 +1423,7 @@ def test_owner_wiki_uses_supported_structured_dates_without_excluded_raw_text(tm
     for key in date_scope:
         manifest["observations"][0]["field_evidence"][key]["excerpt"] = quote
     staged = _ingest(database, tmp_path, manifest)
-    approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]), queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]), lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     reader = _reader(database, tmp_path)
     def check(current):
         item = current.pdf_calendar_items_all()[0]
@@ -1485,7 +1487,7 @@ def test_owner_pdf_publication_date_survives_source_body_and_retrieval_without_r
         manifest["observations"][0]["field_evidence"]["publication_date"]["excerpt"] = quote
     staged = _ingest(database, tmp_path, manifest)
     approve_owner_check(database, _review(database, tmp_path, staged["candidate_sha256"]),
-        queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+        lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
     pages = public_wiki_pages(database)
     name = "registry-source-observation-occurrence.md"
     markdown = pages[name]
