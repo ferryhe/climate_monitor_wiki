@@ -85,6 +85,10 @@ def review_context(connection):
     for row in connection.execute("SELECT review_id,candidate_sha256,status,receipt_json FROM registry_reviews WHERE status='pass'"):
         item = dict(row) if hasattr(row, "keys") else dict(zip(("review_id", "candidate_sha256", "status", "receipt_json"), row))
         values.setdefault(item["candidate_sha256"], []).append(item)
+    from .enrichment_contract import approval_context
+    for row in connection.execute("SELECT candidate_sha256,snapshot_json FROM registry_candidates WHERE json_extract(snapshot_json,'$.enrichment_scope.operation_scope') IS NOT NULL"):
+        if row[0] in values:
+            values[row[0]] = approval_context(connection, json.loads(row[1]), values[row[0]])
     return values
 
 
@@ -323,9 +327,13 @@ def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_bind
     native = [r for r in results.values() if r["entity_kind"] in {"article", "meeting"} and r["verified"]]
     verified = [r for r in results.values() if r["verified"]]
     primary = (native or verified or [None])[0]
-    return {"eligible": bool(primary), "primary": primary, "observations": results,
+    from .enrichment_contract import reviewed_content_receipt, inherited_content_scope
+    content = reviewed_content_receipt(snapshot, reviews)
+    missing_content = inherited_content_scope(snapshot) and not content
+    return {"eligible": bool(primary) and not missing_content, "primary": primary, "observations": results,
+        "reviewed_content": content,
         "reviewed_summary": _reviewed_summary(snapshot, results, reviews),
-        "reasons": sorted({reason for r in results.values() for reason in r["reasons"]}) or ([] if primary else ["no_check"])}
+        "reasons": (["inherited_content_approval_missing"] if missing_content else []) + (sorted({reason for r in results.values() for reason in r["reasons"]}) or ([] if primary else ["no_check"]))}
 
 
 ASSOCIATION_FIELDS = {"occurrence_id", "source_document_sha256", "source_filename", "source_document", "report_date",
@@ -739,6 +747,9 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
                     "capture_sha256": owner["capture_sha256"],
                     "public_fields_sha256": owner["public_fields_sha256"],
                     "review_id": owner["review_id"]}
+            elif verdict.get("reviewed_content"):
+                from .enrichment_contract import inherited_editorial_projection
+                view["derived_display"].update(inherited_editorial_projection(snapshot))
             view["derived_display"]["checked_source_url"] = owner.get("final_url") or owner["source_url"]
             if owner["public_fields"].get("publication_date"):
                 view["derived_display"].update(publication_date=owner["public_fields"]["publication_date"],
@@ -753,6 +764,19 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
         view["tables"]["article_content_versions"] = deepcopy(snapshot["tables"]["article_content_versions"])
         for field, proof in bundle["date_evidence"].items():
             view["derived_display"].update({field: proof["value"], field + "_evidence": proof})
+    elif (verdict.get("reviewed_content") or {}).get("initial_summary"):
+        # The full G3 receipt covers this current-body enrichment, not the older source-target summary.
+        initial = verdict["reviewed_content"]["initial_summary"]
+        view["derived_display"].update(summary=initial["summary"], summary_provenance="exact_candidate_content_review")
+        for row in view["tables"].get("article_enrichments", []):
+            if row.get("content_version_id") == initial["content_version_id"] and row.get("status") == "complete":
+                row["summary"] = initial["summary"]
+        view["tables"]["article_content_versions"] = deepcopy(snapshot["tables"]["article_content_versions"])
+    category_review = (verdict.get("reviewed_content") or {}).get("category_correction")
+    if category_review:
+        view["derived_display"]["categories"] = list(snapshot["derived_display"]["categories"])
+        view["derived_display"].setdefault("metadata_provenance", {})["categories"] = "reviewed_category_correction"
+        view["derived_display"]["category_correction_provenance"] = category_review
     from .owner_dates import carry_manual_dates, inherited_article_date
     for field in ("publication_date", "updated_date", "revision_date"):
         if snapshot.get("derived_display", {}).get(field):
@@ -762,6 +786,9 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
                     view["derived_display"].pop(key, None)
                 view["derived_display"].update(inherited)
     carry_manual_dates(view, snapshot.get("derived_display", {}).get("manual_date_overrides", {}))
+    if snapshot.get("enrichment_scope"):
+        from .enrichment_contract import projected_date_proofs
+        view["derived_display"] = projected_date_proofs(view["derived_display"])
     return view
 
 

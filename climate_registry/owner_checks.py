@@ -408,7 +408,7 @@ def _ingest_one(connection, database, manifest, apply):
         latest = connection.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", (plan["entity_kind"], plan["entity_id"])).fetchone()
         row = connection.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (latest[0],)).fetchone()
         current = snapshot_entity(connection, plan["entity_kind"], plan["entity_id"])
-        previous = json.loads(row[0]); previous.pop("derived_display", None)
+        previous = json.loads(row[0]); previous.pop("derived_display", None); previous.pop("enrichment_scope", None)
         if digest(current) != digest(previous) or not any(value["run_id"] == run_id for value in previous["dependencies"].get(prefix + "_check_runs", [])):
             raise ValueError("owner check repeat has changed live sources or candidate")
         return {"status": "no-op", "run_id": run_id, "candidate_sha256": latest[0]}
@@ -541,6 +541,23 @@ def public_owner_verification(snapshot, target, row, packet, reviews):
             editorial_metadata_sha256=packet["editorial_metadata_sha256"], taxonomy_id=packet["taxonomy_id"],
             taxonomy_sha256=packet["taxonomy_sha256"],
             public_fields_sha256=packet["editorial_metadata"]["public_fields_sha256"] if metadata else digest(outcome["public_fields"]))
+    if outcome["public_fields"].get("publication_date"):
+        verification["publication_date_evidence"] = {"text": packet["owner_observation"]["field_evidence"]["publication_date"]["excerpt"],
+            "source_url": target["source_url"], "date_kind": "publication_date"}
+    from .enrichment_contract import reviewed_content_receipt
+    content_review = reviewed_content_receipt(snapshot, reviews)
+    if content_review is not None:
+        if outcome["verification_status"] != "verified":
+            return "owner_public_scope_unsupported", None
+        source_reviewer = content_review.get("source_reviewer", content_review["reviewer"])
+        if any(source_reviewer[key] == packet["actor"][key] for key in ("id", "task_id")):
+            return "owner_independent_review_missing", verification
+        verified = {**verification, **content_review}
+        if content_review.get("source_review"):
+            verified.update(content_approval={key: content_review[key] for key in
+                ("candidate_sha256", "enrichment_contract_sha256", "scope", "review_id", "reviewer")},
+                **content_review["source_review"])
+        return None, verified
     for review in reviews:
         receipt = json.loads(review["receipt_json"])
         accepted_versions = {review_version}
@@ -552,9 +569,6 @@ def public_owner_verification(snapshot, target, row, packet, reviews):
             if outcome["verification_status"] != "verified":
                 return "owner_public_scope_unsupported", None
             verified = {**verification, "reviewer": receipt["actor"], "review_id": review["review_id"]}
-            if outcome["public_fields"].get("publication_date"):
-                verified["publication_date_evidence"] = {"text": packet["owner_observation"]["field_evidence"]["publication_date"]["excerpt"],
-                    "source_url": target["source_url"], "date_kind": "publication_date"}
             return None, verified
     return "owner_independent_review_missing", verification
 
@@ -623,12 +637,15 @@ def owner_review_template(database, candidate_sha256):
         if OVERLAY in json.loads(row[0]):
             return date_review_template(json.loads(row[0]))
         bindings = review_bindings(json.loads(row[0]))
+        from .enrichment_contract import review_projection
+        contract = review_projection(json.loads(row[0]))
     version = EDITORIAL_REVIEW_VERSION if any(binding.get("check_schema_version") == EDITORIAL_CHECK_VERSION for binding in bindings) else REVIEW_VERSION
     result = {"schema_version": version, "candidate_sha256": candidate_sha256, "source_checks": bindings,
         "actor": {"id": "", "task_id": ""}, "authorization_reference": "", "audit_reference": "",
         "reviewed_at": "", "decision": "", "reason": ""}
     if version == EDITORIAL_REVIEW_VERSION:
         result["review_scope"] = "source_fields_and_article_editorial_metadata"
+    result["enrichment_contract"] = contract
     return result
 
 
@@ -638,6 +655,11 @@ def validate_review(snapshot, receipt):
         return validate_date_review(snapshot, receipt)
     if not isinstance(receipt, dict):
         raise ValueError("owner independent review must be an object")
+    from .enrichment_contract import inherited_content_scope
+    if snapshot.get("enrichment_scope") and not inherited_content_scope(snapshot):
+        raise ValueError("owner v1/v2 receipt cannot approve complete content update scope")
+    if inherited_content_scope(snapshot) and not snapshot["enrichment_scope"]["operation_scope"].startswith("owner_source_fields."):
+        raise ValueError("owner review cannot approve another inherited operation scope")
     version = receipt.get("schema_version")
     if version not in {REVIEW_VERSION, EDITORIAL_REVIEW_VERSION} or receipt.get("candidate_sha256") != (snapshot.get("_approved_candidate_sha256") or digest(snapshot)) or receipt.get("decision") != "pass":
         raise ValueError("owner review must pass the exact new candidate")
@@ -686,12 +708,13 @@ def _approve_one(connection, database, receipt, apply):
                     raise ValueError("owner review publication or visibility binding changed")
     # A new live write cannot be hidden by a still-current latest pointer.
     current = snapshot_entity(connection, snapshot["entity_kind"], snapshot["entity_id"])
-    candidate = dict(snapshot); candidate.pop("derived_display", None)
+    candidate = dict(snapshot); candidate.pop("derived_display", None); candidate.pop("enrichment_scope", None)
     if digest(current) != digest(candidate):
         raise ValueError("owner review live source changed; stage and review again")
     review_id = digest([sha, "pass", receipt])
     proof = {"review_id": review_id, "candidate_sha256": sha, "status": "pass", "receipt_json": _json(receipt)}
-    if not evaluate_snapshot(snapshot, reviews=[proof])["eligible"]:
+    from .enrichment_contract import approval_context
+    if not evaluate_snapshot(snapshot, reviews=approval_context(connection, snapshot, [proof]))["eligible"]:
         raise ValueError("owner review has no eligible supported public scope")
     existing = connection.execute("SELECT 1 FROM registry_reviews WHERE review_id=?", (review_id,)).fetchone()
     if existing:

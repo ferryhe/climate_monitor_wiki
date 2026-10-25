@@ -276,6 +276,8 @@ def date_plan(connection, plan, *, fields=None, activity_dates_only=False):
         raise ValueError("date-only baseline belongs to another article")
     reviews = [dict(zip(("review_id", "candidate_sha256", "status", "reviewed_at", "receipt_json"), row))
         for row in connection.execute("SELECT * FROM registry_reviews WHERE candidate_sha256=? AND status IN ('pass','accepted_legacy') ORDER BY review_id", (sha,))]
+    from .enrichment_contract import approval_context
+    reviews = approval_context(connection, base, reviews)
     view, _ = _baseline_view(base, reviews)
     # Targets come from the approved snapshot, never a newer unapproved source.
     legacy = fields is None and not activity_dates_only
@@ -444,13 +446,14 @@ def _review_version(scope):
 
 
 def date_review_template(snapshot):
+    from .enrichment_contract import review_projection
     plan = snapshot[OVERLAY]["manifest"]["plan"]
     review_scope = plan["scope"]
     return {"schema_version": _review_version(review_scope),
         "review_scope": review_scope,
         "candidate_sha256": digest(snapshot), "source_checks": _bindings(snapshot),
         "actor": {"id": "", "task_id": ""}, "authorization_reference": "", "audit_reference": "",
-        "reviewed_at": "", "decision": "", "reason": ""}
+        "reviewed_at": "", "decision": "", "reason": "", "enrichment_contract": review_projection(snapshot)}
 
 
 def validate_date_review(snapshot, receipt):
@@ -497,13 +500,21 @@ def date_verdict(snapshot, reviews):
 
 
 def date_public_view(snapshot, verdict):
+    return _date_view(snapshot, verdict[OVERLAY])
+
+
+def date_proposed_view(snapshot):
+    """Project frozen proposed dates with their version bindings, without a PASS."""
+    return _date_view(snapshot, None)
+
+
+def _date_view(snapshot, proof):
     view, _, overlay = _frozen_scope(snapshot)
-    proof = verdict[OVERLAY]
     manifest = overlay["manifest"]
     entry = manifest["observations"][0]
     fields = _date_fields(manifest["plan"])
     display = view.setdefault("derived_display", {})
-    if manifest["plan"]["scope"] == ACTIVITY_SCOPE:
+    if manifest["plan"]["scope"] == ACTIVITY_SCOPE and proof is not None:
         _append_activity_rows(view, entry, manifest, proof)
     for field in fields if manifest["plan"]["scope"] != ACTIVITY_SCOPE else []:
         if manifest.get("manual_authorization"):
@@ -546,12 +557,17 @@ def date_public_view(snapshot, verdict):
                     "authorization_id": decision["authorization_id"]}})
             continue
         if field in display.get("manual_date_overrides", {}):
-            raise ValueError("active human date override requires an explicit human replacement")
+            if proof is not None:
+                raise ValueError("active human date override requires an explicit human replacement")
+            # A source proposal cannot displace the effective human instruction.
+            continue
         date_proof = entry["field_evidence"][field]
         evidence = {"text": date_proof["excerpt"], "date_kind": date_proof["date_kind"],
             "source_url": entry["capture"]["requested_url"], "final_url": entry["capture"]["final_url"],
             "capture_sha256": entry["capture"]["sha256"], "source_identity": entry["source_identity"],
-            "source_system": "owner_agent", "table": "registry_reviews", "record_id": proof["review_id"]}
+            "source_system": "owner_agent"}
+        if proof is not None:
+            evidence.update(table="registry_reviews", record_id=proof["review_id"])
         if manifest["plan"].get("date_semantics") == DATE_SEMANTICS:
             evidence["captured_at"] = entry["capture"]["captured_at"]
         if date_proof.get("date_precision") is not None:
@@ -563,15 +579,20 @@ def date_public_view(snapshot, verdict):
             evidence["date_normalization"] = "month_midpoint"
         date_verification = {"verification_basis": DATE_CHECK_VERSION,
             "review_scope": manifest["plan"]["scope"],
-            "baseline_candidate_sha256": overlay["baseline_candidate_sha256"], "review_id": proof["review_id"],
-            "reviewer": proof["receipt"]["actor"], "actor": manifest["actor"], "checked_at": manifest["checked_at"],
+            "baseline_candidate_sha256": overlay["baseline_candidate_sha256"],
+            "actor": manifest["actor"], "checked_at": manifest["checked_at"],
             "source_url": entry["target"]["source_url"], "capture_sha256": entry["capture"]["sha256"]}
+        if proof is not None:
+            date_verification.update(review_id=proof["review_id"], reviewer=proof["receipt"]["actor"])
+        else:
+            date_verification["review_status"] = "pending"
         if "baseline_content_version_id" in manifest["plan"]:
             date_verification["content_version_id"] = manifest["plan"]["baseline_content_version_id"]
         display.update({field: entry["public_fields"][field], field + "_evidence": evidence,
             field + "_verification": date_verification})
     # Readers apply the date after validating the inherited source's own fields.
-    view["_approved_candidate_sha256"] = digest(snapshot)
+    if proof is not None:
+        view["_approved_candidate_sha256"] = digest(snapshot)
     if digest(_nondate(view, fields)) != manifest["plan"]["nondate_scope_sha256"]:
         raise ValueError("date-field publication would change approved non-date facts")
     return view
@@ -594,7 +615,8 @@ def current_date_view(connection, kind, identity):
         if review["review_id"] not in {digest([row[0], review["status"], receipt]), digest([row[0], receipt])}:
             raise ValueError("published date inheritance approval hash differs")
     from .verification import evaluate_snapshot, permitted_view
-    verdict = evaluate_snapshot(base, reviews=reviews)
+    from .enrichment_contract import approval_context
+    verdict = evaluate_snapshot(base, reviews=approval_context(connection, base, reviews))
     return permitted_view(base, verdict) or {}
 
 

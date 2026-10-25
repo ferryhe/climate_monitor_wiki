@@ -431,7 +431,13 @@ def _category_correction_inputs(snapshot):
     return inputs
 
 
-def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
+def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, enrichment_scope=None):
+    explicit_content_scope = enrichment_scope is not None or "enrichment_scope" in snapshot
+    if enrichment_scope is not None:
+        from .enrichment_contract import BINDING, SCOPE_VERSION
+        snapshot[BINDING] = {"schema_version": SCOPE_VERSION, "scope": enrichment_scope,
+            **({"native_taxonomies": snapshot[BINDING]["native_taxonomies"]}
+                if isinstance(snapshot.get(BINDING), dict) and "native_taxonomies" in snapshot[BINDING] else {})}
     previous = connection.execute("""SELECT c.snapshot_json FROM registry_publication p JOIN registry_candidates c
         ON c.candidate_sha256=p.latest_candidate_sha256 WHERE p.entity_kind=? AND p.entity_id=?""",
         (snapshot["entity_kind"], snapshot["entity_id"])).fetchone()
@@ -445,6 +451,7 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
         display = old.pop("derived_display", None)
         def business_rows(value):
             value=json.loads(json.dumps(value))
+            value.pop("enrichment_scope",None)
             value.pop("information_targets",None)
             for prefix in ("article","meeting"):
                 value["tables"].pop(prefix+"_check_attempts",None)
@@ -457,12 +464,31 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
         same_semantics = corrected and digest(_category_correction_inputs(old)) == digest(_category_correction_inputs(snapshot))
         if display and (not corrected or same_semantics) and digest(business_rows(old)) == digest(business_rows(snapshot)):
             snapshot["derived_display"] = display
+            if "enrichment_scope" in old and "enrichment_scope" not in snapshot:
+                snapshot["enrichment_scope"] = old["enrichment_scope"]
         elif same_semantics:
             snapshot["derived_display"] = {"categories": display["categories"],
                 "metadata_provenance": {"categories": "reviewed_category_correction"}}
             if "manual_enrichment" in display:
                 snapshot["derived_display"]["manual_enrichment"] = display["manual_enrichment"]
     from .owner_dates import carry_manual_dates, inherited_article_date, current_date_view
+    if snapshot.get("enrichment_scope") and OVERLAY not in snapshot:
+        published = current_date_view(connection, snapshot["entity_kind"], snapshot["entity_id"])
+        raw = connection.execute("SELECT c.snapshot_json FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256 WHERE p.entity_kind=? AND p.entity_id=?",
+            (snapshot["entity_kind"], snapshot["entity_id"])).fetchone()
+        unchanged = raw and digest({key: value for key, value in snapshot.items() if key != "enrichment_scope"}) == digest(
+            {key: value for key, value in json.loads(raw[0]).items() if key != "enrichment_scope"})
+        if not unchanged:
+            approved = published.get("derived_display", {})
+            for field in ("categories", "keywords"):
+                if field in approved and field not in snapshot.get("derived_display", {}):
+                    snapshot.setdefault("derived_display", {})[field] = approved[field]
+                    provenance = approved.get("metadata_provenance", {}).get(field)
+                    if provenance is not None:
+                        snapshot["derived_display"].setdefault("metadata_provenance", {})[field] = provenance
+    if not explicit_content_scope and OVERLAY not in snapshot and snapshot["entity_kind"] == "article":
+        from .enrichment_contract import bind_existing_content
+        bind_existing_content(connection, snapshot)
     if OVERLAY not in snapshot and snapshot["entity_kind"] in {"article", "pdf_article"}:
         published = current_date_view(connection, snapshot["entity_kind"], snapshot["entity_id"])
         from .article_dates import validate_content_update
@@ -492,6 +518,8 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None):
         carry_manual_dates(snapshot, decisions)
     from .article_dates import validate_content_update
     validate_content_update(snapshot)
+    from .enrichment_contract import bind_content_scope
+    bind_content_scope(connection, snapshot)
     sha = digest(snapshot)
     connection.execute("INSERT OR IGNORE INTO registry_candidates VALUES(?,?,?,?,?,?)",
         (sha, snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot, sort_keys=True, ensure_ascii=False),
@@ -640,6 +668,8 @@ def _approve(connection, sha, receipt, *, status="pass", information_groups=None
         raise ValueError("changed candidate requires another final review")
     snapshot = json.loads(row[2])
     if status in {"pass", "accepted_legacy"}:
+        if status == "accepted_legacy" and snapshot.get("enrichment_scope") and "publication_date_only" not in snapshot:
+            raise ValueError("new enrichment scope requires a new exact review, not legacy acceptance")
         from .owner_dates import active_manual_dates, applicable_manual_dates
         active = applicable_manual_dates(snapshot, active_manual_dates(connection, *row[:2]))
         incoming = snapshot.get("derived_display", {}).get("manual_date_overrides", {})
@@ -660,6 +690,9 @@ def _approve(connection, sha, receipt, *, status="pass", information_groups=None
                     raise ValueError("candidate has stale human date authority outside its content version")
         from .article_dates import validate_content_update
         validate_content_update(snapshot)
+        from .enrichment_contract import validate_content_baselines, validate_review_contract
+        validate_content_baselines(connection, snapshot, sha)
+        validate_review_contract(snapshot, receipt)
     from .owner_dates import OVERLAY, validate_date_review, _current_binding
     if OVERLAY in snapshot and status in {"pass", "accepted_legacy"}:
         if status != "pass":
@@ -672,6 +705,16 @@ def _approve(connection, sha, receipt, *, status="pass", information_groups=None
     elif status == "pass" and not information_ready(connection,snapshot,information_groups=information_groups):
         raise ValueError("candidate awaits completed source-bound T1 information improvement")
     review_id = digest([sha, status, receipt])
+    if status == "pass" and snapshot.get("enrichment_scope") and OVERLAY not in snapshot:
+        from .owner_checks import owner_information_ready
+        if owner_information_ready(snapshot):
+            from .verification import evaluate_snapshot
+            proposed_review = {"review_id": review_id, "candidate_sha256": sha, "status": status,
+                "receipt_json": json.dumps(receipt)}
+            from .enrichment_contract import approval_context
+            verdict = evaluate_snapshot(snapshot, reviews=approval_context(connection, snapshot, [proposed_review]))
+            if not verdict["eligible"]:
+                raise ValueError("content review does not establish public owner eligibility: " + ", ".join(verdict["reasons"]))
     connection.execute("INSERT OR IGNORE INTO registry_reviews VALUES(?,?,?,?,?)",
         (review_id, sha, status, now_stamp(), json.dumps(receipt, sort_keys=True, ensure_ascii=False)))
     if status in {"pass", "accepted_legacy"}:
@@ -824,7 +867,10 @@ def prepare_review(database, root):
             path = root / "evidence" / (row[0] + ".json")
             atomic_write_json(path, snapshot)
             view = freeze_readable(path.with_suffix(".readable.json"), path.read_text(encoding="utf-8"))
-            candidates.append({"candidate_sha256": row[0], "entity_kind": row[1], "entity_id": row[2], "snapshot_path": str(path.resolve()), "snapshot_view": view})
+            from .enrichment_contract import review_projection
+            contract = review_projection(snapshot)
+            candidates.append({"candidate_sha256": row[0], "entity_kind": row[1], "entity_id": row[2], "snapshot_path": str(path.resolve()), "snapshot_view": view,
+                "enrichment_contract": contract, "enrichment_contract_sha256": digest(contract)})
     packet = {"schema_version": "registry-final-review.v1", "registry_database": str(database), "run_id": "registry-review", "candidates": candidates}
     atomic_write_json(root / "packets" / (digest(packet)+".json"),packet)
     atomic_write_json(root / "packet.json", packet)
@@ -854,6 +900,13 @@ def review_candidates(root, token, conclusions):
             text = Path(item["snapshot_path"]).read_text(encoding="utf-8")
             if digest(json.loads(text)) != sha:
                 raise ValueError("reviewed snapshot changed")
+            snapshot = json.loads(text)
+            if snapshot.get("enrichment_scope") and "publication_date_only" not in snapshot:
+                from .enrichment_contract import review_projection
+                contract = review_projection(snapshot)
+                if (item.get("enrichment_contract") != contract or item.get("enrichment_contract_sha256") != digest(contract)
+                        or conclusion.get("enrichment_contract_sha256") != digest(contract)):
+                    raise ValueError("new content review must cover the exact complete enrichment contract")
             inspection = read_verified_text(events, item["snapshot_path"], text, item.get("snapshot_view"))
             receipt = {"claim": claim, "conclusion": conclusion, "inspection": inspection, "events_sha256": digest(events)}
             try:

@@ -190,6 +190,29 @@ def _body_text(value):
     return " ".join(re.findall(r"\w+", value.casefold()))
 
 
+def validate_content_date_evidence(field, proof, *, article, current, version):
+    """Validate a typed date against its exact retained article body."""
+    expected_kind = {"publication_date": "published", "updated_date": "updated", "revision_date": "revision"}.get(field)
+    if (not expected_kind or not isinstance(proof, dict) or proof.get("content_version_id") != version
+            or _typed_date_kind(proof) != expected_kind
+            or proof.get("source_url") != article.get("canonical_url")
+            or not proof.get("final_url") or not proof.get("captured_at")
+            or not isinstance(proof.get("text"), str) or not proof["text"].strip()
+            or proof["text"] not in current["markdown_content"]):
+        raise ValueError("source date must bind the current body, type, URL and literal source evidence")
+    _collection_timestamp(proof["captured_at"])
+    from .owner_checks import _dates
+    parsed = _dates(proof["text"])
+    precision = proof.get("source_date_precision", proof.get("date_precision"))
+    expected = parsed["start_date"]
+    if precision == "month" and proof.get("date_normalization") == "month_midpoint":
+        expected = expected + "-15" if parsed["date_precision"] == "month" else None
+    elif precision != "day" or parsed["date_precision"] != "day":
+        raise ValueError("content update date must retain day or explicit month-midpoint precision")
+    if proof.get("value") != expected or parsed["end_date"] is not None:
+        raise ValueError("content update date differs from literal source date precision")
+
+
 def validate_content_update(snapshot):
     """Consume a complete, exact-candidate bundle; generation and semantic review stay upstream."""
     bundle = snapshot.get("derived_display", {}).get("content_update")
@@ -245,25 +268,7 @@ def validate_content_update(snapshot):
     if not isinstance(date_evidence, dict) or set(date_evidence) - {"updated_date", "revision_date"}:
         raise ValueError("content update date evidence must be typed Updated or Revision")
     for field, proof in date_evidence.items():
-        expected_kind = "updated" if field == "updated_date" else "revision"
-        if (not isinstance(proof, dict) or proof.get("content_version_id") != version
-                or _typed_date_kind(proof) != expected_kind
-                or proof.get("source_url") != article.get("canonical_url")
-                or not proof.get("final_url") or not proof.get("captured_at")
-                or not isinstance(proof.get("text"), str) or not proof["text"].strip()
-                or proof["text"] not in current["markdown_content"]):
-            raise ValueError("source date must bind the current body, type, URL and literal source evidence")
-        _collection_timestamp(proof["captured_at"])
-        from .owner_checks import _dates
-        parsed = _dates(proof["text"])
-        precision = proof.get("source_date_precision", proof.get("date_precision"))
-        expected = parsed["start_date"]
-        if precision == "month" and proof.get("date_normalization") == "month_midpoint":
-            expected = expected + "-15" if parsed["date_precision"] == "month" else None
-        elif precision != "day" or parsed["date_precision"] != "day":
-            raise ValueError("content update date must retain day or explicit month-midpoint precision")
-        if proof.get("value") != expected or parsed["end_date"] is not None:
-            raise ValueError("content update date differs from literal source date precision")
+        validate_content_date_evidence(field, proof, article=article, current=current, version=version)
     return bundle
 
 

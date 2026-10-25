@@ -79,8 +79,13 @@ def correct_article_categories(*, database, manifest, apply=False, backup_dir=No
                     original = json.loads(row[0])
                     if digest(original) != previous["published_candidate_sha256"]:
                         raise RegistryInputError("category correction approved snapshot hash differs")
-                    payload = (reader._article_card_from_snapshot(original) if key[0] == "article"
-                        else reader._pdf_article_from_snapshot(original))
+                    public_original = original
+                    if original.get("enrichment_scope"):
+                        from .enrichment_contract import _candidate_reviews
+                        from .owner_dates import _baseline_view
+                        public_original, _ = _baseline_view(original, _candidate_reviews(connection, previous["published_candidate_sha256"]))
+                    payload = (reader._article_card_from_snapshot(public_original) if key[0] == "article"
+                        else reader._pdf_article_from_snapshot(public_original))
                     if payload["canonical_url"] != item["canonical_url"] or (payload.get("categories") or []) != item["expected_categories"]:
                         raise RegistryInputError("category correction original URL or categories differ")
                     snapshot = deepcopy(original)
@@ -91,6 +96,8 @@ def correct_article_categories(*, database, manifest, apply=False, backup_dir=No
                     if key[0] == "pdf_article" and payload.get("manual_enrichment") is not None:
                         display["manual_enrichment"] = {**payload["manual_enrichment"], "categories": item["categories"]}
                     snapshot["derived_display"] = display
+                    from .enrichment_contract import bind_category_content
+                    content_review = bind_category_content(connection, original, snapshot)
                     candidate_sha = digest(snapshot)
                     current = connection.execute("SELECT is_visible,published_candidate_sha256,latest_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", key).fetchone()
                     next_latest = candidate_sha if previous["latest_candidate_sha256"] == previous["published_candidate_sha256"] else previous["latest_candidate_sha256"]
@@ -108,6 +115,9 @@ def correct_article_categories(*, database, manifest, apply=False, backup_dir=No
                     receipt = {"schema_version": "registry-category-correction-review.v1", "scope": "approved-public-category-only",
                         "manifest_sha256": operation_sha, "taxonomy": plan["taxonomy"], "previous_candidate_sha256": previous["published_candidate_sha256"],
                         "evidence_basis": item["evidence_basis"], "evidence_refs": item.get("evidence_refs", {})}
+                    if content_review is not None:
+                        receipt.update(inherited_content_review=content_review,
+                            category_delta={"before": payload.get("categories") or [], "after": item["categories"]})
                     connection.execute("INSERT INTO registry_candidates VALUES(?,?,?,?,?,?)", (candidate_sha, *key,
                         json.dumps(snapshot, sort_keys=True, ensure_ascii=False), stamp, source_ref))
                     connection.execute("INSERT INTO registry_reviews VALUES(?,?,?,?,?)", (digest([candidate_sha, receipt]), candidate_sha,
