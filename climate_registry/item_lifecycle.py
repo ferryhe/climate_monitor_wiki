@@ -159,8 +159,13 @@ def _article_dependency(connection, state, article, version):
     from .enrichment_contract import _body
     published_body = _body(_snapshot(connection, published)) if published else None
     substantive = published_body and any(_body(_snapshot(connection, sha))["body_sha256"] != published_body["body_sha256"] for sha in candidates)
+    from .content_enrichment import no_change_snapshot
+    from .publication import information_ready
+    latest_snapshot = _snapshot(connection, latest) if latest in candidates else None
+    no_change = (not disputes and latest_snapshot is not None and no_change_snapshot(connection, latest_snapshot)
+        and information_ready(connection, latest_snapshot))
     return {"approved": None, "candidates": candidates, "latest": latest if latest in candidates else None,
-        "requires_approval": bool(disputes or substantive), "published_dispute": published_dispute,
+        "requires_approval": bool(disputes or (substantive and not no_change)), "published_dispute": published_dispute,
         "held_published_sha256": published if published_dispute else None}
 
 
@@ -226,6 +231,9 @@ def partition_items(connection, root, candidate_sha256s, *, require_information=
                     reason="exact_acquisition_review_" + latest["status"], receipt_sha256=latest["receipt_sha256"])
                 continue
             result.update(classification="ready", stage="awaiting_independent_review", next_owner="G10")
+            from .content_enrichment import no_change_snapshot
+            if not any((item["entity_kind"], item["entity_id"]) == (kind, identity) for item in state["disputes"].values()) and no_change_snapshot(connection, snapshot):
+                result.update(stage="no_change", next_owner=None, reason="source_only_no_substantive_change")
             disputes = [(dispute_id, dispute) for dispute_id, dispute in state["disputes"].items()
                 if (dispute["entity_kind"], dispute["entity_id"]) == (kind, identity)]
             current_disputes = [(dispute_id, dispute) for dispute_id, dispute in disputes

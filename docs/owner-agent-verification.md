@@ -440,7 +440,7 @@ an external generator already implements them.
 | Article / PDF Article, owner v2 | Same capture for title/summary and editorial evidence; frozen taxonomy, separate metadata purpose and evidence | Explicit `editorial_metadata: null` is source-only hold; unreviewed old taxonomy is not inherited |
 | Article / PDF Article, selected source date or activity scope | Exact approved baseline and receipts, selected date fields, literal typed date/event evidence and independent exact-candidate review | All approved unrelated fields, body, summary, update note and comparison basis are inherited |
 | Article / PDF Article, human dates | Exact instruction/reference, human identity, target/allowed fields, old/new values, precision, operation time and record/version applicability | Uses `human-article-date-authorization.v1`, not source PASS; no invented reason or repeated approval |
-| Canonical Article, new G3 complete update | Existing `article-content-update.v1`, current and previous bodies/SHAs, complete current summary, separate change note, precise date evidence and two baseline references | Missing previous published body is `required_missing`; independent semantic review covers the whole new scope |
+| Canonical Article, new G3 complete update | Existing `article-content-update.v1`, current and previous bodies/SHAs, complete current summary, itemized literal change evidence, precise date evidence and two baseline references | Missing previous body requires the explicit `article-content-update.source-explanation.v2` alternative: exact previous published candidate/summary, current complete body/summary, literal current-source explanation and explicit unavailable-body/unconfirmed-differences limitation. No invented old body/hash; independent semantic review covers the whole scope |
 | Canonical Article, new G3 initial content | Current retained body and complete `article_enrichments` summary bound to that content version | Comparison is explicitly `not_applicable: initial_content_publication`; no update package or update note is asserted |
 | PDF evidence used for a canonical entity | Existing stored `core_article_id` (or existing canonical meeting association), plus the canonical body's own evidence | Conditional support; equal URLs do not establish a link. Standalone PDF content updates are unsupported without retained canonical bodies; existing PDF owner summary/date capabilities remain available |
 
@@ -459,6 +459,51 @@ separate purposes. An update note may compare only the retained old/new bodies
 in its bound package, or quote an explicit explanation in the current body.
 Structure/hash validation never claims semantic correctness or dispatches an
 independent reviewer.
+
+### G7 generation at the existing T1 boundary
+
+The existing scheduled `scripts/check_information.py` path selects the latest
+completed acquisition binding for the same Registry under
+`CLIMATE_ACQUISITION_RUN_DIR`, verifies its private Hermes snapshot and real
+effective identity, and uses the existing authoring invocation without model
+overrides. Missing runtime/identity is an explicit G7 hold, with no silent
+deterministic fallback. Manual callers can select
+`--authoring-binding <saved-acquisition-binding>`; manual legacy checks without
+authoring keep their historical behavior. This installs no job and invokes no G10.
+PDF, site and search observations retain their own identities;
+only a stored canonical link and an exact G2 occurrence handoff admit PDF evidence.
+Dates carries the original target fields/source binding to identify the exact
+event/edition, using the existing meeting extraction schema and writer without Article tags.
+
+`content_enrichment` freezes the existing reader's selected complete body in the
+candidate, without changing original article/version/acquisition rows. The author
+returns a complete current summary, literal evidence for each summary statement,
+coverage of every retained body section, current-taxonomy editorial evidence and
+separate itemized change evidence. Missing/incomplete/unbound/snippet evidence is
+a specific hold, including a newer failed/snippet observation when only an older
+available body remains. An exact resolved or subsequent retained capture must
+establish the current body; an older reusable T1 reader is insufficient.
+Source observations are frozen in the
+request and checked again before staging. An Article classified as Dates is handed back to the existing
+meeting identity path; generation cannot invent or merge a canonical event.
+
+The immutable candidate's `content_authoring` record retains the exact request,
+response, body, taxonomy bytes, provider/model, runtime reference and prompt hash
+for G10. The existing T1 run freezes that runtime's binding path/hash, snapshot
+reference and effective identity. Resume/retry must match them; an automatic
+resume resolves its original saved binding rather than selecting a later run.
+Unchanged
+body and date/presentation changes are no-ops; semantic template-only changes need
+the author's explicit no-change reason. A taxonomy-only retry reuses the complete
+summary and update note and authors only editorial metadata. Revalidated reuse
+retains its original candidate/authoring reference; editorial-only inference also
+retains its actual request/response separately from the assembled full proposal.
+Recapture keeps the
+first successful observation. Re-staging rechecks the current body, previous
+published content and approval-inheritance baseline; a date-only publication can
+carry its valid human instruction, while a later approved body requires new
+comparison. All output remains pending independent review and public consumers
+keep the previous approved version.
 
 ### Declaring and validating new content scopes
 

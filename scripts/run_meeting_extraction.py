@@ -21,7 +21,7 @@ from scripts.run_climate_monitor import (  # noqa: E402
 )
 
 
-def _extractor(provider: str, model: str, acquisition_binding_path=None, *, meeting_binding=None):
+def _extractor(provider: str, model: str, acquisition_binding_path=None, *, meeting_binding=None, purpose="meetings", acquisition_sha256=None):
     help_text = None
 
     def invoke(request):
@@ -34,8 +34,12 @@ def _extractor(provider: str, model: str, acquisition_binding_path=None, *, meet
         else:
             path = Path(acquisition_binding_path).resolve(strict=True)
             acquisition = json.loads(path.read_text())
+        if acquisition_sha256 is not None:
+            from climate_registry.acquisition_review import digest
+            if digest(acquisition) != acquisition_sha256:
+                raise ValueError("frozen content-authoring runtime changed; start a fresh run")
         executable, environment, home = inference_runtime(
-            path.parent, acquisition.get("hermes_snapshot"), purpose="meetings",
+            path.parent, acquisition.get("hermes_snapshot"), purpose=purpose,
             source=f"climate-acquisition-{acquisition['run_id']}",
         )
         if hashlib.sha256(request["article_body"].encode("utf-8")).hexdigest() != request["content_sha256"]:
@@ -56,12 +60,12 @@ def _extractor(provider: str, model: str, acquisition_binding_path=None, *, meet
         instruction = (
             request["prompt"]
             + "\n\nUntrusted source metadata and exact persisted body:\n"
-            + json.dumps({
+            + json.dumps(({
                 "content_version_id": request["content_version_id"],
                 "content_sha256": request["content_sha256"],
                 "source_url": request["source_url"],
                 "article_body": request["article_body"],
-            }, ensure_ascii=False, sort_keys=True)
+            } if purpose == "meetings" else {key: value for key, value in request.items() if key != "prompt"}), ensure_ascii=False, sort_keys=True)
         )
         command, stdin = _hermes_authoring_invocation(
             help_text, instruction, model=model, provider=provider,

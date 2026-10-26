@@ -61,7 +61,7 @@ def capability(source, kind, scope):
         status, reason = "conditional", "requires_existing_stored_canonical_link_and_native_evidence"
     return {"source": source, "entity_kind": kind, "scope": scope, "status": status,
         "reason": reason, "required": required, "optional": optional,
-        "evidence": ("article-content-update.v1 plus exact published body and candidate references" if scope == CONTENT_SCOPE
+        "evidence": ("article-content-update.v1 or explicit source-explanation.v2; exact published candidate and both baselines" if scope == CONTENT_SCOPE
             else "human-article-date-authorization.v1; no source verdict" if scope == "human_article_dates"
             else "frozen source/capture and exact independent review; date-only inherits approved unrelated fields"),
         "adapter": "climate_registry.pdf_intake" if source == "pdf" else "climate_registry.acquisition" if source in {"site", "search"} else None,
@@ -89,6 +89,10 @@ def _body(snapshot):
     version = article.get("current_content_version_id")
     row = next((row for row in snapshot.get("tables", {}).get("article_content_versions", [])
         if row.get("article_id") == snapshot["entity_id"] and row.get("content_version_id") == version), None)
+    if article and version is None:
+        from .read_api import select_snapshot_article_content
+        selected, row = select_snapshot_article_content(snapshot, snapshot["entity_id"], None)
+        version = selected.get("content_version_id")
     return {"content_version_id": version, "body_sha256": hashlib.sha256(row["markdown_content"].encode()).hexdigest()} if row else None
 
 
@@ -351,6 +355,24 @@ def _validate_optional_fields(connection, snapshot, *, retain_taxonomies=None):
                     raise ValueError("owner editorial evidence differs from its stored immutable capture")
                 owner_values.append(packet["editorial_metadata"])
     native_values = None
+    authored = None
+    if snapshot.get("content_authoring"):
+        from .content_enrichment import validate_authored, published_summary
+        authored = validate_authored(snapshot["content_authoring"], snapshot)
+        request = snapshot["content_authoring"]["request"]
+        stored = connection.execute("SELECT article_id,markdown_content FROM article_content_versions WHERE content_version_id=?", (request["content_version_id"],)).fetchone()
+        if not stored or tuple(stored) != (snapshot["entity_id"], request["article_body"]):
+            raise ValueError("generated current body differs from the stored immutable source version")
+        prior = request["previous"]
+        if prior:
+            old = _candidate(connection, prior["candidate_sha256"])
+            body = _body(old)
+            text = next((row["markdown_content"] for row in old["tables"].get("article_content_versions", [])
+                if body and row["content_version_id"] == body["content_version_id"]), None)
+            if ((old["entity_kind"], old["entity_id"]) != (snapshot["entity_kind"], snapshot["entity_id"])
+                    or prior["summary"] != published_summary(old) or prior["article_body"] != text
+                    or prior["content_version_id"] != (body["content_version_id"] if body else None)):
+                raise ValueError("generated comparison differs from the exact prior published candidate")
     exact_published = (digest(snapshot) == published_sha
         and bool(_content_review(snapshot, _candidate_reviews(connection, published_sha))))
     if (retain_taxonomies is not None and not inherited_content_scope(snapshot) and not exact_published
@@ -360,6 +382,8 @@ def _validate_optional_fields(connection, snapshot, *, retain_taxonomies=None):
         if field not in display:
             continue
         value = display[field]
+        if authored and value == authored[field] and provenance.get(field) == "pending_content_authoring":
+            continue  # Generation evidence still needs the separate exact G3 semantic review.
         if exact_published:
             continue  # The unchanged frozen proposal already has its exact content and operation approvals.
         # Previously approved arrays retain their frozen taxonomy/authority, even after a taxonomy change.
@@ -456,6 +480,17 @@ def _content_origin(snapshot):
             return snapshot
 
 
+def _explanation_baseline(bundle, previous):
+    from .content_enrichment import published_summary
+    baseline = bundle.get("previous_publication", {})
+    summary = published_summary(previous)
+    if (_body(previous) is not None or baseline.get("candidate_sha256") != digest(previous)
+            or not summary or baseline.get("summary") != summary
+            or baseline.get("summary_sha256") != hashlib.sha256(summary.encode()).hexdigest()):
+        raise ValueError("source explanation baseline must bind the exact published candidate without a retained body")
+    return {"candidate_sha256": digest(previous), "body_status": "unavailable", "summary_sha256": baseline["summary_sha256"]}
+
+
 def bind_content_scope(connection, snapshot):
     """Freeze scope, the two approval references and required native taxonomy source bytes."""
     from .article_dates import validate_content_update
@@ -519,22 +554,31 @@ def bind_content_scope(connection, snapshot):
             "capability": "current_content_version_and_enrichment",
             "content_comparison_baseline": {"status": "not_applicable", "reason": "initial_content_publication"},
             "approval_inheritance_baseline": _approval_baseline(connection, snapshot, published_sha), **native_evidence}
+        from .content_enrichment import validate_scope
+        validate_scope(snapshot)
         return
     if not bundle:
         raise ValueError("content scope requires its complete content update package")
     _validate_update_captures(snapshot, bundle)
-    if not published or not _body(published):
+    if not published:
         raise ValueError("required_missing: published_content_baseline")
     current = _body(published)
+    if current is None and bundle["schema_version"] == "article-content-update.v1":
+        raise ValueError("required_missing: published_content_baseline")
     expected = {"content_version_id": bundle["previous_content_version_id"], "body_sha256": bundle["previous_body_sha256"]}
     origin = _content_origin(published)
     if digest({key: value for key, value in snapshot.items() if key != BINDING}) == digest(
             {key: value for key, value in published.items() if key != BINDING}) and BINDING in published:
         snapshot[BINDING] = published[BINDING]
         return
-    if current == _body(snapshot):
+    source_only = bundle["schema_version"] == "article-content-update.source-explanation.v2"
+    if source_only and current != _body(snapshot):
+        comparison = _explanation_baseline(bundle, origin)
+    elif current == _body(snapshot):
         prior = origin.get(BINDING, {}).get("content_comparison_baseline")
-        if not prior or {key: prior[key] for key in expected} != expected:
+        valid = (prior == _explanation_baseline(bundle, _candidate(connection, prior["candidate_sha256"]))
+            if source_only and prior else prior and {key: prior.get(key) for key in expected} == expected)
+        if not valid:
             raise ValueError("content comparison baseline mismatch; reconcile against current published content")
         comparison = prior
     elif current == expected:
@@ -542,8 +586,10 @@ def bind_content_scope(connection, snapshot):
     else:
         raise ValueError("content comparison baseline mismatch; reconcile against current published content")
     snapshot[BINDING] = {"schema_version": SCOPE_VERSION, "scope": CONTENT_SCOPE,
-        "capability": "article-content-update.v1", "content_comparison_baseline": comparison,
+        "capability": bundle["schema_version"], "content_comparison_baseline": comparison,
         "approval_inheritance_baseline": _approval_baseline(connection, snapshot, published_sha), **native_evidence}
+    from .content_enrichment import validate_scope
+    validate_scope(snapshot)
 
 
 def validate_content_baselines(connection, snapshot, sha):
@@ -552,6 +598,8 @@ def validate_content_baselines(connection, snapshot, sha):
     if OVERLAY in snapshot or BINDING not in snapshot:
         return  # Historical candidates keep their frozen schema and scope.
     _validate_optional_fields(connection, snapshot)
+    from .content_enrichment import validate_scope
+    validate_scope(snapshot)
     if inherited_content_scope(snapshot):
         baseline = snapshot[BINDING]["approval_inheritance_baseline"]
         published_sha, _ = _published(connection, snapshot)
@@ -579,13 +627,15 @@ def validate_content_baselines(connection, snapshot, sha):
     _validate_scope_dates(connection, snapshot, bundle)
     comparison = binding["content_comparison_baseline"]
     if binding["scope"] == CONTENT_SCOPE:
-        if not bundle or binding.get("capability") != "article-content-update.v1":
+        if not bundle or binding.get("capability") != bundle["schema_version"]:
             raise ValueError("content scope requires its complete content update package")
         _validate_update_captures(snapshot, bundle)
         previous = _candidate(connection, comparison["candidate_sha256"])
         expected = {"content_version_id": bundle["previous_content_version_id"], "body_sha256": bundle["previous_body_sha256"]}
-        if ((previous["entity_kind"], previous["entity_id"]) != (snapshot["entity_kind"], snapshot["entity_id"])
-                or _body(previous) != expected or {key: comparison.get(key) for key in expected} != expected):
+        source_only = bundle["schema_version"] == "article-content-update.source-explanation.v2"
+        valid = (comparison == _explanation_baseline(bundle, previous) if source_only
+            else _body(previous) == expected and {key: comparison.get(key) for key in expected} == expected)
+        if ((previous["entity_kind"], previous["entity_id"]) != (snapshot["entity_kind"], snapshot["entity_id"]) or not valid):
             raise ValueError("content comparison baseline mismatch")
     elif (bundle or binding.get("capability") != "current_content_version_and_enrichment" or not _initial_summary(snapshot)
             or comparison != {"status": "not_applicable", "reason": "initial_content_publication"}):
@@ -700,6 +750,7 @@ def review_projection(snapshot):
                 if value["taxonomy_id"] == row.get("taxonomy_id") and value["sha256"] == row.get("taxonomy_raw_sha256")), {})
             for row in tables.get("article_semantics", [])],
         "source_assessments": assessments,
+        **({"content_authoring": snapshot["content_authoring"]} if "content_authoring" in snapshot else {}),
         "source_entries": {"acquisition": origins, "pdf_links": pdf_links,
             "pdf_occurrences": [{key: row.get(key) for key in ("occurrence_id", "article_id", "source_document_sha256", "page", "content_sha256", "raw_url")}
                 for row in tables.get("pdf_intake_article_occurrences", [])]},
