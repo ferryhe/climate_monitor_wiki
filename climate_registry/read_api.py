@@ -126,6 +126,94 @@ def _attach_reviewed_meeting_source(record: dict[str, Any], owner: dict[str, Any
         record.pop("original_source_url", None)
 
 
+def _public_source_checks(value):
+    if "checks" in value:
+        value["checks"] = [{key: check[key] for key in (
+            "schema_version", "attempt_id", "run_id", "source_url", "final_url", "source_revision_sha256",
+            "packet_sha256", "body_sha256", "verification_status", "verification_basis", "access_status",
+            "checked_at", "error", "enrichment_error") if key in check} for check in value["checks"]]
+
+
+def _projected_pdf_occurrence_owners(snapshot):
+    """Copy only owner-trimmed rows from an already approved canonical view."""
+    canonical=snapshot.get("identity_mapping",{}).get("canonical",{})
+    if snapshot.get("entity_kind") != "article" or canonical.get("entity_kind") != "article":
+        return {}
+    return {row["occurrence_id"]:canonical["entity_id"]
+        for row in snapshot.get("tables",{}).get("pdf_intake_article_occurrences",[])}
+
+
+def _materialized_pdf_occurrence_owners(connection):
+    if not connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
+        return {}
+    return {occurrence:owner for row in connection.execute(
+        "SELECT snapshot_json FROM public_snapshot_metadata WHERE entity_kind='article'")
+        for occurrence,owner in _projected_pdf_occurrence_owners(json.loads(row[0])).items()}
+
+
+def _pdf_parent_ownership(payload, source=None):
+    """Entity-wide authority requires one owner covering every current occurrence."""
+    mappings = payload.get("canonical_occurrence_mappings", {})
+    owners = {mappings.get(row["occurrence_id"]) for row in payload["occurrences"]}
+    hints = {payload.get("core_article_id"), payload.get("canonical_display_article_id")} - {None}
+    whole = len(owners) == 1 and all(isinstance(owner, str) and owner.strip() for owner in owners) and (not hints or hints <= owners)
+    if "canonical_occurrence_mappings" in payload and (mappings or hints) and not whole:
+        # An Article receipt for a subset cannot authorize the PDF parent remainder.
+        if source is None and (payload.get("record_reference") or {}).get("entity_kind") == "pdf_article":
+            source = payload
+        if source is not None:
+            payload = {**source, "occurrences": payload["occurrences"], "canonical_occurrence_mappings": mappings,
+                "first_seen": payload["first_seen"], "last_seen": payload["last_seen"]}
+        payload["core_article_id"] = None
+        payload.pop("canonical_display_article_id", None)
+        if source is None:
+            # A source container has no singular current approval after full absorption.
+            payload["published_candidate_sha256"] = None
+            payload["record_reference"] = None
+    return payload
+
+
+def _merge_pdf_parent_payloads(previous, current):
+    from .publication import _merge_pdf_article_payloads
+    merged = _merge_pdf_article_payloads(previous, current)
+    ids = {row["occurrence_id"] for row in merged["occurrences"]}
+    mappings = {key: value for key, value in {**previous.get("canonical_occurrence_mappings", {}),
+        **current.get("canonical_occurrence_mappings", {})}.items() if key in ids}
+    if mappings or "canonical_occurrence_mappings" in previous or "canonical_occurrence_mappings" in current:
+        merged["canonical_occurrence_mappings"] = mappings
+    source = next((item for item in (current, previous)
+        if (item.get("record_reference") or {}).get("entity_kind") == "pdf_article"), None)
+    return _pdf_parent_ownership(merged, source)
+
+
+def _pdf_owner_source_reference(payload, occurrences, snapshot=None):
+    if payload.get("owner_agent_verification"):
+        return
+    if snapshot and snapshot["entity_kind"] == "article":
+        aliases = snapshot.get("identity_mapping", {}).get("aliases", [])
+        occurrence_ids = {item["occurrence_id"] for item in occurrences}
+        whole = any(alias["source"]["selection"] == "entity" and alias["source"]["entity_kind"] == "pdf_article"
+            and alias["source"]["entity_id"] == payload["article_id"] for alias in aliases)
+        partial = any(alias["source"]["selection"] == "occurrences"
+            and occurrence_ids & set(alias["source"]["occurrence_ids"]) for alias in aliases)
+        if whole or not partial:
+            return  # An approved canonical content projection keeps its own field authority.
+    owners = [item["owner_agent_verification"] for item in occurrences if not item.get("metadata_only")
+        and item.get("verification_status") == "verified" and item.get("owner_agent_verification", {}).get("review_id")
+        and item["owner_agent_verification"].get("reviewer")]
+    if not owners:
+        return
+    owner = max(owners,key=lambda value: (RegistryReader._timestamp_key(value["checked_at"]),value["review_id"]))
+    payload.update({key: owner["public_fields"][key] for key in ("title","summary") if key in owner["public_fields"]})
+    payload.update(owner_agent_verification=deepcopy(owner), checked_source_url=owner.get("final_url") or owner["source_url"],
+        type_safe_classification=None, categories=[], keywords=[], metadata_provenance={})
+    if "summary" in owner["public_fields"]:
+        payload["summary_provenance"] = "owner_agent_verified_source"
+    payload.pop("manual_enrichment",None)
+    if owner["source_url"] != payload["checked_source_url"]:
+        payload["original_source_url"] = owner["source_url"]
+
+
 def validate_article_id(article_id: str) -> str:
     if not article_id or len(article_id) > 128 or any(
         char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id
@@ -548,10 +636,16 @@ class RegistryReader:
             return
         with self.connect() as connection:
             self._snapshot_connection = connection
+            self._pdf_document_cache, self._pdf_source_cache, self._pdf_check_packet_cache = {}, {}, {}
+            self._legacy_acquisition_search_cache, self._legacy_acquisition_searches_loaded = {}, set()
+            self._meeting_records_cache = {}
             try:
                 yield self
             finally:
+                del self._meeting_records_cache
                 del self._snapshot_connection
+                del self._pdf_document_cache, self._pdf_source_cache, self._pdf_check_packet_cache
+                del self._legacy_acquisition_search_cache, self._legacy_acquisition_searches_loaded
                 for name in ("_snapshot_annotations", "_snapshot_reports"):
                     if hasattr(self, name):
                         delattr(self, name)
@@ -604,6 +698,9 @@ class RegistryReader:
                         {(kind, identity) for kind in available_kinds for identity in available_ids})
                     if not requested_ids <= covered:
                         continue
+                if requested_ids is not None:
+                    from .identity import selected_entities
+                    requested_ids = selected_entities(available, requested_ids)
                 cached = {identity: snapshot for identity, snapshot in available.items()
                     if identity[0] in kinds_key and (requested_ids is None or identity in requested_ids)}
                 self._approved_snapshot_cache[key] = cached
@@ -715,35 +812,16 @@ class RegistryReader:
             }
 
     def approved_merged_article_count(self) -> int:
-        """Count the approved core/PDF URL union without assembling article DTOs."""
+        """Count current semantic identities, including distinct materials at one URL."""
         if self.static_snapshot is not None:
-            urls = {item.get("canonical_url") for item in self.static_snapshot.get("articles", [])}
-            urls.update(item.get("canonical_url") for item in self.static_snapshot.get("pdf_articles", [])
-                if item.get("occurrences"))
-            return len(urls - {None})
+            return len({("article", item["article_id"]) for item in self.static_snapshot.get("articles", [])}
+                | {("article", item.get("core_article_id") or item["canonical_display_article_id"]) if item.get("core_article_id") or item.get("canonical_display_article_id") else ("pdf_article", item["article_id"])
+                    for item in self.static_snapshot.get("pdf_articles", []) if item.get("occurrences")})
         with self.connect() as connection:
             if not (self.public and getattr(self, "_snapshot_direct", False)
                     and connection.execute("PRAGMA user_version").fetchone()[0] >= 21):
                 raise RegistryContractError("approved article count requires a direct published snapshot")
-            urls = set()
-            for (kind, identity), snapshot in self._public_candidates("article", "pdf_article").items():
-                tables = snapshot.get("tables", {})
-                if kind == "article":
-                    urls.update(row.get("canonical_url") for row in tables.get("articles", [])
-                        if row.get("canonical_url"))
-                    payload_url = (snapshot.get("static_payload") or {}).get("canonical_url")
-                    if payload_url:
-                        urls.add(payload_url)
-                eligible_pdf_articles = {row.get("article_id") for row in tables.get("pdf_intake_article_occurrences", [])
-                    if json.loads(row["occurrence_json"]).get("summary_basis") != "verbatim_pdf_calendar_row"}
-                for article in tables.get("pdf_intake_articles", []):
-                    article_id = article.get("article_id")
-                    if ((kind == "pdf_article" and article_id != identity)
-                            or article_id not in eligible_pdf_articles):
-                        continue
-                    if article.get("canonical_url"):
-                        urls.add(article["canonical_url"])
-            return len(urls)
+            return len(self.approved_article_cards_all()) + sum(not item.get("canonical_display_article_id") for item in self.pdf_articles_all())
 
     @_direct_public_read
     def reports(self, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
@@ -794,12 +872,15 @@ class RegistryReader:
             for offset in range(0, len(article_ids), 500):
                 candidates = self._public_candidates("article", entity_ids={
                     "article": article_ids[offset:offset + 500]})
+                from .identity import approved_aliases
+                aliases = approved_aliases(candidates)
                 for row in rows:
-                    snapshot = candidates.get(("article", row["article_id"]))
+                    key = aliases.get(("article", row["article_id"]), ("article", row["article_id"]))
+                    snapshot = candidates.get(key)
                     if snapshot and any(appearance.get("report_id") == row["report_id"]
                             and appearance.get("article_id") == row["article_id"]
                             for appearance in snapshot.get("tables", {}).get("report_appearances", [])):
-                        counts[row["report_id"]].add(row["article_id"])
+                        counts[row["report_id"]].add(key[1])
         return {identity: len(values) for identity, values in counts.items()}
 
     def approved_reports_all(self) -> list[dict[str, Any]]:
@@ -922,7 +1003,9 @@ class RegistryReader:
             for article in self.pdf_articles_all(include_linked=True,allowed_occurrence_ids=allowed_occurrence_ids):
                 for occurrence in article.get("occurrences",[]):
                     if allowed_occurrence_ids is None or occurrence["occurrence_id"] in allowed_occurrence_ids:
-                        articles.setdefault(occurrence["source_document_sha256"],set()).add(article["article_id"])
+                        mappings = article.get("canonical_occurrence_mappings", {})
+                        owner = mappings.get(occurrence["occurrence_id"]) if mappings else article.get("core_article_id") or article.get("canonical_display_article_id")
+                        articles.setdefault(occurrence["source_document_sha256"],set()).add(("article", owner) if owner else ("pdf_article", article["article_id"]))
             for item in self.pdf_calendar_items_all(allowed_occurrence_ids=allowed_calendar_ids):
                 sha = item["source_document_sha256"]
                 calendars[sha] = calendars.get(sha,0) + 1
@@ -941,7 +1024,8 @@ class RegistryReader:
                                 continue
                             occurrence_id = row.get("occurrence_id")
                             if allowed_occurrence_ids is None or occurrence_id in allowed_occurrence_ids:
-                                article_ids.setdefault(row.get("source_document_sha256"), set()).add(row.get("article_id"))
+                                owner = ("article", _identity) if _kind == "article" and snapshot.get("identity_mapping") else ("pdf_article", row.get("article_id"))
+                                article_ids.setdefault(row.get("source_document_sha256"), set()).add(owner)
                     for row in snapshot.get("tables", {}).get("pdf_intake_calendar_items", []):
                         occurrence_id = row.get("occurrence_id")
                         if allowed_calendar_ids is None or occurrence_id in allowed_calendar_ids:
@@ -969,9 +1053,14 @@ class RegistryReader:
                 "SELECT occurrence_id,source_document_sha256 FROM pdf_intake_calendar_items"
             ).fetchall()
             articles, calendars = {}, {}
+            owners = {}
+            if self.public and connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
+                for kind, identity, encoded in connection.execute("SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata WHERE entity_kind='article' AND json_type(snapshot_json,'$.identity_mapping')='object'"):
+                    for occurrence in json.loads(encoded).get("tables", {}).get("pdf_intake_article_occurrences", []):
+                        owners[occurrence["occurrence_id"]] = (kind, identity)
             for row in article_rows:
                 if allowed_occurrence_ids is None or row[0] in allowed_occurrence_ids:
-                    articles.setdefault(row[1], set()).add(row[2])
+                    articles.setdefault(row[1], set()).add(owners.get(row[0], ("pdf_article", row[2])))
             for row in calendar_rows:
                 if allowed_calendar_ids is None or row[0] in allowed_calendar_ids:
                     calendars[row[1]] = calendars.get(row[1], 0) + 1
@@ -1003,8 +1092,10 @@ class RegistryReader:
 
     def _pdf_report_from_published_candidates(self, connection, document_sha256: str, *,
         allowed_occurrence_ids: set[str] | None, allowed_calendar_ids: set[str] | None,
-        include_bytes: bool, page: int | None = None, page_size: int = 5) -> dict[str, Any]:
-        candidates = self._pdf_document_candidates(connection, document_sha256)
+        include_bytes: bool, page: int | None = None, page_size: int = 5, candidates=None,
+        module_keys: set[tuple[str, str]] | None = None) -> dict[str, Any]:
+        if candidates is None:
+            candidates = self._pdf_document_candidates(connection, document_sha256)
         document_row = connection.execute(
             "SELECT * FROM pdf_intake_documents WHERE document_sha256=?", (document_sha256,)
         ).fetchone()
@@ -1065,11 +1156,32 @@ class RegistryReader:
                 raise RegistryContractError("original PDF hash mismatch")
             return dict(item, pdf_bytes=body)
 
+        semantic_entries = {}
+        for (kind, identity), snapshot in candidates.items():
+            if kind != "article" or not snapshot.get("identity_mapping"):
+                continue
+            for row in snapshot.get("tables", {}).get("pdf_intake_articles", []):
+                occurrences = [item for item in snapshot.get("tables", {}).get("pdf_intake_article_occurrences", [])
+                    if item["article_id"] == row["article_id"] and item["source_document_sha256"] == document_sha256
+                    and (allowed_occurrence_ids is None or item["occurrence_id"] in allowed_occurrence_ids)]
+                if occurrences:
+                    sources, _, previous = semantic_entries.get(identity, (set(), snapshot, []))
+                    sources.add(row["article_id"])
+                    exact = {item["occurrence_id"]: item for item in previous + occurrences}
+                    semantic_entries[identity] = (sources, snapshot, list(exact.values()))
         article_order = [row[0] for row in connection.execute(
             "SELECT article_id FROM pdf_intake_articles a WHERE EXISTS "
             "(SELECT 1 FROM pdf_intake_article_occurrences o WHERE o.article_id=a.article_id "
             "AND o.source_document_sha256=?)", (document_sha256,)).fetchall()
             if row[0] in article_ids_for_document]
+        standalone_sources = {row["article_id"] for (kind, _), snapshot in candidates.items() if kind == "pdf_article"
+            for row in snapshot.get("tables", {}).get("pdf_intake_article_occurrences", [])
+            if row["source_document_sha256"] == document_sha256
+            and (allowed_occurrence_ids is None or row["occurrence_id"] in allowed_occurrence_ids)}
+        semantic_sources = {source for value in semantic_entries.values() for source in value[0]} - standalone_sources
+        article_order = [identity for identity in article_order if identity not in semantic_sources] + sorted(semantic_entries,
+            key=lambda identity: (min(row["page"] for row in semantic_entries[identity][2]), identity))
+        item["article_count"] = len(article_order)
         selected_articles = set(article_order)
         selected_calendars = approved_calendar_ids if allowed_calendar_ids is None else approved_calendar_ids & allowed_calendar_ids
         if page is not None:
@@ -1097,7 +1209,8 @@ class RegistryReader:
                 continue
             for row in snapshot.get("tables", {}).get("pdf_intake_articles", []):
                 article_id = row.get("article_id")
-                if article_id not in selected_articles or (kind == "pdf_article" and article_id != identity):
+                if (article_id not in selected_articles or (kind == "pdf_article" and article_id != identity)
+                        or kind == "article" and snapshot.get("identity_mapping")):
                     continue
                 scoped = {**snapshot, "entity_id": article_id,
                     "_approved_candidate_sha256": self._published_candidate_sha(snapshot)}
@@ -1111,7 +1224,26 @@ class RegistryReader:
                 if occurrences:
                     articles_by_id[article_id] = {**article, "occurrences": deduplicate_pdf_occurrences(
                         occurrences, preserve_first_identity=True)}
+        for identity, (source_ids, snapshot, occurrences) in semantic_entries.items():
+            if identity not in selected_articles:
+                continue
+            from .publication import _merge_pdf_article_payloads
+            article, exact_occurrences = None, {}
+            for source_id in sorted(source_ids):
+                scoped = {**snapshot, "entity_id": source_id, "_approved_candidate_sha256": self._published_candidate_sha(snapshot)}
+                source = self._pdf_article_from_snapshot(scoped, allowed_occurrence_ids={row["occurrence_id"] for row in occurrences})
+                exact_occurrences.update((row["occurrence_id"], row) for row in source["occurrences"])
+                article = source if article is None else _merge_pdf_article_payloads(article, source)
+            article["occurrences"] = sorted(exact_occurrences.values(), key=lambda row: (row.get("page") or 0, row["occurrence_id"]))
+            article.update(source_pdf_article_id=min(source_ids), source_pdf_article_ids=sorted(source_ids), canonical_article_id=identity,
+                module_identity={"entity_kind": "article", "entity_id": identity}, identity_mapping=deepcopy(snapshot["identity_mapping"]))
+            articles_by_id[identity] = article
         articles = [articles_by_id[identity] for identity in article_order if identity in articles_by_id]
+        if module_keys is not None:
+            from .list_projection import group_pdf_articles
+            articles = [article for identity, article in group_pdf_articles(articles).items()
+                if ("article", identity) in module_keys]
+            selected_calendars &= {identity for kind, identity in module_keys if kind == "calendar"}
 
         calendars_by_id = {}
         for (kind, _identity), snapshot in candidates.items():
@@ -1197,22 +1329,37 @@ class RegistryReader:
     def pdf_report_module_catalog(self, document_sha256: str, *, allowed_occurrence_ids=None,
         allowed_calendar_ids=None) -> list[tuple[str, str]]:
         """Lightweight identities for legacy public/runtime report merging."""
+        from .list_projection import group_pdf_articles, pdf_article_group_key
         if self.static_snapshot is not None and "pdf_report_details" in self.static_snapshot:
             stored = self.static_snapshot["pdf_report_details"].get(document_sha256, {})
-            return [("article", article["canonical_url"]) for article in stored.get("articles", [])
-                if any(allowed_occurrence_ids is None or row["occurrence_id"] in allowed_occurrence_ids
-                    for row in article["occurrences"])] + [("calendar", row["occurrence_id"])
-                for row in stored.get("calendar_items", [])
+            articles = [{**article, "occurrences": [row for row in article["occurrences"]
+                if allowed_occurrence_ids is None or row["occurrence_id"] in allowed_occurrence_ids]}
+                for article in stored.get("articles", [])]
+            return [("article", identity) for identity in group_pdf_articles([row for row in articles if row["occurrences"]])] + [
+                ("calendar", row["occurrence_id"]) for row in stored.get("calendar_items", [])
                 if allowed_calendar_ids is None or row["occurrence_id"] in allowed_calendar_ids]
+        if self.public:
+            with self.connect() as connection:
+                has_mapping = (connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone()
+                    and connection.execute("SELECT 1 FROM public_snapshot_metadata WHERE json_type(snapshot_json,'$.identity_mapping')='object' LIMIT 1").fetchone())
+                if not has_mapping and getattr(self, "_snapshot_direct", False):
+                    has_mapping = any(snapshot.get("identity_mapping") or any(row.get("core_article_id")
+                        for row in snapshot.get("tables", {}).get("pdf_intake_articles", []))
+                        for snapshot in self._public_candidates("article", "pdf_article").values())
+                if has_mapping:
+                    report = self.pdf_report(document_sha256, allowed_occurrence_ids=allowed_occurrence_ids, allowed_calendar_ids=allowed_calendar_ids)
+                    return [("article", identity) for identity in group_pdf_articles(report["articles"])] + [("calendar", row["occurrence_id"]) for row in report["calendar_items"]]
         with self.connect() as connection:
-            articles = connection.execute("SELECT a.canonical_url, o.occurrence_id "
+            approved = connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone()
+            core_column = "a.core_article_id" if approved and self._has_pdf_article_links(connection) else "NULL AS core_article_id"
+            articles = connection.execute("SELECT a.article_id, " + core_column + ", o.occurrence_id "
                 "FROM pdf_intake_articles a JOIN pdf_intake_article_occurrences o ON o.article_id=a.article_id "
                 "WHERE o.source_document_sha256=? AND COALESCE(json_extract(o.occurrence_json, '$.summary_basis'), '') "
                 "!= 'verbatim_pdf_calendar_row' ORDER BY a.rowid", (document_sha256,)).fetchall()
             calendars = connection.execute("SELECT occurrence_id FROM pdf_intake_calendar_items "
                 "WHERE source_document_sha256=? ORDER BY start_date, name, occurrence_id", (document_sha256,)).fetchall()
-        return list(dict.fromkeys([("article", row[0]) for row in articles
-            if allowed_occurrence_ids is None or row[1] in allowed_occurrence_ids])) + [
+        return list(dict.fromkeys([("article", pdf_article_group_key(dict(row))) for row in articles
+            if allowed_occurrence_ids is None or row["occurrence_id"] in allowed_occurrence_ids])) + [
             ("calendar", row[0]) for row in calendars
             if allowed_calendar_ids is None or row[0] in allowed_calendar_ids]
 
@@ -1272,7 +1419,18 @@ class RegistryReader:
                 if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                     return self._pdf_report_from_published_candidates(connection, document_sha256,
                         allowed_occurrence_ids=allowed_occurrence_ids,
-                        allowed_calendar_ids=allowed_calendar_ids, include_bytes=include_bytes, page=page, page_size=page_size)
+                        allowed_calendar_ids=allowed_calendar_ids, include_bytes=include_bytes, page=page, page_size=page_size,
+                        module_keys=module_keys)
+        if self.public and self.static_snapshot is None:
+            with self.connect() as connection:
+                if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone() and connection.execute(
+                        "SELECT 1 FROM public_snapshot_metadata WHERE json_type(snapshot_json,'$.identity_mapping')='object' LIMIT 1").fetchone():
+                    candidates = {(row[0], row[1]): json.loads(row[2]) for row in connection.execute(
+                        "SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata")}
+                    return self._pdf_report_from_published_candidates(connection, document_sha256,
+                        allowed_occurrence_ids=allowed_occurrence_ids, allowed_calendar_ids=allowed_calendar_ids,
+                        include_bytes=include_bytes, page=page, page_size=page_size, candidates=candidates,
+                        module_keys=module_keys)
         item = next((item for item in self.pdf_reports_all(allowed_occurrence_ids=allowed_occurrence_ids,
             allowed_calendar_ids=allowed_calendar_ids) if item["document_sha256"] == document_sha256), None)
         if item is None:
@@ -1292,16 +1450,21 @@ class RegistryReader:
             if allowed_calendar_ids is not None:
                 payload["calendar_items"] = [row for row in payload["calendar_items"] if row["occurrence_id"] in allowed_calendar_ids]
             if module_keys is not None:
-                payload["articles"] = [row for row in payload["articles"] if ("article", row["canonical_url"]) in module_keys]
+                from .list_projection import group_pdf_articles
+                payload["articles"] = [row for identity, row in group_pdf_articles(payload["articles"]).items()
+                    if ("article", identity) in module_keys]
                 payload["calendar_items"] = [row for row in payload["calendar_items"] if ("calendar", row["occurrence_id"]) in module_keys]
             payload = {**payload,**item,"report_pdf":None}
             return self.paginate_pdf_report(payload, page, page_size) if page is not None else payload
         with self.connect() as connection:
             if module_keys is not None:
-                occurrence_ids = {row[1] for row in connection.execute(
-                    "SELECT a.canonical_url,o.occurrence_id FROM pdf_intake_articles a "
+                from .list_projection import pdf_article_group_key
+                approved = connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone()
+                core_column = "a.core_article_id" if approved and self._has_pdf_article_links(connection) else "NULL AS core_article_id"
+                occurrence_ids = {row["occurrence_id"] for row in connection.execute(
+                    "SELECT a.article_id, " + core_column + ", o.occurrence_id FROM pdf_intake_articles a "
                     "JOIN pdf_intake_article_occurrences o ON o.article_id=a.article_id "
-                    "WHERE o.source_document_sha256=?", (document_sha256,)) if ("article", row[0]) in module_keys}
+                    "WHERE o.source_document_sha256=?", (document_sha256,)) if ("article", pdf_article_group_key(dict(row))) in module_keys}
                 allowed_occurrence_ids = occurrence_ids if allowed_occurrence_ids is None else occurrence_ids & allowed_occurrence_ids
                 calendar_ids = {identity for kind, identity in module_keys if kind == "calendar"}
                 allowed_calendar_ids = calendar_ids if allowed_calendar_ids is None else calendar_ids & allowed_calendar_ids
@@ -1374,11 +1537,10 @@ class RegistryReader:
                 return dict(item, pdf_bytes=body)
             document = self._pdf_document_json(row["document_json"], document_sha256=document_sha256)
             articles = []
+            occurrence_owners=_materialized_pdf_occurrence_owners(connection)
             for article_row in connection.execute("""SELECT * FROM pdf_intake_articles a WHERE EXISTS (
                 SELECT 1 FROM pdf_intake_article_occurrences o WHERE o.article_id=a.article_id AND o.source_document_sha256=?)""", (document_sha256,)):
-                if module_keys is not None and ("article", article_row["canonical_url"]) not in module_keys:
-                    continue
-                payload = self._pdf_article_payload(connection, article_row, allowed_occurrence_ids=allowed_occurrence_ids)
+                payload = self._pdf_article_payload(connection, article_row, allowed_occurrence_ids=allowed_occurrence_ids, occurrence_owners=occurrence_owners)
                 occurrences = deduplicate_pdf_occurrences([value for value in payload["occurrences"]
                     if value.get("source_document_sha256") == document_sha256])
                 if occurrences:
@@ -1439,15 +1601,20 @@ class RegistryReader:
                 source_report = self._source_report(report["report_date"], report["filename"], report["report_sha256"], archive=True)
                 articles = []
                 self._prepare_legacy_acquisition_searches(candidates.values())
-                for article_id in identities:
-                    snapshot = candidates.get(("article", article_id))
-                    if snapshot is None:
+                from .identity import approved_aliases
+                aliases, seen = approved_aliases(candidates), set()
+                for source_id in identities:
+                    key = aliases.get(("article", source_id), ("article", source_id))
+                    snapshot = candidates.get(key)
+                    if snapshot is None or key in seen:
                         continue
+                    article_id = key[1]
                     detail = self._article_from_snapshot(snapshot)
-                    appearance = next((item for item in detail.get("appearances", [])
-                        if item.get("report_date") == report["report_date"]), None)
                     frozen = next((item for item in snapshot.get("tables", {}).get("report_appearances", [])
-                        if item.get("report_id") == report["report_id"]), None)
+                        if item.get("report_id") == report["report_id"] and item.get("article_id") == source_id), None)
+                    appearance = next((item for item in detail.get("appearances", [])
+                        if item.get("report_date") == report["report_date"] and frozen
+                        and item.get("version_id") == frozen.get("version_id")), None)
                     if appearance is None or frozen is None:
                         continue
                     report_article = {"ordinal": frozen.get("ordinal"), "section": frozen.get("section"),
@@ -1466,6 +1633,7 @@ class RegistryReader:
                             "original_source_url": detail.get("original_source_url"),
                             "owner_agent_verification": detail["owner_agent_verification"]})
                     articles.append(report_article)
+                    seen.add(key)
                 payload = {"report_date": report["report_date"], "report_title": report["report_title"],
                     "cadence": report["cadence"], "report_format": report["report_format"],
                     "executive_summary": list(source_report.executive_summary) if source_report and not self.public else [],
@@ -1619,8 +1787,12 @@ class RegistryReader:
             if approved_display:
                 detail = self.article(item["article_id"])
                 for field in ("title","summary","summary_provenance","categories","keywords","metadata_provenance",
-                    "source_annotation","publisher","source","canonical_url"):
+                    "source_annotation","publisher","source","canonical_url","current_version_id"):
                     item[field] = detail.get(field)
+                if detail.get("owner_agent_verification") and detail.get("checked_source_url"):
+                    item.update({"checked_source_url": detail["checked_source_url"],
+                        "original_source_url": detail.get("original_source_url"),
+                        "owner_agent_verification": detail["owner_agent_verification"]})
             articles.append(item)
         payload = {
             "report_date": report["report_date"],
@@ -1848,7 +2020,9 @@ class RegistryReader:
     def _snapshot_pdf_document_sources(dependencies: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
         """Recreate the legacy source observation shape from frozen dependencies."""
         sources: dict[str, list[dict[str, str]]] = {}
-        for row in dependencies.get("pdf_intake_document_sources", []):
+        # Frozen JSON row order differs from the live source_path order.
+        for row in sorted(dependencies.get("pdf_intake_document_sources", []),
+                key=lambda row:(row.get("document_sha256") or "",row.get("source_path") or "")):
             sources.setdefault(row.get("document_sha256"), []).append({
                 "path": row.get("source_path"),
                 "filename": row.get("filename"),
@@ -1942,7 +2116,7 @@ class RegistryReader:
                 value[field + "_evidence"] = display[field + "_evidence"]
             value[field + "_verification"] = verification
             if field == "activity_dates":
-                value["is_activity"] = bool(value[field])
+                value["is_activity"] = display.get("is_activity", bool(value[field]))
 
     @staticmethod
     def _pdf_occurrences(
@@ -1952,7 +2126,12 @@ class RegistryReader:
     ) -> list[dict[str, Any]]:
         if not RegistryReader._has_pdf_intake(connection):
             return []
-        if pdf_article_id is not None:
+        from .publication import snapshot_metadata
+        mapping_snapshot = snapshot_metadata(connection, "article", article_id) if pdf_article_id is None else None
+        if mapping_snapshot and mapping_snapshot.get("identity_mapping"):
+            identities = [row["occurrence_id"] for row in mapping_snapshot.get("tables", {}).get("pdf_intake_article_occurrences", [])]
+            rows = connection.execute("SELECT o.article_id,o.occurrence_id,o.occurrence_json,o.source_document_sha256,o.page,o.raw_url,o.publication_date,o.content_sha256 FROM pdf_intake_article_occurrences o WHERE occurrence_id IN (" + ",".join("?" for _ in identities) + ") ORDER BY COALESCE(o.report_date,'') DESC,o.page DESC,o.occurrence_id DESC", identities).fetchall() if identities else []
+        elif pdf_article_id is not None:
             rows = connection.execute(
                 """SELECT o.article_id, o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
                    WHERE o.article_id=?
@@ -1963,9 +2142,9 @@ class RegistryReader:
             rows = connection.execute(
                 """SELECT o.article_id, o.occurrence_id, o.occurrence_json, o.source_document_sha256, o.page, o.raw_url, o.publication_date, o.content_sha256 FROM pdf_intake_article_occurrences o
                    JOIN pdf_intake_articles a ON a.article_id=o.article_id
-                   WHERE a.core_article_id=? OR (a.canonical_url=? AND ?)
+                   WHERE a.core_article_id=?
                    ORDER BY COALESCE(o.report_date, '' ) DESC, o.page DESC, o.occurrence_id DESC""",
-                (article_id,canonical_url,bool(connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone())),
+                (article_id,),
             ).fetchall()
         else:
             rows = connection.execute(
@@ -2008,13 +2187,14 @@ class RegistryReader:
             and (allowed_occurrence_ids is None or value["occurrence_id"] in allowed_occurrence_ids)]
         if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
             for value in result:
+                _public_source_checks(value)
                 snapshot = snapshot_metadata(connection, "article", article_id) or snapshot_metadata(connection, "pdf_article", pdf_article_id or article_id)
                 RegistryReader._apply_reviewed_date_fields(value, snapshot)
         return result
 
     @classmethod
     def _pdf_article_payload(cls, connection: sqlite3.Connection, row: sqlite3.Row,
-        *, allowed_occurrence_ids: set[str] | None = None) -> dict[str, Any]:
+        *, allowed_occurrence_ids: set[str] | None = None, occurrence_owners=None) -> dict[str, Any]:
         canonical_url = row["canonical_url"]
         core_article_id = (
             row["core_article_id"] if cls._has_pdf_article_links(connection) else row["article_id"]
@@ -2089,10 +2269,15 @@ class RegistryReader:
             display = occurrences[0].get("verified_primary_display") or {}
             payload.update(metadata_only=True, summary=None, title=display.get("title") or payload.get("title"),
                 verified_primary_reference=occurrences[0].get("verified_primary_reference"))
+        _pdf_owner_source_reference(payload,occurrences,snapshot)
         if snapshot is not None:
             from .article_dates import content_date_projection
             payload.update(content_date_projection(payload, date_snapshot))
-        return payload
+        mappings={item["occurrence_id"]:occurrence_owners[item["occurrence_id"]] for item in occurrences
+            if item["occurrence_id"] in (occurrence_owners or {})}
+        if mappings:
+            payload["canonical_occurrence_mappings"]=mappings
+        return _pdf_parent_ownership(payload)
 
     @_direct_public_read
     def pdf_articles(
@@ -2119,7 +2304,10 @@ class RegistryReader:
             core_urls = {item["canonical_url"] for item in self.static_snapshot["articles"] if item["publication_eligible"] and item["document_kind"] == "article"}
             items = []
             for original in self.static_snapshot["pdf_articles"]:
-                if not include_linked and original["canonical_url"] in core_urls:
+                core_ids = {item["article_id"] for item in self.static_snapshot["articles"]}
+                mapped = set(original.get("canonical_occurrence_mappings", {}).values())
+                fully_mapped = {row["occurrence_id"] for row in original.get("occurrences", [])} <= set(original.get("canonical_occurrence_mappings", {}))
+                if not include_linked and ((original.get("core_article_id") or original.get("canonical_display_article_id")) in core_ids or mapped and fully_mapped and mapped <= core_ids):
                     continue
                 item = deepcopy(original)
                 item.setdefault("collected_at", None)
@@ -2155,6 +2343,11 @@ class RegistryReader:
                             payload = self._pdf_article_from_snapshot(scoped, allowed_occurrence_ids=allowed_occurrence_ids)
                         except RegistryNotFoundError:
                             continue
+                        if payload.get("core_article_id"):
+                            payload["canonical_occurrence_mappings"] = {row["occurrence_id"]: payload["core_article_id"] for row in payload["occurrences"]}
+                        previous = items_by_id.get(article_id)
+                        if previous is not None:
+                            payload = _merge_pdf_parent_payloads(previous, payload)
                         items_by_id[article_id] = payload
                 items = list(items_by_id.values())
                 items.sort(key=lambda item: (item["last_seen"] or "", item["article_id"]), reverse=True)
@@ -2173,8 +2366,9 @@ class RegistryReader:
                 )
             ).fetchall()
             items = []
+            occurrence_owners=_materialized_pdf_occurrence_owners(connection)
             for row in rows:
-                item = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids)
+                item = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids, occurrence_owners=occurrence_owners)
                 if not item["occurrences"]:
                     continue
                 items.append(item)
@@ -2186,12 +2380,14 @@ class RegistryReader:
         validate_article_id(article_id)
         if self.static_snapshot:
             item = next((item for item in self.pdf_articles_all(include_linked=True) if item["article_id"] == article_id), None)
-            if item is None:
+            if item is not None and allowed_occurrence_ids is not None:
+                item["occurrences"] = [row for row in item["occurrences"] if row["occurrence_id"] in allowed_occurrence_ids]
+            if item is None or not item["occurrences"]:
                 raise RegistryNotFoundError("article not found")
             return item
         with self.connect() as connection:
             if self.public and getattr(self, "_snapshot_direct", False) and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                pdf_candidates = self._public_candidates("pdf_article", entity_ids={"pdf_article": [article_id]})
+                pdf_candidates = self._public_candidates("article", "pdf_article", entity_ids={"pdf_article": [article_id]})
                 standalone = pdf_candidates.get(("pdf_article", article_id))
                 row = connection.execute("SELECT core_article_id,canonical_url FROM pdf_intake_articles WHERE article_id=?", (article_id,)).fetchone()
                 core_ids = set()
@@ -2214,11 +2410,27 @@ class RegistryReader:
                     owner = next((snapshot for (kind, _identity), snapshot in candidates.items()
                         if kind == "article" and any(item.get("article_id") == article_id
                             for item in snapshot.get("tables", {}).get("pdf_intake_articles", []))), None)
-                    if owner is not None:
+                    pdf_candidates = {**candidates, **pdf_candidates}
+                    if owner is not None and not owner.get("identity_mapping"):
                         return self._pdf_article_from_snapshot({**owner, "entity_id": article_id,
                             "_approved_candidate_sha256": self._published_candidate_sha(owner)},
                             allowed_occurrence_ids=allowed_occurrence_ids)
                     standalone = candidates.get(("pdf_article", article_id), standalone)
+                payload = None
+                for (kind, identity), snapshot in pdf_candidates.items():
+                    if not any(row.get("article_id") == article_id for row in snapshot.get("tables", {}).get("pdf_intake_articles", [])):
+                        continue
+                    try:
+                        current = self._pdf_article_from_snapshot({**snapshot, "entity_id": article_id,
+                            "_approved_candidate_sha256": self._published_candidate_sha(snapshot)}, allowed_occurrence_ids=allowed_occurrence_ids)
+                    except RegistryNotFoundError:
+                        continue
+                    owner = current.get("core_article_id")
+                    if owner:
+                        current["canonical_occurrence_mappings"] = {row["occurrence_id"]: owner for row in current["occurrences"]}
+                    payload = current if payload is None else _merge_pdf_parent_payloads(payload, current)
+                if payload is not None:
+                    return payload
                 if standalone is not None:
                     return self._pdf_article_from_snapshot(standalone, allowed_occurrence_ids=allowed_occurrence_ids)
                 raise RegistryNotFoundError("article not found")
@@ -2229,7 +2441,8 @@ class RegistryReader:
             ).fetchone()
             if row is None:
                 raise RegistryNotFoundError("article not found")
-            payload = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids)
+            payload = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids,
+                occurrence_owners=_materialized_pdf_occurrence_owners(connection))
             if allowed_occurrence_ids is not None and not payload["occurrences"]:
                 raise RegistryNotFoundError("article not found")
             return payload
@@ -2441,11 +2654,44 @@ class RegistryReader:
                     if kind == "pdf_meeting" and identity in pdf_ids and target in pdf_ids:
                         aliases[identity] = target
                         aliases.setdefault(target, target)
+                scoped_targets = {}
+                approved_scopes = set()
+                for (kind, identity), snapshot in approved.items():
+                    if kind not in {"meeting", "pdf_meeting"}:
+                        continue
+                    rows = snapshot.get("tables", {}).get("pdf_intake_calendar_items", [])
+                    approved_scopes.update((row["event_id"], row["occurrence_id"], row.get("source_document_sha256")) for row in rows)
+                    for alias in snapshot.get("identity_mapping", {}).get("aliases", []):
+                        source = alias["source"]
+                        if source["entity_kind"] != "pdf_meeting":
+                            continue
+                        selected = set(source["occurrence_ids"])
+                        for row in rows:
+                            if row.get("event_id") == source["entity_id"] and row["occurrence_id"] in selected:
+                                scoped_targets[(source["entity_id"], row["occurrence_id"], row.get("source_document_sha256"))] = (kind, identity)
+                    if kind == "pdf_meeting" and (kind, identity) in scoped_targets.values():
+                        for row in rows:
+                            if row.get("event_id") == identity:
+                                scoped_targets[(identity, row["occurrence_id"], row.get("source_document_sha256"))] = (kind, identity)
+                native_sources = {}
+                for (source, _occurrence, _document), (kind, identity) in scoped_targets.items():
+                    if kind == "meeting":
+                        native_sources.setdefault(source, set()).add(identity)
+                unbound_scopes = set()
                 items = [dict(item) for item in items]
                 for item in items:
                     item.pop("canonical_pdf_event_id", None)
                     identity = item.get("pdf_event_id") or item.get("event_id")
-                    if identity in aliases and item.get("occurrence_id") in pdf_occurrences[identity]:
+                    source_scope = (identity, item.get("occurrence_id"), item.get("source_document_sha256"))
+                    if (item.get("canonical_event_id") in native_sources.get(identity, ()) and source_scope not in approved_scopes):
+                        item.pop("canonical_event_id", None)
+                        unbound_scopes.add(source_scope)
+                    scoped_target = scoped_targets.get(source_scope)
+                    if scoped_target:
+                        item.pop("canonical_event_id", None)
+                        field = "canonical_event_id" if scoped_target[0] == "meeting" else "canonical_pdf_event_id"
+                        item[field] = scoped_target[1]
+                    elif identity in aliases and item.get("occurrence_id") in pdf_occurrences[identity]:
                         item["canonical_pdf_event_id"] = aliases[identity]
             if self.public and getattr(self, "_snapshot_direct", False) and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                 visible_ids = set(approved)
@@ -2470,6 +2716,10 @@ class RegistryReader:
                         continue
                     if candidate_id:
                         item.pop("canonical_event_id", None)
+                    source_scope = (item.get("pdf_event_id") or item.get("event_id"), item.get("occurrence_id"), item.get("source_document_sha256"))
+                    if source_scope in unbound_scopes:
+                        result.append(item)
+                        continue
                     if item.get("verification_status") == "verified" and item.get("collected_candidate"):
                         body_hash = next((check.get("body_sha256") for check in item.get("checks", [])
                             if check.get("verification_status") == "verified"), None)
@@ -2786,8 +3036,17 @@ class RegistryReader:
                 **({"registry_connection": connection, "coverage_connection": getattr(self, "_snapshot_source_connection", connection)} if connection.execute("PRAGMA user_version").fetchone()[0] >= 21 else {}))
             if self.public and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                 from .publication import snapshot_metadata
+                lineage = None
                 for record in payload["records"]:
                     snapshot = snapshot_metadata(connection, "meeting", record["event_id"]) or {}
+                    if snapshot.get("identity_mapping"):
+                        if lineage is None:
+                            lineage = {event["event_id"]: event for event in self._approved_meeting_records(
+                                base_date=base_date, timezone_name=timezone_name, include_unknown=include_unknown)[0]}
+                        approved = lineage.get(record["event_id"], {})
+                        for key in ("sources", "identity_mapping", "version_history"):
+                            if key in approved:
+                                record[key] = deepcopy(approved[key])
                     owner = snapshot.get("derived_display", {}).get("owner_agent_verification")
                     if owner:
                         _attach_reviewed_meeting_source(record, owner)
@@ -2849,6 +3108,11 @@ class RegistryReader:
             raise RegistryQueryError("invalid meeting timezone") from exc
         lower = date.fromisoformat(base_date)
         candidates = self._public_candidates("meeting", "pdf_meeting")
+        if not getattr(self, "_snapshot_direct", False):
+            # The materialized transaction already holds these exact approved views.
+            with self.connect() as connection:
+                candidates = {(row[0], row[1]): json.loads(row[2]) for row in connection.execute(
+                    "SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata WHERE entity_kind IN ('meeting','pdf_meeting')")}
         legacy_batch_ids = sorted({run.get("batch_id")
             for (kind, _identity), snapshot in candidates.items() if kind == "meeting"
             for run in snapshot.get("dependencies", {}).get("meeting_runs", [])
@@ -2917,6 +3181,15 @@ class RegistryReader:
                 "candidate_json", "candidate_sha256", "event_id", "meeting_run_id",
                 "markdown_content", "first_fetched_at", "report_date", "batch_started_at", "batch_id"}}
                 | {"collected_at": source.get("first_fetched_at")} for source in source_rows]
+            if snapshot.get("identity_mapping"):
+                event["identity_mapping"] = deepcopy(snapshot["identity_mapping"])
+                # AC6/8/11: version pointers and original source IDs are public lineage,
+                # never the historical state JSON, source body or unreviewed candidate.
+                event["version_history"] = [{key: row[key] for key in (
+                    "event_id", "record_version", "state_sha256", "meeting_run_id", "recorded_at")}
+                    for row in sorted(tables.get("climate_event_versions", []), key=lambda row: (row["event_id"], row["record_version"]))]
+                for source, public_source in zip(source_rows, event["sources"]):
+                    public_source["event_id"] = source["event_id"]
             if owner:
                 _attach_reviewed_meeting_source(event, owner)
             records.append(event)
@@ -3135,6 +3408,8 @@ class RegistryReader:
             payload = dict(snapshot["static_payload"])
             from .publication import approved_display
             payload.update(approved_display(snapshot))
+            if snapshot.get("identity_mapping"):
+                payload["identity_mapping"] = deepcopy(snapshot["identity_mapping"])
             payload.setdefault("published_candidate_sha256", self._published_candidate_sha(snapshot))
             payload["record_reference"] = {"entity_kind": "article", "entity_id": snapshot["entity_id"],
                 "candidate_sha256": payload["published_candidate_sha256"], "version_id": payload.get("current_version_id")}
@@ -3190,8 +3465,10 @@ class RegistryReader:
             fallback_provenance = source_annotation.provenance
         contexts = {}
         appearance_rows = []
+        from .identity import article_source_ids
+        source_ids = article_source_ids(snapshot)
         for row in tables.get("report_appearances", []):
-            if row.get("article_id") != article_id:
+            if row.get("article_id") not in source_ids:
                 continue
             report = reports.get(row.get("report_id"))
             discovery = discoveries.get(row.get("discovery_id"))
@@ -3352,6 +3629,8 @@ class RegistryReader:
         }
         from .publication import approved_display, digest
         payload.update(approved_display(snapshot))
+        if snapshot.get("identity_mapping"):
+            payload["identity_mapping"] = deepcopy(snapshot["identity_mapping"])
         payload["is_visible"] = True
         payload["published_candidate_sha256"] = self._published_candidate_sha(snapshot)
         payload["record_reference"] = {"entity_kind": "article", "entity_id": article_id,
@@ -3413,9 +3692,11 @@ class RegistryReader:
         discoveries = {row.get("discovery_id"): row for row in tables.get("discoveries", [])}
         versions = {row.get("version_id"): row for row in tables.get("article_versions", [])}
         appearances = []
+        from .identity import article_source_ids
+        source_ids = article_source_ids(snapshot)
         for row in tables.get("report_appearances", []):
             report, discovery = report_by_id.get(row.get("report_id")), discoveries.get(row.get("discovery_id"))
-            if row.get("article_id") != article_id or report is None or discovery is None:
+            if row.get("article_id") not in source_ids or report is None or discovery is None:
                 continue
             appeared_version = versions.get(row.get("version_id"), {})
             appearances.append({"report_date": report.get("report_date"), "section": row.get("section"),
@@ -3532,8 +3813,11 @@ class RegistryReader:
         row = next((item for item in tables.get("pdf_intake_articles", []) if item.get("article_id") == snapshot["entity_id"]), None)
         if row is None:
             raise RegistryContractError("published PDF article snapshot has no article row")
+        parent_occurrences = {item["occurrence_id"] for item in tables.get("pdf_intake_article_occurrences", [])
+            if item.get("article_id") == row["article_id"]}
         all_occurrences = self._pdf_occurrences_from_snapshot(snapshot)
-        occurrences = [item for item in all_occurrences if allowed_occurrence_ids is None or item["occurrence_id"] in allowed_occurrence_ids]
+        occurrences = [item for item in all_occurrences if item["occurrence_id"] in parent_occurrences
+            and (allowed_occurrence_ids is None or item["occurrence_id"] in allowed_occurrence_ids)]
         if not occurrences:
             raise RegistryNotFoundError("article not found")
         canonical_url = row["canonical_url"]
@@ -3570,6 +3854,8 @@ class RegistryReader:
             date_snapshot = {"tables": {"pdf_article_date_observations": [item for item in
                 tables.get("pdf_article_date_observations", []) if item.get("article_id") == row["article_id"]]}}
         payload.update(display)
+        if snapshot["entity_kind"] == "article" and len(tables.get("articles", [])) == 1:
+            payload["canonical_display_article_id"] = tables["articles"][0]["article_id"]
         core_article_id = (tables["articles"][0]["article_id"] if row.get("core_article_id") and snapshot["entity_kind"] == "article"
             and len(tables.get("articles", [])) == 1 else row.get("core_article_id"))
         if core_article_id:
@@ -3613,7 +3899,7 @@ class RegistryReader:
         if occurrences and all(item.get("metadata_only") for item in occurrences):
             reference = next((item.get("verified_primary_reference") for item in occurrences if item.get("verified_primary_reference")), None)
             display = next((item.get("verified_primary_display") for item in occurrences if item.get("verified_primary_display")), {})
-            payload.update(title=display.get("title") or "Verified article reference", summary=None, metadata_only=True,
+            payload.update(title=display.get("title") or ("Verified article reference" if reference else "PDF source reference"), summary=None, metadata_only=True,
                 verified_primary_reference=reference)
         if core_article_id and not payload.get("metadata_only"):
             from .article_dates import validate_content_update
@@ -3621,6 +3907,7 @@ class RegistryReader:
             for field, proof in (bundle or {}).get("date_evidence", {}).items():
                 payload[field] = proof["value"]
                 payload[field + "_evidence"] = proof
+        _pdf_owner_source_reference(payload,occurrences,snapshot)
         self._apply_reviewed_date_fields(payload, date_snapshot)
         payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or self._published_candidate_sha(snapshot)
         reference_id = (tables["articles"][0]["article_id"]
@@ -3629,6 +3916,10 @@ class RegistryReader:
             "candidate_sha256": payload["published_candidate_sha256"], "version_id": None}
         from .article_dates import content_date_projection
         payload.update(content_date_projection(payload, date_snapshot))
+        owners=_projected_pdf_occurrence_owners(snapshot)
+        mappings={item["occurrence_id"]:owners[item["occurrence_id"]] for item in occurrences if item["occurrence_id"] in owners}
+        if mappings:
+            payload["canonical_occurrence_mappings"]=mappings
         return payload
 
     def _acquisition_snapshot_projection(self, snapshot, article_id, current_version_id, display_policy):
@@ -3737,6 +4028,7 @@ class RegistryReader:
                 packet_cache=getattr(self, "_pdf_check_packet_cache", None),
                 candidate_binding=(snapshot.get("_approved_candidate_sha256")
                     or self._published_candidate_sha(snapshot))))
+            _public_source_checks(value)
             self._apply_pdf_display_summary(value, snapshot)
             self._apply_reviewed_date_fields(value, snapshot)
             # report_date is the legacy ordering key, but it was never added
@@ -3754,6 +4046,10 @@ class RegistryReader:
         if not article_id or len(article_id) > 128 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in article_id):
             raise RegistryQueryError("invalid article id")
         if self.static_snapshot is not None:
+            from .identity import _whole_alias
+            article_id = next((item["article_id"] for item in self.static_snapshot.get("articles", [])
+                for alias in item.get("identity_mapping", {}).get("aliases", [])
+                if _whole_alias(alias) and alias["source"]["entity_kind"] == "article" and alias["source"]["entity_id"] == article_id), article_id)
             item = next((item for item in self.static_snapshot.get("articles", []) if item["article_id"] == article_id), None)
             if item is None:
                 raise RegistryNotFoundError("article not found")
@@ -3766,7 +4062,10 @@ class RegistryReader:
         if getattr(self, "_snapshot_direct", False):
             with self.connect() as connection:
                 if connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                    snapshot = self._public_candidates("article", entity_ids={"article": [article_id]}).get(("article", article_id))
+                    candidates = self._public_candidates("article")
+                    from .identity import approved_aliases
+                    article_id = approved_aliases(candidates).get(("article", article_id), ("article", article_id))[1]
+                    snapshot = candidates.get(("article", article_id))
                     if snapshot is None:
                         raise RegistryNotFoundError("article not found")
                     return self._article_from_snapshot(snapshot)
@@ -3774,6 +4073,10 @@ class RegistryReader:
             if self.public:
                 from .publication import snapshot_metadata
                 snapshot = snapshot_metadata(connection, "article", article_id)
+                if snapshot:
+                    article_id = snapshot["entity_id"]
+                if snapshot and snapshot.get("identity_mapping") and not snapshot.get("static_payload"):
+                    return self._article_from_snapshot(snapshot)
                 if snapshot and snapshot.get("static_payload"):
                     payload = dict(snapshot["static_payload"])
                     from .publication import approved_display
@@ -4133,6 +4436,8 @@ class RegistryReader:
             if snapshot:
                 from .publication import approved_display
                 payload.update(approved_display(snapshot))
+                if snapshot.get("identity_mapping"):
+                    payload["identity_mapping"] = deepcopy(snapshot["identity_mapping"])
                 if snapshot.get("sources"):
                     payload.update(source=snapshot["sources"][0]["hostname"], publisher=snapshot["sources"][0]["display_name"])
                 payload["is_visible"] = True

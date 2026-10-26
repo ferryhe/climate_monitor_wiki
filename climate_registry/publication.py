@@ -71,9 +71,23 @@ def _load_snapshot_json(encoded, strings):
 
 
 def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=None, candidate_sha_out=None,
-    packet_cache=None, apply_policy=True):
+    packet_cache=None, apply_policy=True, include_hidden=False):
     """Return permitted projections bound to exact visible approved snapshots."""
     kinds = tuple(sorted(set(kinds)))
+    if apply_policy and not include_hidden and kinds and next(iter(connection.execute("""SELECT 1 FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
+            WHERE json_type(c.snapshot_json,'$.identity_correction')='object' OR json_type(c.snapshot_json,'$.approved_identity_history')='array' LIMIT 1""")), None):
+        # Approved ownership survives hiding; visibility cannot revive old aliases.
+        all_views = published_snapshots(connection, tuple(ENTITY_TABLES), candidate_cache=candidate_cache,
+            candidate_sha_out=candidate_sha_out, packet_cache=packet_cache, include_hidden=True)
+        visible = {(row[0], row[1]) for row in connection.execute("SELECT entity_kind,entity_id FROM registry_publication WHERE is_visible=1")}
+        selected = None
+        if entity_ids is not None:
+            selected = {(kind, identity) for kind in kinds for identity in
+                (entity_ids.get(kind, ()) if isinstance(entity_ids, dict) else entity_ids)}
+            from .identity import selected_entities
+            selected = selected_entities(all_views, selected)
+        return {key: value for key, value in all_views.items()
+            if key in visible and key[0] in kinds and (selected is None or key in selected)}
     if not kinds:
         return {}
     params = list(kinds)
@@ -115,7 +129,7 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
     for row in rows:
         key = (row[0], row[1])
         visibility[key] = bool(row[2])
-        if not row[2] or row[3] is None:
+        if (not row[2] and not include_hidden) or row[3] is None:
             continue
         if row[4] != row[3] or row[5] != row[0] or row[6] != row[1] or not row[8]:
             raise ValueError("published Registry candidate binding differs")
@@ -138,11 +152,6 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
 
     # Alias identity is frozen in the approved candidate dependencies. Current
     # business rows can already contain a later, unapproved association.
-    core_urls = {
-        row.get("canonical_url"): row.get("article_id")
-        for snapshot in snapshots.values() if snapshot["entity_kind"] == "article"
-        for row in snapshot.get("tables", {}).get("articles", [])
-    }
     for key, snapshot in list(snapshots.items()):
         if key[0] not in {"pdf_article", "pdf_meeting"}:
             continue
@@ -152,8 +161,6 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
         if key[0] == "pdf_article":
             for article in snapshot.get("tables", {}).get("pdf_intake_articles", []):
                 target = ("article", article.get("core_article_id")) if article.get("core_article_id") else None
-                if target is None and article.get("canonical_url") in core_urls:
-                    target = ("article", core_urls[article["canonical_url"]])
                 if target:
                     break
         else:
@@ -167,7 +174,7 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
                 if packet.get("canonical_event_id"):
                     target = ("meeting", packet["canonical_event_id"])
                     break
-        if target and target in visibility and not visibility[target]:
+        if not include_hidden and target and target in visibility and not visibility[target]:
             del snapshots[key]
             continue
         canonical = snapshots.get(target) if target else None
@@ -207,12 +214,13 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
             target_snapshot = snapshots.get(target)
             if target and target_snapshot is None:
                 target_snapshot = published_snapshots(connection, (target[0],), entity_ids={target[0]: [target[1]]},
-                    candidate_cache=candidate_cache, apply_policy=False).get(target)
+                    candidate_cache=candidate_cache, apply_policy=False, include_hidden=include_hidden).get(target)
             target_verdict = verdicts.get(target) or (evaluate_snapshot(target_snapshot, reviews=reviews.get(digest(target_snapshot), ()), packet_cache=packet_cache, candidate_binding=digest(target_snapshot)) if target_snapshot else None)
             view = permitted_view(snapshot, verdicts[key], target_snapshot, target_verdict)
             if view is not None:
                 permitted[key] = view
-        return permitted
+        from .identity import reconcile_approved_views
+        return reconcile_approved_views(permitted)
     return snapshots
 
 
@@ -223,20 +231,40 @@ def require_publication_migration(connection):
         raise RegistryInputError("Registry writes require schema 22; run migrate-publication --apply before writing")
 
 
-def canonical_entity(connection, kind, entity_id):
+def _identity_aliases(connection):
+    """Load the current approved graph once for a writer's unchanged source batch."""
+    from .identity import approved_aliases
+    if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
+        views = {(row[0], row[1]): json.loads(row[2]) for row in connection.execute("SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata")}
+    elif enabled(connection) and next(iter(connection.execute("""SELECT 1 FROM registry_publication p
+            JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
+            WHERE json_type(c.snapshot_json,'$.identity_correction')='object'
+                OR json_type(c.snapshot_json,'$.approved_identity_history')='array' LIMIT 1""")), None):
+        views = published_snapshots(connection, tuple(ENTITY_TABLES), include_hidden=True)
+    else:
+        views = {}
+    return approved_aliases(views) if views else {}
+
+
+def canonical_entity(connection, kind, entity_id, *, identity_aliases=None):
+    aliases = _identity_aliases(connection) if identity_aliases is None else identity_aliases
+    if aliases:
+        mapped = aliases.get((kind, entity_id))
+        if mapped:
+            return mapped
     if kind == "pdf_article":
-        row = connection.execute("""SELECT a.article_id FROM pdf_intake_articles p JOIN articles a
-            ON a.canonical_url=p.canonical_url OR a.article_id=p.core_article_id
-            WHERE p.article_id=? ORDER BY a.article_id LIMIT 1""", (entity_id,)).fetchone()
-        if row:
-            return "article", row[0]
+        rows = connection.execute("""SELECT a.article_id FROM pdf_intake_articles p JOIN articles a
+            ON a.article_id=p.core_article_id
+            WHERE p.article_id=? ORDER BY a.article_id""", (entity_id,)).fetchall()
+        if len(rows) == 1:
+            return aliases.get(("article", rows[0][0]), ("article", rows[0][0]))
     if kind == "pdf_meeting":
         row = connection.execute("""SELECT json_extract(packet_json,'$.canonical_event_id') FROM meeting_check_attempts
             WHERE occurrence_id IN (SELECT occurrence_id FROM pdf_intake_calendar_items WHERE event_id=?)
               AND verification_status='verified' AND json_extract(packet_json,'$.canonical_event_id') IS NOT NULL
             ORDER BY checked_at DESC LIMIT 1""", (entity_id,)).fetchone()
         if row and connection.execute("SELECT 1 FROM climate_events WHERE event_id=?", (row[0],)).fetchone():
-            return "meeting", row[0]
+            return aliases.get(("meeting", row[0]), ("meeting", row[0]))
     return kind, entity_id
 
 
@@ -250,18 +278,21 @@ def _rows(connection, table, predicate, params, *, preserve_order=False):
     return rows if preserve_order else sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
 
 
-def _information_groups(connection):
+def _information_groups(connection, *, resolve_identity=True, identity_aliases=None):
     from .information_checks import information_targets
     groups = {}
+    aliases = (_identity_aliases(connection) if identity_aliases is None else identity_aliases) if resolve_identity else {}
     for check_kind in ("articles","meetings"):
         for target in information_targets(connection,check_kind):
-            key = canonical_entity(connection,target["entity_kind"],target["entity_id"])
+            key = (canonical_entity(connection,target["entity_kind"],target["entity_id"],identity_aliases=aliases) if resolve_identity else (target["entity_kind"],target["entity_id"]))
             groups.setdefault(key,[]).append({"check_kind":check_kind,**target})
     return groups
 
 
-def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annotations=None, source_dir=None, report_cache=None, information_groups=None):
-    kind, entity_id = canonical_entity(connection, kind, entity_id)
+def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annotations=None, source_dir=None, report_cache=None, information_groups=None, resolve_identity=True, identity_aliases=None):
+    aliases = (_identity_aliases(connection) if identity_aliases is None else identity_aliases) if resolve_identity else {}
+    if resolve_identity:
+        kind, entity_id = canonical_entity(connection, kind, entity_id, identity_aliases=aliases)
     tables = {}
     for table, column in ENTITY_TABLES[kind].items():
         if table == "pdf_article_date_observations" and connection.execute("PRAGMA user_version").fetchone()[0] < 25:
@@ -294,8 +325,15 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
         tables[check] = _rows(connection, check,
             f"occurrence_id IN (SELECT occurrence_id FROM {table} WHERE {ENTITY_TABLES[kind][table]}=?)", (entity_id,))
     if kind == "article":
+        core_ids = sorted({entity_id} | {source_id for (source_kind, source_id), target in aliases.items()
+            if source_kind == "article" and target == (kind, entity_id)})
         tables["pdf_intake_articles"] = _rows(connection, "pdf_intake_articles",
-            "canonical_url IN (SELECT canonical_url FROM articles WHERE article_id=?) OR core_article_id=?", (entity_id, entity_id))
+            "core_article_id IN (" + ",".join("?" for _ in core_ids) + ")", core_ids)
+        if aliases:
+            existing = {row["article_id"] for row in tables["pdf_intake_articles"]}
+            for (source_kind, source_id), target in sorted(aliases.items()):
+                if source_kind == "pdf_article" and target == (kind, entity_id) and source_id not in existing:
+                    tables["pdf_intake_articles"].extend(_rows(connection, "pdf_intake_articles", "article_id=?", (source_id,)))
         pdf_ids = [row["article_id"] for row in tables["pdf_intake_articles"]]
         tables["pdf_intake_article_occurrences"] = [row for key in pdf_ids for row in _rows(connection, "pdf_intake_article_occurrences", "article_id=?", (key,))]
         if connection.execute("PRAGMA user_version").fetchone()[0] >= 25:
@@ -311,7 +349,7 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
     knowledge_ids = {entity_id} | {row["article_id"] for row in tables.get("pdf_intake_articles", [])}
     knowledge = [row for identity in sorted(knowledge_ids) for row in _rows(connection, "knowledge_versions", "entity_kind=? AND entity_id=?", (knowledge_kind, identity),preserve_order=True)]
     tables["knowledge_versions"] = knowledge
-    targets = (information_groups if information_groups is not None else _information_groups(connection)).get((kind,entity_id),[])
+    targets = (information_groups if information_groups is not None else _information_groups(connection, resolve_identity=resolve_identity, identity_aliases=aliases)).get((kind,entity_id),[])
     for prefix, check_kind in (("article","articles"),("meeting","meetings")):
         ids = {target["occurrence_id"] for target in targets if target["check_kind"]==check_kind}
         if not ids:
@@ -379,7 +417,17 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
         if "article_check_runs" in dependencies:
             dependencies["article_check_runs"] = [row for row in dependencies["article_check_runs"]
                 if row["run_id"] not in date_run_ids]
+    unlinked_pdf_references = []
+    if kind == "article" and resolve_identity:
+        # Diagnostic source entries are not identity links, content rows or authority.
+        unlinked_pdf_references = [{"pdf_article_id": row[0], "core_article_id": None,
+            "content_binding": "unavailable", "reason": "no_stored_canonical_article_link"}
+            for row in connection.execute("""SELECT article_id FROM pdf_intake_articles
+                WHERE core_article_id IS NULL AND canonical_url IN
+                    (SELECT canonical_url FROM articles WHERE article_id=?) ORDER BY article_id""", (entity_id,))
+            if row[0] not in {value["article_id"] for value in tables.get("pdf_intake_articles", [])}]
     return {"schema_version": "registry-public-candidate.v1", "entity_kind": kind,
+        **({"unlinked_pdf_references": unlinked_pdf_references} if unlinked_pdf_references else {}),
         "entity_id": entity_id, "tables": tables, "sources": sources,
         "fallback_annotations": metadata, "report_fallbacks": report_fallbacks, "supplements": supplement, "dependencies": dependencies,
         "information_targets":targets}
@@ -432,6 +480,13 @@ def _category_correction_inputs(snapshot):
 
 
 def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, enrichment_scope=None):
+    from .identity import OVERLAY as IDENTITY, is_identity_scope, _frozen
+    if is_identity_scope(snapshot):
+        _frozen(snapshot)
+        return _store_snapshot(connection, snapshot, basis, created_at)
+    from .identity import retain_approved_identity
+    if "publication_date_only" not in snapshot:
+        retain_approved_identity(connection, snapshot)
     explicit_content_scope = enrichment_scope is not None or "enrichment_scope" in snapshot
     if enrichment_scope is not None:
         from .enrichment_contract import BINDING, SCOPE_VERSION
@@ -520,6 +575,10 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, en
     validate_content_update(snapshot)
     from .enrichment_contract import bind_content_scope
     bind_content_scope(connection, snapshot)
+    return _store_snapshot(connection, snapshot, basis, created_at)
+
+
+def _store_snapshot(connection, snapshot, basis, created_at):
     sha = digest(snapshot)
     connection.execute("INSERT OR IGNORE INTO registry_candidates VALUES(?,?,?,?,?,?)",
         (sha, snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot, sort_keys=True, ensure_ascii=False),
@@ -531,7 +590,7 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, en
     if identity[0]=="article":
         linked=connection.execute("""SELECT p.entity_kind,p.entity_id,p.is_visible FROM registry_publication p
             JOIN pdf_intake_articles pdf ON pdf.article_id=p.entity_id JOIN articles a
-            ON pdf.core_article_id=a.article_id OR pdf.canonical_url=a.canonical_url
+            ON pdf.core_article_id=a.article_id
             WHERE p.entity_kind='pdf_article' AND a.article_id=?""",(identity[1],)).fetchall()
         aliases=[row for row in linked if canonical_entity(connection,row[0],row[1])==identity]
     elif identity[0]=="meeting":
@@ -698,6 +757,15 @@ def _approve(connection, sha, receipt, *, status="pass", information_groups=None
     if latest is None or (status in {"pass", "accepted_legacy"} and latest[0] != sha):
         raise ValueError("changed candidate requires another final review")
     snapshot = json.loads(row[2])
+    from .identity import OVERLAY as IDENTITY, is_identity_scope, validate_review as validate_identity_review, _current as current_identity
+    if is_identity_scope(snapshot):
+        if status != "pass":
+            raise ValueError("identity scope cannot inherit a legacy PASS")
+        validate_identity_review(snapshot, receipt)
+        current_identity(connection, snapshot)
+        from .identity import validate_publication
+        validate_publication(connection, snapshot, receipt)
+        return _record_approval(connection, row, sha, status, receipt)
     if status in {"pass", "accepted_legacy"}:
         if status == "accepted_legacy" and snapshot.get("enrichment_scope") and "publication_date_only" not in snapshot:
             raise ValueError("new enrichment scope requires a new exact review, not legacy acceptance")
@@ -746,6 +814,11 @@ def _approve(connection, sha, receipt, *, status="pass", information_groups=None
             verdict = evaluate_snapshot(snapshot, reviews=approval_context(connection, snapshot, [proposed_review]))
             if not verdict["eligible"]:
                 raise ValueError("content review does not establish public owner eligibility: " + ", ".join(verdict["reasons"]))
+    return _record_approval(connection, row, sha, status, receipt)
+
+
+def _record_approval(connection, row, sha, status, receipt):
+    review_id = digest([sha, status, receipt])
     connection.execute("INSERT OR IGNORE INTO registry_reviews VALUES(?,?,?,?,?)",
         (review_id, sha, status, now_stamp(), json.dumps(receipt, sort_keys=True, ensure_ascii=False)))
     if status in {"pass", "accepted_legacy"}:
@@ -758,9 +831,11 @@ def set_visibility(database, kind, entity_id, is_visible):
         raise ValueError("is_visible must be boolean")
     from .information_checks import _writer
     with _writer(resolve_database(database)) as connection:
-        kind, entity_id = canonical_entity(connection, kind, entity_id)
+        from .identity import approved_aliases
+        aliases = approved_aliases(published_snapshots(connection, tuple(ENTITY_TABLES), include_hidden=True))
+        kind, entity_id = aliases.get((kind, entity_id), canonical_entity(connection, kind, entity_id))
         identities = [(row[0], row[1]) for row in connection.execute("SELECT entity_kind,entity_id FROM registry_publication")
-            if canonical_entity(connection, row[0], row[1]) == (kind, entity_id)]
+            if aliases.get((row[0], row[1]), canonical_entity(connection, row[0], row[1])) == (kind, entity_id)]
         cursor = connection.execute("UPDATE registry_publication SET is_visible=? WHERE entity_kind=? AND entity_id=?", (int(is_visible), kind, entity_id))
         for alias_kind, alias_id in identities:
             connection.execute("UPDATE registry_publication SET is_visible=? WHERE entity_kind=? AND entity_id=?", (int(is_visible), alias_kind, alias_id))
@@ -819,10 +894,16 @@ def public_connection(source):
             published_occurrences[(kind, snapshot["entity_id"])] = {
                 row["occurrence_id"] for row in snapshot.get("tables", {}).get(table, [])
             }
+        has_identity = source.execute("""SELECT 1 FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
+            WHERE json_type(c.snapshot_json,'$.identity_correction')='object'
+                OR json_type(c.snapshot_json,'$.approved_identity_history')='array' LIMIT 1""").fetchone()
+        approved_views = published_snapshots(source, tuple(ENTITY_TABLES)) if has_identity else None
         for sha, encoded in source.execute(selected_sql):
             snapshot = _load_snapshot_json(encoded, {})
             if digest(snapshot) != sha:
                 raise ValueError("published Registry snapshot hash differs")
+            if approved_views is not None and (snapshot["entity_kind"], snapshot["entity_id"]) not in approved_views:
+                continue
             canonical = canonical_entity(source, snapshot["entity_kind"], snapshot["entity_id"])
             if canonical != (snapshot["entity_kind"], snapshot["entity_id"]):
                 state = source.execute("SELECT is_visible,published_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", canonical).fetchone()
@@ -836,7 +917,7 @@ def public_connection(source):
                     continue
             key = (snapshot["entity_kind"], snapshot["entity_id"])
             target = canonical_target(snapshot)
-            snapshot = permitted_view(snapshot, verdicts[key], references.get(target), verdicts.get(target))
+            snapshot = approved_views.get(key) if approved_views is not None else permitted_view(snapshot, verdicts[key], references.get(target), verdicts.get(target))
             if snapshot is None:
                 continue
             projection.execute("INSERT INTO public_snapshot_metadata VALUES(?,?,?)", (snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot, ensure_ascii=False)))
@@ -854,6 +935,8 @@ def public_connection(source):
                             if blob is None or len(blob)!=value["blob_size"] or hashlib.sha256(blob).hexdigest()!=value["blob_sha256"]:
                                 raise ValueError("approved PDF bytes identity differs")
                             row[column]=blob
+                    if table == "report_appearances" and snapshot["entity_kind"] == "article":
+                        row["article_id"] = snapshot["entity_id"]
                     columns = list(row)
                     projection.execute(f'INSERT OR REPLACE INTO "{table}" ({",".join(columns)}) VALUES({",".join("?" for _ in columns)})', tuple(row.values()))
         # An invisible core identity also excludes linked PDF observations.
@@ -1290,19 +1373,38 @@ def public_wiki_pages(database, *, wiki_dir=None, reader=None, source_dir=None, 
                 selected_reader=RegistryReader(database,repository_root=Path(__file__).resolve().parents[1])
             with selected_reader.public_snapshot():
                 with selected_reader.connect() as connection:
-                    identities=[row[0] for row in connection.execute("SELECT article_id FROM articles WHERE publication_eligible=1 AND document_kind='article'")]
-                details={item["canonical_url"]:item for item in (selected_reader.article(identity) for identity in identities)}
+                    registered = {row[0]: (row[1], row[2]) for row in connection.execute(
+                        "SELECT report_date,filename,report_sha256 FROM reports")}
                 from .reports import parse_report_directory
+                from .wiki import _render_registry_report_page, _registry_report_markdown
                 from climate_monitor.dedupe import canonical_url
-                for report in parse_report_directory(Path(source_dir),allow_offcycle=True):
-                    articles=[]
+                archive_details = None
+                for report in parse_report_directory(Path(source_dir), allow_offcycle=True):
+                    if report.report_date in registered:
+                        if registered[report.report_date] == (report.path.name, report.sha256):
+                            rendered = _render_registry_report_page(selected_reader, report.report_date, source_report=report)
+                            if rendered is not None:
+                                pages[report.path.name] = rendered
+                        continue
+                    if archive_details is None:
+                        if getattr(selected_reader, "_snapshot_direct", False):
+                            identities = [identity for (_, identity), snapshot in selected_reader._public_candidates("article").items()
+                                if any(row.get("publication_eligible") and row.get("document_kind") == "article"
+                                    for row in snapshot.get("tables", {}).get("articles", []))]
+                        else:
+                            with selected_reader.connect() as connection:
+                                identities = [row[0] for row in connection.execute("SELECT article_id FROM articles WHERE publication_eligible=1 AND document_kind='article'")]
+                        archive_details = {}
+                        for identity in identities:
+                            detail = selected_reader.article(identity)
+                            archive_details.setdefault(canonical_url(detail["canonical_url"]), []).append(detail)
+                    articles = []
                     for article in report.articles:
-                        detail=details.get(canonical_url(article.url))
-                        if detail:
-                            articles.append({"article": detail, "source_report_article": True})
+                        choices = archive_details.get(canonical_url(article.url), [])
+                        if len(choices) == 1:
+                            articles.append({"article": choices[0], "source_report_article": True})
                     if articles:
-                        from .wiki import _registry_report_markdown
-                        pages[report.path.name]=_registry_report_markdown(report.report_date, report.path.name,
+                        pages[report.path.name] = _registry_report_markdown(report.report_date, report.path.name,
                             report.sha256, articles, approved_versions=True, include_top_source=True)
         pages["index.md"] = ("# Climate Registry\n\n" + "\n".join(f"- [{name.removesuffix('.md')}]({name})" for name in sorted(pages))).rstrip("\n") + "\n"
         return pages
@@ -1327,9 +1429,12 @@ def export_public_snapshot(database, output, *, reader=None, source_dir=None):
     from climate_delivery.io import atomic_write_json
     database = resolve_database(database)
     reader = reader or RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
-    with reader.public_snapshot():
-        with reader.connect() as connection:
-            ids = [row[0] for row in connection.execute("SELECT article_id FROM articles")]
+    with reader.public_snapshot(direct=True):
+        if getattr(reader, "_snapshot_direct", False):
+            ids = [identity for kind, identity in reader._public_candidates("article")]
+        else:
+            with reader.connect() as connection:
+                ids = [row[0] for row in connection.execute("SELECT article_id FROM articles ORDER BY article_id")]
         pdf_reports = reader.pdf_reports_all()
         pdf_details = {}
         from .read_api import RegistryNotFoundError
@@ -1400,8 +1505,11 @@ def install_git_snapshot(database, wiki_dir):
                     VALUES(?,?,?,?,?,?,?,?)""", (identity,item["canonical_url"],source_id,item["first_seen"],item["last_seen"],item["document_kind"],int(item["publication_eligible"]),item["display_policy"]))
         else:
             payloads = {}
+        aliases = _identity_aliases(connection)
+        groups = _information_groups(connection, identity_aliases=aliases)
         for (identity,) in connection.execute("SELECT article_id FROM articles").fetchall():
-            snapshot = snapshot_entity(connection, "article", identity, include_pending=False)
+            snapshot = snapshot_entity(connection, "article", identity, include_pending=False,
+                information_groups=groups, identity_aliases=aliases)
             payload = payloads.get(identity)
             if artifact and payload is None:
                 continue
@@ -1476,8 +1584,24 @@ def _calendar_dto(item):
     return value
 
 
+def public_pdf_source_provenance(sources):
+    """AC1/6 export contract: source labels/times survive; storage locators stay internal."""
+    values=[]
+    for source in sources if isinstance(sources,list) else []:
+        if not isinstance(source,dict) or not isinstance(source.get("filename"),str) or not source["filename"]:
+            continue
+        value={"filename":source["filename"].replace("\\","/").rsplit("/",1)[-1]}
+        if isinstance(source.get("observed_at"),str):
+            value["observed_at"]=source["observed_at"]
+        values.append(value)
+    return values
+
+
 def _occurrence_dto(item):
-    value = {key:value for key,value in item.items() if key not in {"checks","reader","attempts","source_observations","original_pdf_base64"}}
+    value = {key:value for key,value in item.items() if key not in {"checks","reader","attempts","source_observations","source_provenance","original_pdf_base64"}}
+    provenance=public_pdf_source_provenance(item.get("source_observations",item.get("source_provenance",[])))
+    if provenance:
+        value["source_provenance"]=provenance
     if "publication_date_evidence" in value:
         value["publication_date_evidence"] = _date_evidence_dto(value["publication_date_evidence"])
     return value
@@ -1522,7 +1646,7 @@ def _pdf_report_dto(item):
 def _merge_pdf_article_payloads(
     public: dict[str, Any] | None, runtime: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    from .information_checks import merge_checked_observation, deduplicate_pdf_occurrences
+    from .information_checks import merge_checked_observation
     payloads = [item for item in (public, runtime) if item is not None]
     if not payloads:
         return None
@@ -1531,12 +1655,14 @@ def _merge_pdf_article_payloads(
     for payload in payloads:
         for item in payload.get("occurrences", []):
             occurrence_id = item["occurrence_id"]
+            if not isinstance(occurrence_id, str) or not occurrence_id.strip():
+                raise ValueError("PDF occurrence requires an exact occurrence identity")
             occurrences[occurrence_id] = (
                 merge_checked_observation(occurrences[occurrence_id], item)
                 if occurrence_id in occurrences else item
             )
     merged["occurrences"] = sorted(
-        deduplicate_pdf_occurrences(list(occurrences.values())),
+        occurrences.values(),
         key=lambda item: (item.get("report_date") or "", item.get("page") or 0, item["occurrence_id"]),
         reverse=True,
     )

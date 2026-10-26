@@ -17,7 +17,7 @@ DOC = hashlib.sha256(b"%PDF").hexdigest()
 TEXT = "Original executive text.\n  Exact spacing retained.\n采用原文。"
 
 
-def _database(tmp_path):
+def _database(tmp_path, *, document_metadata=None):
     database = tmp_path / "external" / "registry.sqlite3"
     database.parent.mkdir()
     with sqlite3.connect(database) as db:
@@ -27,7 +27,7 @@ def _database(tmp_path):
             db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES(?,?,'s','2026-09-01','2026-09-01')", (identity, 'https://example.org/' + identity))
             db.execute("INSERT INTO article_versions VALUES(?,?,?,?,?,?,?,'2026-09-01','2026-09-01')", ('v-' + identity, identity, 'Title ' + identity, 'Title ' + identity, 'Summary ' + identity, 'fingerprint-' + identity, 'report-title-summary'))
             db.execute("UPDATE articles SET current_version_id=? WHERE article_id=?", ('v-' + identity, identity))
-        document = {"executive_summary": TEXT, "executive_summary_sha256": hashlib.sha256(TEXT.encode()).hexdigest(), "pages": []}
+        document = {"executive_summary": TEXT, "executive_summary_sha256": hashlib.sha256(TEXT.encode()).hexdigest(), "pages": [], **(document_metadata or {})}
         db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at,date_of_run,original_pdf) VALUES(?, '/evidence/report.pdf','report.pdf','application/pdf',4,?,?, '2026-09-14T00:00:00Z','2026-09-14',?)", (DOC, 'e'*64, json.dumps(document), b'%PDF'))
     return database
 
@@ -237,17 +237,18 @@ def test_t10_rebuilds_cached_legacy_language_report(tmp_path):
     assert human_path.read_text(encoding='utf-8') == '# T10 核验与公开清单\n'  # Historical output is retained.
 
 
-def _pdf_pair(database, *, target_extra=None):
+def _pdf_pair(database, *, target_extra=None, verified_source=False):
     with sqlite3.connect(database) as db:
         db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at,date_of_run) VALUES(?, '/evidence/second.pdf','second.pdf','application/pdf',1,?,'{}','2026-09-28','2026-09-28')", ('a'*64, 'b'*64))
         for event, occurrence, document, page, raw_date, summary in (
                 ('target', 'target-occ', DOC, 9, 'June 10–12, 2027', 'Verified primary observation'),
-                ('source', 'source-occ', 'a'*64, 12, 'Wrong old date', 'PRIVATE unchecked source summary')):
+                ('source', 'source-occ', 'a'*64, 12, 'June 10–12, 2027' if verified_source else 'Wrong old date',
+                    'Verified secondary observation' if verified_source else 'PRIVATE unchecked source summary')):
             item = {'event_id': event, 'occurrence_id': occurrence, 'name': 'IAIS Annual Conference 2027',
                 'kind': 'event', 'raw_date': raw_date, 'date_precision': 'day', 'start_date': '2027-06-10',
                 'end_date': '2027-06-12', 'summary': summary, 'page': page, 'source_document_sha256': document,
                 'source_urls': ['https://example.org/' + event]}
-            if event == 'source':
+            if event == 'source' and not verified_source:
                 item.update(location='PRIVATE old venue', deadline_date='2099-01-01')
             elif target_extra:
                 item.update(target_extra)
@@ -378,14 +379,23 @@ def test_native_verified_primary_strips_unchecked_source_evidence(tmp_path):
         assert 'PRIVATE' not in json.dumps(rows)
 
 
-def test_metadata_only_article_uses_verified_canonical_title_without_alias_facts(tmp_path):
-    database = _database(tmp_path)
+def test_legacy_explicit_metadata_reference_uses_verified_canonical_title_without_alias_facts(tmp_path):
+    database = _database(tmp_path,document_metadata={"legacy_explicit_identity_evidence": {
+        "occurrence_id":"article-ref","core_article_id":"good",
+        "source_statement":"This retained source explicitly identifies core Article good (Title good).",
+        "approval_basis":"historical explicit-link source frozen before the current approval"}})
     _check(database, tmp_path, ids={'core:good'})
     with sqlite3.connect(database) as db:
         db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES('pdf-reference','https://example.org/good','PRIVATE alias title','2026-09-14')")
         db.execute("INSERT INTO pdf_intake_article_occurrences VALUES('article-ref','pdf-reference',?,7,'https://example.org/good','2026-09-14',NULL,?,?,?)",
             (DOC, 'd'*64, 'c'*64, json.dumps({'summary': 'PRIVATE unchecked alias paragraph', 'summary_basis': 'verbatim_pdf_article_row'})))
+        # A retained historical explicit reference, not a new URL-only identity decision.
+        db.execute("UPDATE pdf_intake_articles SET core_article_id='good',confirmation_basis='exact_url_eligible_detail' WHERE article_id='pdf-reference'")
     _approve_all(database)
+    with sqlite3.connect(database) as db:
+        frozen=json.loads(db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=(SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good')").fetchone()[0])
+        assert frozen["tables"]["pdf_intake_articles"][0]["core_article_id"] == "good"
+        assert frozen["dependencies"]["pdf_intake_documents"][0]["document_json"].find("legacy_explicit_identity_evidence") >= 0
     reader = _reader(database, tmp_path)
     for projected in (False, True):
         if projected:
@@ -517,7 +527,7 @@ def test_verified_pdf_meeting_does_not_publish_unchecked_descriptive_text(tmp_pa
     database=_database(tmp_path)
     marker='UNVERIFIED meeting description claim'
     candidate=_pdf_pair(database,target_extra={'summary':marker,'raw_text':marker,'description':marker,'table_description':marker,
-        'publisher':'IAIS','timezone':'UTC','relevance':'Forward diary item.'})
+        'publisher':'IAIS','organizer':'IAIS','timezone':'UTC','relevance':'Forward diary item.'})
     candidate.update(organizer='IAIS',timezone='UTC',relevance_reason='Forward diary item.')
     checked=_check(database,tmp_path,kind='meetings',ids={'target-occ'},candidate=candidate,
         body='IAIS Annual Conference 2027 takes place June 10–12, 2027 UTC. Forward diary item.')

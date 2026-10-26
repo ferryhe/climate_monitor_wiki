@@ -166,6 +166,7 @@ def test_absorbed_pdf_detail_uses_the_approved_core_candidate(tmp_path):
         _approve_all(connection)
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE articles SET canonical_url='https://example.org/later' WHERE article_id='a'")
+        connection.execute("UPDATE pdf_intake_articles SET core_article_id='a',confirmation_basis='exact_url_eligible_detail' WHERE article_id='pdf-first'")
         connection.execute("UPDATE pdf_intake_articles SET title='New approved PDF title' WHERE article_id='pdf-first'")
         stage_entities(connection)
         candidate = connection.execute(
@@ -180,6 +181,49 @@ def test_absorbed_pdf_detail_uses_the_approved_core_candidate(tmp_path):
     collection = next(item for item in reader.pdf_articles_all(include_linked=True)
         if item["canonical_url"] == "https://example.org/later")
     assert direct["title"] == projected["title"] == collection["title"] == "New approved PDF title"
+    assert direct["published_candidate_sha256"] == candidate
+    assert direct["record_reference"]["entity_id"] == "a"
+    with sqlite3.connect(database) as connection:
+        occurrences = connection.execute("SELECT * FROM pdf_intake_article_occurrences").fetchall()
+        old_pdf = connection.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='pdf_article' AND entity_id='pdf-first'").fetchone()[0]
+        connection.execute("UPDATE pdf_intake_articles SET title='PRIVATE pending PDF title' WHERE article_id='pdf-first'")
+        stage_entities(connection)
+    assert reader.pdf_article("pdf-first")["title"] == "New approved PDF title"
+    with reader.public_snapshot():
+        assert reader.pdf_article("pdf-first")["title"] == "New approved PDF title"
+    assert next(item for item in reader.pdf_articles_all(include_linked=True) if item["article_id"] == "pdf-first")["title"] == "New approved PDF title"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT * FROM pdf_intake_article_occurrences").fetchall() == occurrences
+        assert connection.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (old_pdf,)).fetchone()
+
+    # A later exact URL correction cannot let the older standalone PDF override approved C.
+    from climate_registry.owner_checks import plan_owner_check
+    from climate_registry.identity import _scope
+    from test_identity_relations import _ingest, _approve as approve_identity
+    manifest = plan_owner_check(database, "article", "a", identity_correction=True)
+    ref = manifest["plan"]["participants"][0]
+    body = json.loads(ref["snapshot"]["tables"]["article_check_attempts"][0]["packet_json"])["reader"]["content"]
+    manifest.update(actor={"id": "locator-author", "task_id": "locator-author-task"},
+        authorization_reference="owner-approved locator correction", audit_reference="audit/locator",
+        checked_at="2026-10-25T18:00:00Z", canonical_url="https://example.org/moved-approved",
+        evidence=[{"id": "retained-source", "source": _scope(ref), "text": body, "excerpt": body[:40],
+            "reason": "This retained source identifies the same Article at the corrected locator."}])
+    corrected = _ingest(database, tmp_path, manifest)
+    approve_identity(database, tmp_path, corrected)
+    with reader.public_snapshot(direct=True):
+        selected = reader._public_candidates("article", "pdf_article", entity_ids={"pdf_article": ["pdf-first"]})
+        original_keys = set(selected)
+        detail = reader.pdf_article("pdf-first")
+        assert set(selected) == original_keys  # Detail must not mutate the cached selection.
+        assert detail["title"] == "New approved PDF title"
+        assert detail["published_candidate_sha256"] == corrected["candidate_sha256"]
+    with reader.public_snapshot():
+        assert reader.pdf_article("pdf-first")["title"] == "New approved PDF title"
+    root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
+    export_public_snapshot(database, root/"wiki/public-registry.json")
+    static = RegistryReader.from_public_export(root)
+    assert static.pdf_article("pdf-first")["title"] == "New approved PDF title"
+    assert static.article("a")["canonical_url"] == "https://example.org/moved-approved"
 
 
 def test_report_directory_keeps_history_but_counts_only_visible_approved_appearances(tmp_path):
@@ -648,7 +692,7 @@ def test_native_meeting_sources_follow_legacy_url_and_version_order(tmp_path):
     assert direct == projected
 
 
-def test_include_pdf_status_counts_approved_url_union_without_detail_assembly(tmp_path, monkeypatch):
+def test_include_pdf_status_counts_approved_identity_union_without_detail_assembly(tmp_path, monkeypatch):
     import api_server
     from fastapi.testclient import TestClient
 
@@ -661,6 +705,8 @@ def test_include_pdf_status_counts_approved_url_union_without_detail_assembly(tm
             ("f" * 64, "https://example.org/a", "d" * 64, "c" * 64,
              json.dumps({"summary": "Alias", "summary_basis": "verbatim_pdf_article_row"})))
         _approve_all(connection)
+    from test_owner_checks import _approve_exact_pdf_alias
+    _approve_exact_pdf_alias(database,tmp_path,identity="pdf-core-alias",target="a",occurrence="alias-occ")
 
     def unexpected(*_args, **_kwargs):
         pytest.fail("status count assembled the full PDF article list or detail")
@@ -881,7 +927,7 @@ def test_registry_index_uses_approved_annotation_display_and_pdf_summaries(tmp_p
         with sqlite3.connect(database) as connection:
             connection.execute("UPDATE article_versions SET observed_summary='' WHERE article_id='a'")
             if scenario == "pdf":
-                _pdf(connection, identity="pdf-a", url="https://example.org/a")
+                _pdf(connection, identity="pdf-a", url="https://example.org/a",legacy_core_article_id="a")
             if scenario == "annotation":
                 url = "https://example.org/a"
                 annotation = ArticleAnnotation(url, url, "Approved title", "original_content",

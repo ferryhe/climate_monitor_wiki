@@ -15,17 +15,16 @@ This module imports the verified ``<report>.semantics.json`` sidecar into a new
   a copied candidate database, backed up under the Registry lock, and promoted
   through the weekly verified-restore primitive.
 
-Design notes (see PR-D):
+Identity binding:
 
-* The Registry's ``article_id`` is ``_stable_id("article", canonical_url(url))``.
-  The sidecar carries its own ``article_id`` (a different, full-length identity),
-  so for the join we *recompute* the Registry ``article_id`` from each sidecar
-  article's canonical URL using the exact same ``_stable_id``/``canonical_url``
-  the Registry uses.
-* A sidecar article is "matched" only if its recomputed Registry ``article_id``
-  is present in the target report's parsed article set (derived from the same
-  canonical Markdown the sidecar is bound to). Unmatched sidecar articles block
-  dry-run plans and are refused on apply.
+* Stored reports use their exact SHA/date/filename and retained appearance,
+  discovery and version membership. Only current approved identity mappings
+  normalize those existing IDs and permit a corrected locator.
+* Sidecar URLs join only within that report's unique member set. A URL never
+  supplies a new target ID. Standalone/empty-DB previews retain their original
+  parsed-report identity convention and grant no database membership authority.
+* Apply revalidates the same membership/version binding under the writer lock.
+
 """
 
 from __future__ import annotations
@@ -46,6 +45,7 @@ from climate_monitor.dedupe import canonical_url
 from climate_monitor.semantic_bundle import SemanticBundleError, verify_semantic_sidecar
 
 from .audit import _stable_id
+from .acquisition_review import digest
 from .errors import RegistryInputError, RegistryLockError
 from .persistent import _file_sha256, _validate_database
 from .reports import ParsedReport, parse_historical_report
@@ -121,10 +121,8 @@ def _target_article_identities(
 ) -> dict[str, tuple[str, str, str]]:
     """Return the Registry article identities present in the target report.
 
-    Maps ``registry_article_id`` -> ``(canonical_url, title, summary)`` using
-    the same ``_stable_id("article", canonical_url(url))`` derivation the
-    Registry pipeline uses. This is the authoritative "target report's article
-    set" the sidecar is joined against.
+    Standalone previews use the historical URL-derived convention. Stored
+    reports replace this set with exact persisted membership before import.
     """
 
     if report_bytes is not None:
@@ -155,9 +153,8 @@ def _build_records(payload: Mapping[str, Any], target: Mapping[str, Any]) -> tup
     """Join the verified sidecar to the target report's article set.
 
     Returns ``(matched, unmatched)`` record lists. Each record carries the
-    Registry ``article_id`` (recomputed from the sidecar's canonical URL), the
-    semantics, and provenance. ``matched`` are those whose ``article_id`` is
-    present in ``target``; ``unmatched`` are dropped from any write.
+    exact report member's Registry ``article_id``, semantics and provenance.
+    Missing or ambiguous report-scoped URLs are unmatched and never written.
     """
 
     taxonomy = payload.get("taxonomy") or {}
@@ -168,7 +165,9 @@ def _build_records(payload: Mapping[str, Any], target: Mapping[str, Any]) -> tup
     unmatched: list[dict] = []
     for article in payload.get("articles", []):
         canonical = canonical_url(str(article.get("url", "") or ""))
-        registry_id = _stable_id("article", canonical)
+        choices = [identity for identity, fields in target.items() if fields[0] == canonical]
+        # The hash labels unmatched diagnostics only; it cannot enter the write set.
+        registry_id = choices[0] if len(choices) == 1 else _stable_id("article", canonical)
         semantics = article.get("semantics") or {}
         record = {
             "article_id": registry_id,
@@ -181,7 +180,7 @@ def _build_records(payload: Mapping[str, Any], target: Mapping[str, Any]) -> tup
             "taxonomy_raw_sha256": taxonomy_raw_sha256,
             "bundle_sha256": _bundle_sha256(semantics),
         }
-        if registry_id in target:
+        if len(choices) == 1:
             matched.append(record)
         else:
             unmatched.append(record)
@@ -208,8 +207,8 @@ def import_report_semantics(
        require it to exactly equal ``expected_report_sha256``. Otherwise raise
        :class:`RegistryInputError` ("exact report SHA required to import
        semantics"). This is the SHA-gate and applies to dry-run and apply.
-    3. Join each verified sidecar article to the target report's parsed article
-       set, recomputing the Registry ``article_id`` from the canonical URL.
+    3. Join each verified sidecar article to the report's exact saved membership
+       when present, otherwise retain the standalone parsed-report preview.
 
     Dry-run (default) returns a deterministic plan and touches nothing. Apply
     (``dry_run=False``) requires ``database`` and ``backup_dir`` and writes the
@@ -238,6 +237,24 @@ def import_report_semantics(
     # 3. Build the join against the target report's article set.
     parsed_report = _parse_report_snapshot(report_path, report_bytes)
     target = _target_article_identities(report_path, report_bytes)
+    membership_sha = None
+    if database is not None:
+        selected = _semantic_path(database, label="database")
+        if selected.is_file():
+            _assert_safe_database(selected)
+            connection = _open_read_only_database(selected)
+            try:
+                connection.execute("BEGIN")
+                has_reports = connection.execute("SELECT 1 FROM sqlite_master WHERE name='reports' AND type='table'").fetchone()
+                stored = has_reports and connection.execute("SELECT 1 FROM reports WHERE report_date=? AND filename=?",
+                    (parsed_report.report_date, parsed_report.path.name)).fetchone()
+                if stored or (has_reports and not dry_run):
+                    _validate_database(connection)
+                    report_id = _registry_report_id(connection, report_date=parsed_report.report_date,
+                        report_filename=parsed_report.path.name, report_sha=report_sha)
+                    target, membership_sha = _bound_report_memberships(connection, report_id=report_id, target=target)
+            finally:
+                connection.close()
     matched, unmatched = _build_records(payload, target)
     sidecar_count = len(payload.get("articles", []))
 
@@ -288,6 +305,7 @@ def import_report_semantics(
         report_date=parsed_report.report_date,
         report_filename=parsed_report.path.name,
         sidecar_count=sidecar_count,
+        target_membership_sha256=membership_sha,
     )
     plan.update(apply_result)
     return plan
@@ -357,31 +375,51 @@ def _registry_report_id(
     return str(row[0])
 
 
-def _verify_target_memberships(
-    connection: sqlite3.Connection,
-    *,
-    report_id: str,
-    target: Mapping[str, tuple[str, str, str]],
-) -> None:
-    rows = connection.execute(
-        """
-        SELECT ra.article_id, a.canonical_url
-        FROM report_appearances ra
-        JOIN articles a ON a.article_id = ra.article_id
-        WHERE ra.report_id = ?
-        """,
-        (report_id,),
-    ).fetchall()
-    present = {str(row[0]): str(row[1]) for row in rows}
-    missing = [
-        article_id
-        for article_id, (canonical, _title, _summary) in target.items()
-        if present.get(article_id) != canonical
-    ]
-    if missing:
-        raise RegistryInputError(
-            "target article membership is missing from the Registry DB"
-        )
+def _bound_report_memberships(connection, *, report_id, target):
+    """Bind parsed report URLs to exact saved members, never to a guessed ID."""
+    from .publication import _identity_aliases, published_snapshots
+    aliases = _identity_aliases(connection)
+    cursor = connection.execute("""SELECT ra.article_id,a.canonical_url,ra.version_id,ra.discovery_id,ra.ordinal,
+        d.report_id AS discovery_report_id,d.article_id AS discovery_article_id,
+        d.version_id AS discovery_version_id,d.ordinal AS discovery_ordinal,d.selected,
+        d.raw_url,d.observed_title,d.observed_summary,v.article_id AS version_article_id
+        FROM report_appearances ra JOIN articles a ON a.article_id=ra.article_id
+        JOIN discoveries d ON d.discovery_id=ra.discovery_id
+        JOIN article_versions v ON v.version_id=ra.version_id WHERE ra.report_id=?""", (report_id,))
+    names = [item[0] for item in cursor.description]
+    by_url = {}
+    for values in cursor:
+        row = dict(zip(names, values))
+        by_url.setdefault(canonical_url(row["raw_url"]), []).append(row)
+    bound, bindings, views = {}, {}, {}
+    for canonical, title, summary in target.values():
+        rows = by_url.get(canonical, [])
+        if len(rows) != 1:
+            raise RegistryInputError("target article membership is missing or ambiguous in the Registry DB")
+        row = rows[0]
+        if (row["discovery_report_id"] != report_id or row["discovery_article_id"] != row["article_id"]
+                or row["version_article_id"] != row["article_id"] or row["discovery_version_id"] != row["version_id"]
+                or row["discovery_ordinal"] != row["ordinal"] or row["selected"] != 1
+                or (row["observed_title"], row["observed_summary"]) != (title, summary)):
+            raise RegistryInputError("target article membership has an inexact discovery/version binding")
+        key = aliases.get(("article", row["article_id"]), ("article", row["article_id"]))
+        if key[0] != "article" or key[1] in bound:
+            raise RegistryInputError("target article membership is ambiguous in the Registry DB")
+        if canonical_url(row["canonical_url"]) != canonical:
+            if key not in views:
+                views[key] = published_snapshots(connection, ("article",), entity_ids={"article":[key[1]]}, include_hidden=True).get(key, {})
+            if canonical not in views[key].get("identity_mapping", {}).get("locators", []):
+                raise RegistryInputError("target article membership locator lacks an approved identity scope")
+        bound[key[1]] = (canonical, title, summary)
+        bindings[key[1]] = {field:row[field] for field in ("article_id","version_id","discovery_id","ordinal","raw_url")}
+    return bound, digest({"report_id":report_id,"memberships":bindings})
+
+
+def _verify_target_memberships(connection, *, report_id, target):
+    bound, membership_sha = _bound_report_memberships(connection, report_id=report_id, target=target)
+    if bound != target:
+        raise RegistryInputError("target article membership differs from the exact Registry binding")
+    return membership_sha
 
 
 def _verified_registry_target(
@@ -391,6 +429,7 @@ def _verified_registry_target(
     report_date: str,
     report_filename: str,
     target: Mapping[str, tuple[str, str, str]],
+    expected_membership_sha256: str | None = None,
 ) -> str:
     connection = _open_read_only_database(database)
     try:
@@ -401,11 +440,9 @@ def _verified_registry_target(
             report_filename=report_filename,
             report_sha=report_sha,
         )
-        _verify_target_memberships(
-            connection,
-            report_id=report_id,
-            target=target,
-        )
+        membership_sha = _verify_target_memberships(connection, report_id=report_id, target=target)
+        if expected_membership_sha256 is not None and membership_sha != expected_membership_sha256:
+            raise RegistryInputError("target article membership version changed before semantic import")
         return report_id
     finally:
         connection.close()
@@ -513,6 +550,7 @@ def _apply(
     report_date: str,
     report_filename: str,
     sidecar_count: int,
+    target_membership_sha256: str | None = None,
 ) -> dict[str, Any]:
     if database is None:
         raise RegistryInputError("a registry database is required to apply semantic import")
@@ -542,6 +580,7 @@ def _apply(
             report_date=report_date,
             report_filename=report_filename,
             target=target,
+            expected_membership_sha256=target_membership_sha256,
         )
         candidate: Path | None = None
         backup_path: Path | None = None

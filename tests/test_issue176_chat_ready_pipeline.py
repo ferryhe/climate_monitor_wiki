@@ -139,6 +139,12 @@ def _setup(tmp_path, *, occurrence_summary: str | None = None):
     return database, queue, runtime, base_wiki, sources, status
 
 
+def _source_page_name(queue, batch_id):
+    bundle=json.loads((queue/batch_id/"bundle.json").read_text(encoding="utf-8"))
+    occurrence,=[row for article in bundle["articles"] for row in article["occurrences"]]
+    return f"registry-source-observation-{occurrence['occurrence_id']}.md"
+
+
 def _ack_activation(queue):
     def reload_chat(generation_id: str) -> None:
         pending = json.loads((queue / "pending.json").read_text(encoding="utf-8"))
@@ -220,7 +226,7 @@ def test_projection_keeps_citation_after_summary_markdown_subheading(tmp_path):
 
     assert result["stage"] == "chat_ready", result["error"]
     projection, _ = load_active_projection(runtime, queue / "active.json")
-    page = (projection / "article-core-climate-study.md").read_text(
+    page = (projection / _source_page_name(queue,status["batch_id"])).read_text(
         encoding="utf-8"
     )
     assert "## Embedded report subheading" in page
@@ -264,7 +270,7 @@ def test_reload_failure_retries_one_imported_pdf_without_duplicate_rows_or_pages
     projection = runtime / "generations" / failed["generation_id"]
     pages_before = sorted(path.name for path in projection.glob("*.md"))
     generations_before = sorted(path.name for path in (runtime / "generations").iterdir())
-    observation = projection / "article-core-climate-study.md"
+    observation = projection / _source_page_name(queue,status["batch_id"])
     citation_count = observation.read_text(encoding="utf-8").count(
         "IAA_CSC_Climate_Report_20260928.pdf"
     )
@@ -506,7 +512,7 @@ def test_active_pdf_only_article_excludes_unactivated_core_content_from_wiki_and
     assert ready["chat_ready"] is True
 
     generation, active = load_active_projection(runtime, queue / "active.json")
-    page = (generation / "article-core-climate-study.md").read_text(encoding="utf-8")
+    page = (generation / f"registry-source-observation-{occurrence['occurrence_id']}.md").read_text(encoding="utf-8")
     expected_title = (
         occurrence.get("anchor_text") or occurrence.get("title")
         or occurrence["raw_url"]
@@ -535,9 +541,10 @@ def test_active_pdf_only_article_excludes_unactivated_core_content_from_wiki_and
         ),
         overlay_manifest=manifest,
     )
-    article = snapshot["articles"][0]
-    assert article["title"] == expected_title
-    assert article["content_version_id"] is None and article["content"] is None
+    assert snapshot["articles"] == []
+    update, = snapshot["pdf_source_updates"]
+    assert update["core_article_id"] is None and update["title"] == expected_title
+    assert "UNACTIVATED FULL WEB BODY" not in json.dumps(snapshot)
     from climate_delivery.templates.adapters import adapt_range_report
     update_model = adapt_range_report(snapshot).updates[0]
     assert any(citation.label == "approved-confirmed.pdf, page 2" for citation in update_model.citations)
@@ -836,12 +843,9 @@ def test_legacy_active_pdf_overlay_excludes_later_failed_pdf(monkeypatch, tmp_pa
         pdf_overlay_reader=pdf_overlay_reader,
         overlay_manifest=manifest,
     )
-    observations = [
-        observation
-        for article in report["articles"]
-        for observation in article["source_observations"]
-        if observation["kind"] == "registry_pdf"
-    ]
+    assert report["articles"] == []
+    observations = report["pdf_source_updates"]
+    assert all(item["core_article_id"] is None for item in observations)
     assert {item["filename"] for item in observations} == {"active-a.pdf"}
     assert {item["event_id"] for item in report["pdf_calendar"]["records"]} == {
         "active-a-date"
@@ -893,7 +897,7 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
     monkeypatch.setattr(api_server._wiki_static_files, "all_directories", [str(base_wiki)])
     client = TestClient(api_server.app)
 
-    assert client.get("/wiki/article-core-climate-study.md").status_code == 404
+    assert client.get("/wiki/"+_source_page_name(queue,status["batch_id"])).status_code == 404
     hidden = client.post(
         "/api/chat",
         json={
@@ -902,7 +906,7 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
         },
     ).json()
     assert all(
-        item["path"] != "wiki/article-core-climate-study.md"
+        item["path"] != "wiki/"+_source_page_name(queue,status["batch_id"])
         for item in hidden["sources"]
     )
     assert "IAA_CSC_Climate_Report_20260928.pdf" not in hidden["text"]
@@ -934,11 +938,9 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
         overlay_reader=legacy_overlay[0], pdf_overlay_reader=legacy_overlay[1],
         overlay_manifest=legacy_overlay[2],
     )
-    assert any(
-        observation["kind"] == "registry_pdf"
-        for article in legacy_report["articles"]
-        for observation in article["source_observations"]
-    )
+    assert legacy_report["articles"] == []
+    assert any(item["filename"] == "IAA_CSC_Climate_Report_20260928.pdf"
+        and item["core_article_id"] is None for item in legacy_report["pdf_source_updates"])
     monkeypatch.setattr(api_server, "PDF_RUNTIME_WIKI_DIR", runtime)
 
     assert retry_pdf_batch(queue, status["batch_id"])["stage"] == "queued"
@@ -967,10 +969,10 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
     assert sorted(path.name for path in (runtime / "generations").iterdir()) == generations_before
     projection, active = load_active_projection(runtime, queue / "active.json")
     assert active["generation_id"] == failed["generation_id"] == ready["generation_id"]
-    assert sorted(path.name for path in projection.glob("*.md")) == [
-        "article-core-climate-study.md"
-    ]
-    page = client.get("/wiki/article-core-climate-study.md")
+    assert sorted(path.name for path in projection.glob("*.md")) == sorted([
+        _source_page_name(queue,status["batch_id"]), "registry-source-observations.md"
+    ])
+    page = client.get("/wiki/"+_source_page_name(queue,status["batch_id"]))
     assert page.status_code == 200
     assert "IAA_CSC_Climate_Report_20260928.pdf" in page.text
     answer = client.post(
@@ -983,7 +985,7 @@ def test_failed_first_reload_is_not_selected_on_startup_then_retry_activates(
     citation = next(
         item
         for item in answer["sources"]
-        if item["path"] == "wiki/article-core-climate-study.md"
+        if item["path"] == "wiki/"+_source_page_name(queue,status["batch_id"])
     )
     assert "IAA_CSC_Climate_Report_20260928.pdf" in citation["snippet"]
     assert "page 2" in citation["snippet"]
@@ -1076,7 +1078,7 @@ def test_older_filename_retry_publishes_compatible_newer_projection(tmp_path):
     assert failed["stage"] == "failed" and failed["chat_ready"] is False
     assert "reload unavailable" in failed["error"]
     assert active_after_failure["generation_id"] == active_before["generation_id"]
-    old_page = (projection / "article-core-climate-study.md").read_text(
+    old_page = (projection / _source_page_name(queue,older["batch_id"])).read_text(
         encoding="utf-8"
     )
     assert "renamed.pdf" in old_page
@@ -1096,7 +1098,7 @@ def test_older_filename_retry_publishes_compatible_newer_projection(tmp_path):
     assert active_after_retry["batch_id"] == newer["batch_id"]
     assert active_after_retry["generation_id"] == ready["generation_id"]
     assert active_after_retry["generation_id"] != active_before["generation_id"]
-    page = (projection / "article-core-climate-study.md").read_text(
+    page = (projection / _source_page_name(queue,older["batch_id"])).read_text(
         encoding="utf-8"
     )
     assert "renamed.pdf" in page
@@ -1264,7 +1266,7 @@ def test_authenticated_api_accepts_one_pdf_and_rejects_zero_or_multiple_before_p
 
 
 @pytest.mark.skipif(os.name == "nt", reason="api_server management locking requires POSIX fcntl")
-def test_ready_pdf_overlay_merges_same_path_after_weekly_base_reload(
+def test_ready_unlinked_pdf_overlay_keeps_distinct_path_after_weekly_base_reload(
     monkeypatch, tmp_path
 ):
     from fastapi.testclient import TestClient
@@ -1297,9 +1299,10 @@ def test_ready_pdf_overlay_merges_same_path_after_weekly_base_reload(
     ).process(queued["batch_id"])
     assert ready["chat_ready"] is True
     projection, metadata = load_active_projection(runtime, queue / "active.json")
-    assert sorted(path.name for path in projection.glob("*.md")) == [
-        "article-core-climate-study.md"
-    ]
+    source_page=_source_page_name(queue,queued["batch_id"])
+    assert sorted(path.name for path in projection.glob("*.md")) == sorted([
+        source_page,"registry-source-observations.md"
+    ])
 
     # Simulate the scheduled Registry promotion and deployed base projection update.
     with sqlite3.connect(database) as connection:
@@ -1323,7 +1326,7 @@ def test_ready_pdf_overlay_merges_same_path_after_weekly_base_reload(
     citation = next(
         item
         for item in pdf_answer["sources"]
-        if item["path"] == "wiki/article-core-climate-study.md"
+        if item["path"] == "wiki/"+source_page
     )
     assert "IAA_CSC_Climate_Report_20260928.pdf" in citation["snippet"]
     assert "page 2" in citation["snippet"]
@@ -1333,12 +1336,15 @@ def test_ready_pdf_overlay_merges_same_path_after_weekly_base_reload(
         json={"message": "What is in the updated weekly Registry projection?", "answerMode": "brief"},
     ).json()
     assert "Updated weekly Registry projection" in base_answer["text"]
-    pdf_page = client.get("/wiki/article-core-climate-study.md")
+    pdf_page = client.get("/wiki/"+source_page)
     assert pdf_page.status_code == 200
-    assert "Updated weekly Registry projection" in pdf_page.text
+    assert "Updated weekly Registry projection" not in pdf_page.text
+    core_page=client.get("/wiki/article-core-climate-study.md")
+    assert core_page.status_code == 200 and "Core report summary." in core_page.text
+    assert "IAA_CSC_Climate_Report_20260928.pdf" not in core_page.text
     assert "IAA_CSC_Climate_Report_20260928.pdf" in pdf_page.text
     assert "page 2" in pdf_page.text
-    pdf_head = client.head("/wiki/article-core-climate-study.md")
+    pdf_head = client.head("/wiki/"+source_page)
     assert pdf_head.content == b""
     assert int(pdf_head.headers["content-length"]) == len(pdf_page.content)
     assert read_pdf_batch(queue, queued["batch_id"])["chat_ready"] is True
@@ -1349,9 +1355,8 @@ def test_ready_pdf_overlay_merges_same_path_after_weekly_base_reload(
         start_date="2026-09-14",
         end_date="2026-09-14",
     )
-    observations = [
-        item for article in snapshot["articles"] for item in article["source_observations"]
-    ]
+    observations = snapshot["pdf_source_updates"]
+    assert all(item["core_article_id"] is None for item in observations)
     assert any(
         item["kind"] == "registry_pdf"
         and item["batch_id"] == queued["batch_id"]
@@ -1395,7 +1400,7 @@ def test_later_success_excludes_failed_batch_until_retry(tmp_path):
     ).process(later["batch_id"])
     assert ready["chat_ready"] is True
     projection, _ = load_active_projection(runtime, queue / "active.json")
-    page = (projection / "article-core-climate-study.md").read_text(encoding="utf-8")
+    page = (projection / _source_page_name(queue,later["batch_id"])).read_text(encoding="utf-8")
     assert "later-report.pdf" in page
     assert "IAA_CSC_Climate_Report_20260928.pdf" not in page
     rag_corpus = "\n".join(
@@ -1421,7 +1426,7 @@ def test_later_success_excludes_failed_batch_until_retry(tmp_path):
     ).process(failed_batch["batch_id"])
     assert retried["chat_ready"] is True
     projection, _ = load_active_projection(runtime, queue / "active.json")
-    page = (projection / "article-core-climate-study.md").read_text(encoding="utf-8")
+    page = "\n".join(path.read_text(encoding="utf-8") for path in sorted(projection.glob("registry-source-observation-*.md")))
     assert page.count("later-report.pdf") == 1
     assert page.count("IAA_CSC_Climate_Report_20260928.pdf") == 1
     with sqlite3.connect(database) as connection:

@@ -12,7 +12,7 @@ from pathlib import Path
 from .list_projection import RegistryListProjection
 from .read_api import RegistryReader, RegistryContractError, RegistryNotFoundError, RegistryQueryError, _pagination, validate_page, validate_report_date, validate_article_id, filter_pdf_articles, _pdf_article_search_text
 
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 
 
 def _json(value):
@@ -115,15 +115,19 @@ def refresh_display(connection, *, force=False, output_dir=None):
                     "publisher_metadata": projection.publisher_metadata, "categories": projection.category_body.decode("utf-8")}
             finally:
                 projection.close()
-            standalone = {item["canonical_url"] for item in reader.pdf_articles_all()}
+            from .identity import approved_aliases
+            metadata["article_aliases"] = {source[1]: target[1]
+                for source, target in approved_aliases(reader._public_candidates("article", "pdf_article")).items()
+                if source[0] == target[0] == "article"}
+            standalone = {item["article_id"] for item in reader.pdf_articles_all()}
             for original in reader.pdf_articles_all(include_linked=True):
                 item = _merge_pdf_article_payloads(original, None)
                 card = _pdf_dto(filter_pdf_articles([item])[0])
                 search_item = {**item, "occurrences": original.get("occurrences", [])}
                 search = _pdf_article_search_text(search_item)
                 connection.execute("INSERT INTO display_pdf_articles VALUES(?,?,?,?,?,?,?)",
-                    (item["canonical_url"], item["article_id"], item.get("last_seen") or "", item.get("source"), search,
-                        item["canonical_url"] in standalone, _json(card)))
+                    (item["article_id"], item["article_id"], item.get("last_seen") or "", item.get("source"), search,
+                        item["article_id"] in standalone, _json(card)))
             for item in reader.pdf_calendar_items_all():
                 search = " ".join((item.get("name") or "", item.get("kind") or "", item.get("raw_date") or "",
                     item.get("summary") or "", " ".join(item.get("source_urls") or []))).casefold()
@@ -200,6 +204,7 @@ class DisplayReader(RegistryListProjection):
         metadata = json.loads(row[5])
         if metadata.get("schema_cookie") != connection.execute("PRAGMA schema_version").fetchone()[0]:
             raise RegistryContractError("Registry schema differs from its published display generation")
+        self.article_aliases = metadata.get("article_aliases", {})
         self.version = metadata["revision"]
         self.status_core, self.status_combined = metadata["status_core"], metadata["status_combined"]
         self.publisher_metadata = {key == "true": value for key, value in metadata["publisher_metadata"].items()}
@@ -207,6 +212,8 @@ class DisplayReader(RegistryListProjection):
 
     def article(self, identity, *, pdf=False):
         validate_article_id(identity)
+        if not pdf:
+            identity = self.article_aliases.get(identity, identity)
         row = self.connection.execute("SELECT dto FROM display_details WHERE kind=? AND identity=?",
             ("pdf_article" if pdf else "article", identity)).fetchone()
         if row is None:
@@ -227,7 +234,7 @@ class DisplayReader(RegistryListProjection):
             where.append("a.source=?")
             params.append(source.strip().lower().removeprefix("www."))
         if report_date:
-            where.append("EXISTS(SELECT 1 FROM display_appearances x WHERE x.url=a.url AND x.kind='pdf' AND x.report_date=?)")
+            where.append("EXISTS(SELECT 1 FROM display_appearances x WHERE x.url=('pdf_article:'||a.article_id) AND x.kind='pdf' AND x.report_date=?)")
             params.append(report_date)
         clause = " AND ".join(where)
         total = self.connection.execute("SELECT count(*) FROM display_pdf_articles a WHERE " + clause, params).fetchone()[0]

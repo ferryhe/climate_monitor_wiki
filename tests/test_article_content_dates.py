@@ -953,6 +953,13 @@ def test_pdf_same_url_date_scope_does_not_borrow_unlinked_core_update(tmp_path, 
             db.execute("INSERT INTO pdf_article_date_observations VALUES('own-pdf-date','pdf-good','https://example.org/good','page_information','2026-10-03','fixture','fixture','pdf','pdf-good',?,'2026-10-04T00:00:00Z')", (json.dumps(proof),))
         from verified_fixtures import seed_verified_articles
         seed_verified_articles(db)
+        if not linked:
+            # The core approval cannot publish independent PDF date observations.
+            from climate_registry.owner_dates import current_date_view
+            prior_pdf=current_date_view(db,"pdf_article","pdf-good")
+            assert not {"own-pdf-date","older-pdf-date"} & {row["observation_id"] for row in prior_pdf.get("tables",{}).get("pdf_article_date_observations",[])}
+            own = stage_snapshot(db,snapshot_entity(db,"pdf_article","pdf-good"))
+            _approve(db,own,{"basis":"exact independent PDF source/date candidate review"},status="accepted_legacy")
     sha, bundle = _stage_complete_bundle(database)
     with sqlite3.connect(database) as db:
         snapshot = json.loads(db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (sha,)).fetchone()[0])
@@ -978,7 +985,15 @@ def test_pdf_same_url_date_scope_does_not_borrow_unlinked_core_update(tmp_path, 
             check(reader.pdf_article("pdf-good"))
     with reader.public_snapshot(direct=True):
         owner = reader._public_candidates("article", entity_ids={"article": ["good"]})[("article", "good")]
-        check(reader._pdf_article_from_snapshot({**owner, "entity_id": "pdf-good"}))  # Existing singleton alias shape.
+        if linked:
+            check(reader._pdf_article_from_snapshot({**owner,"entity_id":"pdf-good"}))
+        else:
+            assert not owner["tables"].get("pdf_intake_articles")
+            from climate_registry.read_api import RegistryContractError
+            with pytest.raises(RegistryContractError,match="no article row"):
+                reader._pdf_article_from_snapshot({**owner,"entity_id":"pdf-good"})
+            own = reader._public_candidates("pdf_article",entity_ids={"pdf_article":["pdf-good"]})[("pdf_article","pdf-good")]
+            check(reader._pdf_article_from_snapshot(own))
     root = tmp_path / "scope-export"
     (root / "wiki").mkdir(parents=True)
     export_public_snapshot(database, root / "wiki/public-registry.json")
@@ -1068,6 +1083,13 @@ def test_linked_pdf_complete_package_dates_precede_history_without_crossing_unli
         db.execute("INSERT INTO pdf_article_date_observations VALUES('older-pdf-date','pdf-good','https://example.org/good','page_information','2026-10-03','fixture','fixture','pdf','pdf-good',?,'2026-10-04T00:00:00Z')", (json.dumps(proof),))
         from verified_fixtures import seed_verified_articles
         seed_verified_articles(db)
+        if not linked:
+            # The core approval cannot publish independent PDF date observations.
+            from climate_registry.owner_dates import current_date_view
+            prior_pdf=current_date_view(db,"pdf_article","pdf-good")
+            assert not {"own-pdf-date","older-pdf-date"} & {row["observation_id"] for row in prior_pdf.get("tables",{}).get("pdf_article_date_observations",[])}
+            own = stage_snapshot(db,snapshot_entity(db,"pdf_article","pdf-good"))
+            _approve(db,own,{"basis":"exact independent PDF source/date candidate review"},status="accepted_legacy")
     sha, bundle = _stage_complete_bundle(database, date_field=field)
     with sqlite3.connect(database) as db:
         _approve(db, sha, {"basis": "fresh current package review"})

@@ -296,14 +296,14 @@ def test_every_legacy_publication_preview_preserves_file_then_explicitly_migrate
             db.execute("DELETE FROM article_versions");db.execute("DELETE FROM articles");db.execute("DELETE FROM sources")
     before=database.read_bytes();inode=database.stat().st_ino
     result=migrate_publication(database,tmp_path/"backups")
-    assert result=={"status":"dry_run","schema_version":version,"target_version":26,"core_articles":2 if populated else 0,"pdf_articles":0}
+    assert result=={"status":"dry_run","schema_version":version,"target_version":27,"core_articles":2 if populated else 0,"pdf_articles":0}
     assert database.read_bytes()==before and database.stat().st_ino==inode and not (tmp_path/"backups").exists()
     migrated=migrate_publication(database,tmp_path/"backups",apply=True)
     assert migrated["accepted_legacy"]==(2 if populated else 0)
     assert Path(migrated["backup"]).read_bytes()==before
     assert _reader(database,tmp_path).articles()["pagination"]["total"]==0  # Legacy acceptance is not factual verification.
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db)==26 and db.execute("PRAGMA foreign_key_check").fetchall()==[]
+        assert validate_registry_contract(db)==27 and db.execute("PRAGMA foreign_key_check").fetchall()==[]
         publications=db.execute("SELECT * FROM registry_publication ORDER BY entity_id").fetchall()
     repeated=migrate_publication(database,tmp_path/"backups",apply=True)
     assert repeated["accepted_legacy"]==0 and repeated["manual_materialized"]==0
@@ -422,7 +422,7 @@ def test_article_api_uses_one_approved_core_pdf_snapshot(tmp_path,monkeypatch,en
     import api_server
     database=_database(tmp_path)
     with sqlite3.connect(database) as db:
-        _pdf(db,occurrence={"summary":"Approved PDF A","summary_basis":"verbatim_pdf_article_row"})
+        _pdf(db,legacy_core_article_id="a",occurrence={"summary":"Approved PDF A","summary_basis":"verbatim_pdf_article_row"})
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit approved A fixture"}, status="accepted_legacy")
     db.close()
     other=tmp_path/"other.sqlite3";other.write_bytes(database.read_bytes())
@@ -482,11 +482,19 @@ def test_native_review_requires_actual_full_snapshot_inspection(tmp_path, monkey
     assert _reader(database, tmp_path).articles()["pagination"]["total"] == 1
 
 
-def _pdf(db, identity="a", url="https://example.org/a", *, occurrence=None, occurrence_id="occurrence", period=(None,None), run_date=None, document=None, verified=True):
+def _pdf(db, identity="a", url="https://example.org/a", *, occurrence=None, occurrence_id="occurrence", period=(None,None), run_date=None, document=None, verified=True, legacy_core_article_id=None):
     occurrence = {"title": "Original PDF title", **(occurrence or {"summary":"Original PDF observation", "summary_basis":"verbatim_pdf_article_row"})}
+    if legacy_core_article_id is not None:
+        document = {**(document or {}), "legacy_explicit_identity_evidence": {
+            "pdf_article_id": identity, "core_article_id": legacy_core_article_id, "occurrence_id": occurrence_id,
+            "source_statement": "This retained historical source explicitly identifies core Article " + legacy_core_article_id + ".",
+            "approval_basis": "pre-G4 explicit source link retained in the accepted legacy candidate"}}
     db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at,period_start,period_end,date_of_run) VALUES('ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff','/evidence/source.pdf','source.pdf','application/pdf',1,'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',?,'2026-08-01T00:00:00Z',?,?,?)",(json.dumps(document or {}),*period,run_date))
     db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES(?,?, 'Original PDF title','2026-08-01T00:00:00Z')", (identity,url))
     db.execute("INSERT INTO pdf_intake_article_occurrences VALUES(?,?,'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',2,?,'2026-08-01',NULL,'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',?)", (occurrence_id,identity,url,json.dumps(occurrence or {"summary":"Original PDF observation", "summary_basis":"verbatim_pdf_article_row"})))
+    if legacy_core_article_id is not None:
+        # This fixture declares a retained explicit same-object link, independently of URL equality.
+        db.execute("UPDATE pdf_intake_articles SET core_article_id=?,confirmation_basis='exact_url_eligible_detail' WHERE article_id=?",(legacy_core_article_id,identity))
     if verified:
         from verified_fixtures import seed_verified_articles
         seed_verified_articles(db, occurrence_ids={occurrence_id})
@@ -495,7 +503,7 @@ def _pdf(db, identity="a", url="https://example.org/a", *, occurrence=None, occu
 def test_shared_core_pdf_identity_has_one_visibility_and_version(tmp_path):
     database = _database(tmp_path)
     with sqlite3.connect(database) as db:
-        _pdf(db)
+        _pdf(db, legacy_core_article_id="a")
         stage_entities(db)
         assert db.execute("SELECT count(*) FROM registry_publication WHERE entity_id='a'").fetchone()[0] == 1
         first = db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_id='a'").fetchone()[0]
@@ -526,7 +534,7 @@ def test_runtime_registry_schema_probe_uses_one_approved_projection(tmp_path, mo
         db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('c','https://example.org/c','s','2026-09-01','2026-09-01')")
         db.execute("INSERT INTO article_versions VALUES('v-c','c','Title c','Title c','Observed summary','f-c','report-title-summary','2026-09-01','2026-09-01')")
         db.execute("UPDATE articles SET current_version_id='v-c' WHERE article_id='c'")
-        _pdf(db)
+        _pdf(db, legacy_core_article_id="a")
         from verified_fixtures import seed_verified_articles
         seed_verified_articles(db)
         stage_entities(db)
@@ -614,10 +622,10 @@ def test_runtime_registry_rejects_invalid_probe_and_approved_candidate(tmp_path,
     assert not list((tmp_path / "invalid-candidate").glob("*.md"))
 
 
-def test_shared_url_with_different_pdf_id_is_one_canonical_flag(tmp_path):
+def test_explicit_link_with_different_pdf_id_is_one_canonical_flag(tmp_path):
     database = _database(tmp_path)
     with sqlite3.connect(database) as db:
-        _pdf(db, identity="pdf-alias")
+        _pdf(db, identity="pdf-alias",legacy_core_article_id="a")
         for sha in stage_entities(db):
             _approve(db,sha,{"basis":"explicit fixture approval"}, status="accepted_legacy")
         assert db.execute("SELECT count(*) FROM registry_publication WHERE entity_kind='pdf_article'").fetchone()[0] == 0
@@ -1910,6 +1918,12 @@ def test_publisher_source_rebuild_exports_only_the_exact_public_version(tmp_path
     artifact=json.loads((wiki/"public-registry.json").read_text(encoding="utf-8"))
     assert [item["article_id"] for item in artifact["articles"]] == ["a"]
     assert artifact["articles"][0]["title"] == "Title a"
+    assert artifact["articles"][0]["current_version_id"] == "v-a"
+    assert artifact["articles"][0]["published_candidate_sha256"] == first
+    from climate_registry.publication import export_public_snapshot
+    direct_export = tmp_path/"direct-public.json"
+    export_public_snapshot(database,direct_export,source_dir=sources)
+    assert json.loads(direct_export.read_text(encoding="utf-8"))["articles"] == artifact["articles"]
     public_text=json.dumps(artifact)
     assert "Pending private" not in public_text and "Hidden private" not in public_text
     assert "Title a" in (wiki/"climate-monitor-2026-09-07.md").read_text(encoding="utf-8")
@@ -2397,7 +2411,7 @@ def test_public_api_matches_git_dto_and_keeps_raw_evidence_immutable(tmp_path, m
     database = _database(tmp_path)
     evidence = {"source_url":"https://example.org/a", "date_basis":"observed collection time", "text":"Collected 1 September at 12:00 UTC", "database":"/private/upstream.sqlite3", "debug":{"candidate":"private trace"}}
     with sqlite3.connect(database) as db:
-        _pdf(db, occurrence={"summary":"Approved PDF summary", "summary_basis":"verbatim_pdf_article_row",
+        _pdf(db, legacy_core_article_id="a",occurrence={"summary":"Approved PDF summary", "summary_basis":"verbatim_pdf_article_row",
             "publication_date_evidence":{"kind":"publisher", "url":"https://example.org/a", "text":"Published 1 September", "database":"/private/upstream.sqlite3"}})
         db.execute("INSERT INTO article_date_observations VALUES('date','a','https://example.org/a','collection','2026-09-01T12:00:00Z','fixture','fixture','articles','a',?,'2026-09-01T12:00:00Z')", (json.dumps(evidence),))
         for sha in stage_entities(db): _approve(db, sha, {"basis": "explicit full public fixture approval"}, status="accepted_legacy")
@@ -2437,7 +2451,7 @@ def test_combined_publisher_response_uses_one_public_snapshot(tmp_path, monkeypa
         db.execute("INSERT INTO sources VALUES('new','new.example','New publisher','2026-09-01','2026-09-01')")
         db.execute("UPDATE articles SET canonical_url='https://old.example/a' WHERE article_id='a'")
         db.execute("UPDATE articles SET source_id='new',canonical_url='https://new.example/b' WHERE article_id='b'")
-        _pdf(db, identity="linked", url="https://old.example/a")
+        _pdf(db, identity="linked", url="https://old.example/a",legacy_core_article_id="a")
         db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES('standalone','https://pdf.example/c','Standalone PDF','2026-08-01T00:00:00Z')")
         db.execute("INSERT INTO pdf_intake_article_occurrences SELECT 'standalone-occurrence','standalone',source_document_sha256,page,'https://pdf.example/c',report_date,publication_date,content_sha256,page_sha256,occurrence_json FROM pdf_intake_article_occurrences WHERE occurrence_id='occurrence'")
         from verified_fixtures import seed_verified_articles
@@ -2982,6 +2996,7 @@ def test_pdf_approved_before_core_inherits_visibility_without_inheriting_pass(tm
         db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('later','https://example.org/later','s','2026-09-01','2026-09-01')")
         db.execute("INSERT INTO article_versions VALUES('v-later','later','Pending core title','Pending core title','Pending core summary','f-later','report-title-summary','2026-09-01','2026-09-01')")
         db.execute("UPDATE articles SET current_version_id='v-later' WHERE article_id='later'")
+        db.execute("UPDATE pdf_intake_articles SET core_article_id='later',confirmation_basis='exact_url_eligible_detail' WHERE article_id='pdf-first'")
         stage_entities(db)
         newest,published,flag=db.execute("SELECT latest_candidate_sha256,published_candidate_sha256,is_visible FROM registry_publication WHERE entity_kind='article' AND entity_id='later'").fetchone()
         assert published is None and newest!=old and bool(flag)==visible
@@ -3010,7 +3025,7 @@ def test_core_pdf_export_uses_curated_occurrences_and_preserves_public_fields(tm
     assert public=={key:value for key,value in occurrence.items() if key in {"occurrence_id","page","summary","summary_basis","verified_information"}}
     database=_database(tmp_path)
     with sqlite3.connect(database) as db:
-        _pdf(db)
+        _pdf(db, legacy_core_article_id="a")
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit public fixture"}, status="accepted_legacy")
     path=tmp_path/"public.json";export_public_snapshot(database,path)
     text=path.read_text(encoding="utf-8")
@@ -3023,7 +3038,7 @@ def test_pdf_report_git_projection_keeps_partial_linked_visibility_and_archive_m
     from climate_registry.publication import export_public_snapshot,install_git_snapshot
     database=_database(tmp_path);document="f"*64
     with sqlite3.connect(database) as db:
-        _pdf(db,run_date="2026-09-03",document={"pages":[{"page":2,"text":"Raw full report marker"}],"executive_summary":"Raw full report marker"})  # Core-linked observation is governed by the core approval.
+        _pdf(db,legacy_core_article_id="a",run_date="2026-09-03",document={"pages":[{"page":2,"text":"Raw full report marker"}],"executive_summary":"Raw full report marker"})  # Core-linked observation is governed by the core approval.
         db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES('pdf-pending','https://example.org/pending','Pending PDF source','2026-09-03T00:00:00Z')")
         db.execute("INSERT INTO pdf_intake_article_occurrences VALUES('pending-occ','pdf-pending',?,2,'https://example.org/pending','2026-09-03',NULL,?,?,?)",(document,"d"*64,"c"*64,json.dumps({"summary":"Pending PDF source text","summary_basis":"verbatim_pdf_article_row"})))
         stage_entities(db)
@@ -3088,6 +3103,7 @@ def test_pending_core_pdf_alias_keeps_both_old_approved_snapshots(tmp_path):
     pdf=reader.pdf_article("pdf-first")
     with sqlite3.connect(database) as db:
         db.execute("UPDATE articles SET canonical_url='https://example.org/later' WHERE article_id='a'")
+        db.execute("UPDATE pdf_intake_articles SET core_article_id='a',confirmation_basis='exact_url_eligible_detail' WHERE article_id='pdf-first'")
         stage_entities(db)
         current=db.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='a'").fetchone()[0]
     assert reader.article("a")==before and reader.pdf_article("pdf-first")==pdf
@@ -3871,8 +3887,16 @@ def test_current_dated_wiki_uses_approved_dto_and_keeps_source_report_identity(t
     expected=direct.report_with_identity("2026-09-07")
     assert expected[0]["articles"][0]["report_summary"] == "Original observed summary."
     assert "Approved summary" not in json.dumps(expected[0]) and "Pending summary" not in json.dumps(expected[0])
+    with sqlite3.connect(database) as db:
+        frozen = json.loads(db.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (sha,)).fetchone()[0])
+    approved_version = frozen["tables"]["articles"][0]["current_version_id"]
     for article in expected[0]["articles"]:
-        article.pop("record_reference",None);article.pop("current_version_id",None)
+        assert article["current_version_id"] == approved_version
+        assert article["record_reference"]["candidate_sha256"] == sha
+        article.pop("record_reference")
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    assert artifact["articles"][0]["current_version_id"] == approved_version
+    assert artifact["articles"][0]["published_candidate_sha256"] == sha
     static=RegistryReader.from_public_export(root)
     assert static.status()==direct.status()
     assert static.reports()==direct.reports()
@@ -4006,7 +4030,16 @@ def test_terminal_partial_t1_is_per_item_and_running_missing_or_stale_evidence_w
     packet=prepare_review(database,root)
     statuses={item["entity_id"]:"pass" if item["entity_id"]=="pdf-one" else "needs_correction" for item in packet["candidates"]}
     _approve_native_packet(database,root,tmp_path/"hermes.sqlite3","cron_terminal_partial",statuses=statuses)
-    assert _reader(database,tmp_path).pdf_articles_all()==[]  # A T10 PASS with failed T1 remains hidden.
+    reader=_reader(database,tmp_path)
+    assert reader.pdf_articles_all()==[]  # A T10 PASS with failed T1 remains hidden.
+    for direct in (True,False):
+        with reader.public_snapshot(direct=direct):
+            assert reader.pdf_articles_all()==[]
+    from climate_registry.read_api import RegistryReader
+    from climate_registry.publication import export_public_snapshot
+    exported=tmp_path/"failed-t1-static"; (exported/"wiki").mkdir(parents=True)
+    export_public_snapshot(database,exported/"wiki/public-registry.json")
+    assert RegistryReader.from_public_export(exported).pdf_articles_all()==[]
     assert prepare_review(database,root)["candidates"]==[]
     from climate_registry.item_lifecycle import item_status
     rejected = next(item["candidate_sha256"] for item in packet["candidates"] if item["entity_id"]=="pdf-two")
@@ -4037,10 +4070,10 @@ def test_storage_only_21_to_22_preserves_pdf_rows_packets_and_every_public_point
     before=database.read_bytes()
     public=_reader(database,tmp_path).articles()
     result=migrate_publication(database,tmp_path/"backups",apply=True)
-    assert result["schema_version"]==26 and result["accepted_legacy"]==result["manual_materialized"]==result["manual_published"]==result["staged"]==0
+    assert result["schema_version"]==27 and result["accepted_legacy"]==result["manual_materialized"]==result["manual_published"]==result["staged"]==0
     assert Path(result["backup"]).read_bytes()==before
     with sqlite3.connect(database) as db:
-        assert validate_registry_contract(db)==26
+        assert validate_registry_contract(db)==27
         assert db.execute("PRAGMA foreign_key_check").fetchall()==[]
         for table,rows in immutable.items():assert db.execute('SELECT * FROM '+table).fetchall()==rows
         migrated=db.execute("SELECT rowid,* FROM article_check_attempts").fetchall()
@@ -4407,6 +4440,10 @@ def test_approved_pdf_summary_presentation_keeps_raw_evidence_and_ignores_pendin
     with sqlite3.connect(database) as db:
         _pdf(db,identity=identity,url=url)
         for sha in stage_entities(db):_approve(db,sha,{"basis":"explicit fixture approval"},status="accepted_legacy")
+    if linked:
+        from test_owner_checks import _approve_exact_pdf_alias
+        _approve_exact_pdf_alias(database,tmp_path,identity=identity,target="a")
+    with sqlite3.connect(database) as db:
         kind="article" if linked else "pdf_article"
         snapshot=snapshot_entity(db,kind,identity)
         snapshot["derived_display"]={"summary":"Reviewed source summary", "summary_provenance":"owner_reviewed_source_evidence"}
@@ -4414,6 +4451,11 @@ def test_approved_pdf_summary_presentation_keeps_raw_evidence_and_ignores_pendin
         _approve(db,sha,_reviewed_pdf_summary_receipt(snapshot,sha))
         snapshot["derived_display"]["summary"]="Pending mixed summary"
         stage_snapshot(db,snapshot)
+        # Private low-level fixture writes finish the same projection step as the public writer.
+        from climate_registry.display import refresh_display,DisplayReader
+        refresh_display(db)
+        if db.execute("PRAGMA user_version").fetchone()[0] >= 24:
+            assert DisplayReader(db).article(identity,pdf=True)["published_candidate_sha256"] == sha
     reader=_reader(database,tmp_path)
     def verify(current):
         detail=current.pdf_article(identity)
@@ -4443,7 +4485,7 @@ def test_approved_pdf_summary_presentation_keeps_raw_evidence_and_ignores_pendin
     monkeypatch.setattr(api_server,"_registry_reader",lambda: _reader(database,tmp_path))
     monkeypatch.setattr(api_server,"_range_report_overlay",lambda:(None,None,None))
     response=TestClient(api_server.app).get("/api/registry/pdf-intake/articles/"+identity)
-    assert response.status_code==200
+    assert response.status_code==200,response.text
     assert response.json()["summary"] == "Reviewed source summary"
     assert response.json()["summary_provenance"] == "owner_reviewed_source_evidence"
     public=response.json()["occurrences"][0]
@@ -4709,3 +4751,61 @@ def test_repeated_target_report_keeps_verified_primary_across_public_consumers(t
     assert TestClient(api_server.app).get("/api/registry/meetings?base_date=2026-01-01").json()["items"] == artifact["meeting_records"]
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall() == raw_before
+
+
+
+def test_direct_and_materialized_export_keep_same_approved_report_version(tmp_path):
+    from climate_registry.publication import export_public_snapshot
+    from verified_fixtures import seed_verified_articles
+    database = _database(tmp_path, version=27)
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO reports(report_id,report_date,filename,report_title,report_sha256,cadence,report_format,parse_warnings_json) VALUES('report','2026-09-07','climate-monitor-2026-09-07.md','Weekly',?,'weekly','weekly-pillars-v1','[]')", ('a'*64,))
+        db.execute("INSERT INTO discoveries(discovery_id,report_id,ordinal,section,pillar,article_id,version_id,raw_url,observed_title,observed_summary,selected) VALUES('discovery','report',1,'pillar-a','A','a','v-a','https://example.org/a','Title a','Observed summary',1)")
+        db.execute("INSERT INTO report_appearances(report_id,article_id,version_id,discovery_id,section,pillar,ordinal,disposition) VALUES('report','a','v-a','discovery','pillar-a','A',1,'new')")
+        seed_verified_articles(db)
+        sha = stage_entities(db, article_ids={"a"})[0]
+        _approve(db, sha, {"basis":"exact report fixture approval"}, status="accepted_legacy")
+        db.execute("UPDATE article_versions SET observed_title='Pending title',observed_summary='Pending summary' WHERE article_id='a'")
+        stage_entities(db)
+    reader = _reader(database,tmp_path)
+    export_public_snapshot(database,tmp_path/"direct.json",reader=reader)
+    with reader.public_snapshot():
+        export_public_snapshot(database,tmp_path/"nested.json",reader=reader)
+    direct = json.loads((tmp_path/"direct.json").read_text())
+    assert direct == json.loads((tmp_path/"nested.json").read_text())
+    report_article = direct["registry_report_details"]["2026-09-07"]["payload"]["articles"][0]
+    assert report_article["current_version_id"] == "v-a" and report_article["title"] == "Title a"
+    assert "Pending summary" not in json.dumps(direct) and "Pending title" not in json.dumps(direct)
+
+
+def test_public_pdf_provenance_keeps_source_labels_times_without_raw_objects():
+    from climate_registry.publication import _occurrence_dto
+    item={"occurrence_id":"source-occ","source_document_sha256":"a"*64,"page":2,
+        "source_observations":[{"filename":"C:/PRIVATE/input/report.pdf","observed_at":"2026-10-01T00:00:00Z",
+            "path":"C:/PRIVATE/input/report.pdf","classifier":{"reason":"PRIVATE unchecked"}},
+            {"filename":"report.pdf","observed_at":"2026-10-02T00:00:00Z","path":"/PRIVATE/another/report.pdf"}]}
+    original=json.loads(json.dumps(item))
+    public=_occurrence_dto(item)
+    assert public["source_provenance"] == [{"filename":"report.pdf","observed_at":"2026-10-01T00:00:00Z"},
+        {"filename":"report.pdf","observed_at":"2026-10-02T00:00:00Z"}]
+    assert public["occurrence_id"] == "source-occ" and public["source_document_sha256"] == "a"*64 and public["page"] == 2
+    assert "source_observations" not in public and "PRIVATE" not in json.dumps(public)
+    assert _occurrence_dto(public) == public and item == original
+    exported={**public,"source_provenance":[{**row,"raw":{"reason":"PRIVATE unchecked"},"path":"/PRIVATE/report.pdf"}
+        for row in public["source_provenance"]]}
+    assert _occurrence_dto(exported) == public
+
+
+def test_snapshot_pdf_sources_keep_live_source_order_and_every_source():
+    from climate_registry.publication import public_pdf_source_provenance
+    document="a"*64
+    dependencies={"pdf_intake_document_sources":[
+        {"document_sha256":document,"source_path":"/private/z-copy.pdf","filename":"renamed.pdf","observed_at":"2026-09-01T00:00:00Z"},
+        {"document_sha256":document,"source_path":"/private/source.pdf","filename":"source.pdf","observed_at":"2026-08-01T00:00:00Z"}]}
+    original=json.loads(json.dumps(dependencies))
+    sources=RegistryReader._snapshot_pdf_document_sources(dependencies)[document]
+    assert public_pdf_source_provenance(sources) == [
+        {"filename":"source.pdf","observed_at":"2026-08-01T00:00:00Z"},
+        {"filename":"renamed.pdf","observed_at":"2026-09-01T00:00:00Z"}]
+    assert [row["path"] for row in sources] == ["/private/source.pdf","/private/z-copy.pdf"]
+    assert len(sources) == 2 and dependencies == original

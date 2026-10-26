@@ -1012,13 +1012,15 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
     monkeypatch.setattr(api_server, "_registry_reader", lambda: public_reader)
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, runtime_reader, manifest))
 
-    article_pages = [api_server.registry_pdf_articles(page_size="2", page=str(page)) for page in ("1", "2")]
+    article_pages = [api_server.registry_pdf_articles(page_size="2", page=str(page)) for page in ("1", "2", "3")]
     articles = [item for result in article_pages for item in result["items"]]
-    assert article_pages[0]["pagination"] == {"page": 1, "page_size": 2, "total": 4, "pages": 2}
+    assert article_pages[0]["pagination"] == {"page": 1, "page_size": 2, "total": 5, "pages": 3}
     assert len({item["canonical_url"] for item in articles}) == 4
-    shared = next(item for item in articles if item["canonical_url"] == shared_url)
-    assert shared["article_id"] == "public-shared" and shared["occurrence_count"] == 2
-    assert shared["latest_occurrence"]["occurrence_id"] == "runtime-shared-occ"
+    # Activation retains its exact source IDs; a shared locator is not an identity approval.
+    shared = [item for item in articles if item["canonical_url"] == shared_url]
+    assert {item["article_id"] for item in shared} == {"public-shared", "runtime-shared"}
+    assert all(item["occurrence_count"] == 1 for item in shared)
+    assert {item["latest_occurrence"]["occurrence_id"] for item in shared} == {"public-shared-occ", "runtime-shared-occ"}
     assert all(item["canonical_url"] != "https://pdf.example/blocked" for item in articles)
     assert {item["canonical_url"] for item in articles} >= {
         "https://pdf.example/public", "https://pdf.example/runtime",
@@ -1027,9 +1029,7 @@ def test_pdf_registry_api_merges_public_and_activated_runtime_before_pagination(
     for article_id in ("public-shared", "runtime-shared"):
         detail = api_server.registry_pdf_article(article_id)
         assert detail["canonical_url"] == shared_url
-        assert {item["occurrence_id"] for item in detail["occurrences"]} == {
-            "public-shared-occ", "runtime-shared-occ",
-        }
+        assert {item["occurrence_id"] for item in detail["occurrences"]} == {article_id + "-occ"}
 
     calendar_pages = [api_server.registry_pdf_calendar(page_size="1", page=str(page))
                       for page in ("1", "2", "3")]

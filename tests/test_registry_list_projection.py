@@ -10,7 +10,8 @@ from climate_registry.read_api import RegistryReader
 from test_registry_publication import _database
 
 
-def test_sql_projection_filters_core_and_pdf_independently_and_returns_only_cards():
+@pytest.mark.parametrize("retained_mapping", [False, True])
+def test_sql_projection_filters_core_and_pdf_independently_and_returns_only_cards(retained_mapping):
     class Reader:
         def _public_candidates(self, *kinds):
             assert set(kinds) == {"article", "pdf_article", "meeting", "pdf_meeting"}
@@ -25,11 +26,13 @@ def test_sql_projection_filters_core_and_pdf_independently_and_returns_only_card
         def pdf_articles_all(self, **kwargs):
             return [{"article_id": "pdf", "canonical_url": "https://example.org/a", "title": "PDF alias",
                 "summary": "PDF only hit", "source": "example.org", "publisher": "example.org",
-                "last_seen": "2026-09-03", "source_kind": "pdf", "occurrences": [{"report_date": "2026-09-03"}]}]
+                "last_seen": "2026-09-03", "source_kind": "pdf",
+                "canonical_occurrence_mappings": {"other-parent-occurrence": "core"} if retained_mapping else {},
+                "occurrences": [{"occurrence_id": "pdf-occurrence", "report_date": "2026-09-03"}]}]
         def approved_reports_all(self): return []
         def pdf_reports_all(self): return []
         def status(self): return {"available": True}
-        def approved_merged_article_count(self): return 1
+        def approved_merged_article_count(self): return 2
         def publishers(self, **kwargs): return {"items": [], "total": 0, "truncated": False}
 
     projection = RegistryListProjection(Reader())
@@ -38,24 +41,35 @@ def test_sql_projection_filters_core_and_pdf_independently_and_returns_only_card
     try:
         def page(**filters):
             return projection.articles(page=1, page_size=20, include_pdf=True, **filters)
-        for query in ("STRASSE", "tail risk", "Flood", "PDF only hit"):
+        for query in ("STRASSE", "tail risk", "Flood"):
             result = page(query=query)
             assert result["pagination"]["total"] == 1
             assert result["items"][0]["article_id"] == "core"
             assert set(result["items"][0]) <= ARTICLE_FIELDS
             assert result["items"][0]["updated_date"] == "2026-10-01"
             assert result["items"][0]["revision_date"] == "2026-09"
-        for source in ("source-1", "Publisher", "example.org", "WWW.example.org"):
+        assert page()["pagination"]["total"] == 2
+        pdf = page(query="PDF only hit")["items"]
+        assert len(pdf) == 1 and pdf[0]["article_id"] == "pdf"
+        assert set(pdf[0]) <= ARTICLE_FIELDS
+        assert not pdf[0].get("updated_date") and not pdf[0].get("revision_date")
+        assert projection.articles(page=1,page_size=20,include_pdf=False,query="PDF only hit")["items"] == []
+        for source in ("source-1", "Publisher"):
             assert page(source=source)["pagination"]["total"] == 1
+        assert page(source="example.org")["pagination"]["total"] == 2
+        assert [item["article_id"] for item in page(source="WWW.example.org")["items"]] == ["pdf"]
         assert page(query="PDF only hit", pillar="A")["items"] == []
-        assert page(report_date="2026-09-03")["items"][0]["article_id"] == "core"
+        dated = page(report_date="2026-09-03")["items"]
+        assert len(dated) == 1 and dated[0]["article_id"] == "pdf"
         assert page(report_date="2026-09-01", pillar="B")["items"] == []
         assert page(report_date="2026-09-02", pillar="B")["pagination"]["total"] == 1
         assert any("COUNT(*)" in sql for sql in statements)
         assert any("LIMIT 20 OFFSET 0" in sql for sql in statements)
-        keywords = json.loads(projection.category_body)["items"][0]
-        assert keywords["categories"] == ["Flood"]
-        assert "keywords" not in keywords and "summary" not in keywords
+        categories = {item["article_id"]: item for item in json.loads(projection.category_body)["items"]}
+        assert set(categories) == {"core", "pdf"}
+        assert categories["core"]["categories"] == ["Flood"]
+        assert not categories["pdf"]["categories"]
+        assert all("keywords" not in item and "summary" not in item for item in categories.values())
     finally:
         projection.close()
 
@@ -408,3 +422,28 @@ def test_activity_pages_are_removed_from_article_projection():
     assert [item["article_id"] for item in result["items"]] == ["article-news"]
     assert result["pagination"]["total"] == 1
     projection.close()
+
+
+
+def test_pdf_grouping_preserves_exact_occurrence_identity_and_partial_remainder():
+    from copy import deepcopy
+    from climate_registry.list_projection import group_pdf_articles
+    first={"article_id":"first","canonical_url":"https://example.org/shared","canonical_occurrence_mappings":{"mapped":"core"},
+        "occurrences":[{"occurrence_id":"mapped","summary":"Identical retained passage"},{"occurrence_id":"remainder","summary":"Identical retained passage"}]}
+    second={"article_id":"second","canonical_url":first["canonical_url"],
+        "occurrences":[{"occurrence_id":"independent","summary":"Identical retained passage"}]}
+    inputs=[first,second,deepcopy(first)]
+    original=deepcopy(inputs)
+    groups=group_pdf_articles(inputs)
+    assert set(groups) == {"article:core","pdf_article:first","pdf_article:second"}
+    assert {key:[row["occurrence_id"] for row in item["occurrences"]] for key,item in groups.items()} == {
+        "article:core":["mapped"],"pdf_article:first":["remainder"],"pdf_article:second":["independent"]}
+    assert inputs == original
+
+
+@pytest.mark.parametrize("identity",[None,"", " "])
+def test_pdf_grouping_rejects_missing_entity_identity(identity):
+    from climate_registry.list_projection import group_pdf_articles
+    from climate_registry.read_api import RegistryContractError
+    with pytest.raises(RegistryContractError,match="PDF identity"):
+        group_pdf_articles([{"article_id":identity,"occurrences":[]}])

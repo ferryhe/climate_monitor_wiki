@@ -455,7 +455,7 @@ def test_status_and_report_endpoints_are_newest_first(registry_client):
     assert len(status_payload.pop("cache_version")) == 32
     assert status_payload == {
         "available": True,
-        "schema_version": 26,
+        "schema_version": 27,
         "reports": 2,
         "articles": 3,
         "discoveries": 4,
@@ -1008,7 +1008,8 @@ def test_pdf_snapshot_keeps_approved_verified_article_summary(monkeypatch):
         "keywords": ["insurance"], "metadata_provenance": {"categories": "verified", "keywords": "verified"}})
     snapshot = {"entity_kind": "pdf_article", "entity_id": "pdf-a", "_approved_candidate_sha256": "a" * 64,
         "tables": {"pdf_intake_articles": [{"article_id": "pdf-a", "canonical_url": "https://example.org/a",
-            "title": "PDF title"}], "articles": []}, "supplements": []}
+            "title": "PDF title"}], "articles": [],
+            "pdf_intake_article_occurrences": [{"article_id": "pdf-a", "occurrence_id": "page-14"}]}, "supplements": []}
     detail = reader._pdf_article_from_snapshot(snapshot)
     assert detail["summary"] == "Approved article summary"
     assert detail["summary_provenance"] == "verified_source_evidence"

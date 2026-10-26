@@ -1014,3 +1014,103 @@ def test_cli_sidecar_errors_are_structured_json(tmp_path, capsys, mutation):
     assert payload["status"] == "error"
     assert payload["kind"] == "semantic_bundle"
     assert "sidecar" in payload["message"]
+
+
+@pytest.mark.parametrize("approved",[False,True])
+def test_semantic_import_uses_saved_report_identity_after_reviewed_url_move(tmp_path,approved):
+    from test_identity_relations import _seed,_manifest,_ingest,_approve
+    from climate_registry.audit import _insert_report
+    from climate_registry.reports import parse_historical_report
+    from climate_registry.acquisition import _article_identity
+    database=_seed(tmp_path)
+    manifest=_manifest(database);manifest["canonical_url"]="https://example.test/first"
+    proposed=_ingest(database,tmp_path,manifest)
+    if approved:_approve(database,tmp_path,proposed)
+    report=_report_with_sidecar(tmp_path)
+    parsed=parse_historical_report(report)
+    with sqlite3.connect(database) as db:
+        _insert_report(db,parsed)
+        expected=_article_identity(db,{"canonical_url":manifest["canonical_url"]})
+        assert (expected == "good") == approved
+        # An independent same-URL material discovered later is not this report's member.
+        db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('independent-material',?,'s','2026-10-01','2026-10-01')",(manifest["canonical_url"],))
+        original={table:db.execute("SELECT * FROM "+table).fetchall() for table in (
+            "articles","article_versions","reports","discoveries","report_appearances")}
+        published=db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()[0]
+    arguments=dict(expected_report_sha256=_report_sha256(report),database=database,backup_dir=tmp_path/"semantic-backups")
+    before=database.read_bytes()
+    plan=import_report_semantics(report,**arguments)
+    assert not plan["blocked"] and plan["matched_count"] == 2
+    assert next(row[0] for row in plan["matched"] if row[1] == "First finding") == expected
+    assert "independent-material" not in {row[0] for row in plan["matched"]}
+    assert database.read_bytes() == before
+    result=import_report_semantics(report,dry_run=False,**arguments)
+    assert result["matched"] == plan["matched"] and result["written"] == 2
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT article_id,canonical_url FROM article_semantics WHERE title='First finding'").fetchone() == (expected,manifest["canonical_url"])
+        assert not db.execute("SELECT 1 FROM article_semantics WHERE article_id='independent-material'").fetchone()
+        assert db.execute("SELECT canonical_url FROM articles WHERE article_id='good'").fetchone()[0] == "https://example.org/good"
+        assert db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()[0] == published
+        if not approved:
+            assert not db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id=?",(expected,)).fetchone()[0]
+        for table,rows in original.items():assert db.execute("SELECT * FROM "+table).fetchall() == rows
+
+
+@pytest.mark.parametrize("correction",["ambiguous","version","unapproved_locator"])
+def test_semantic_import_rejects_inexact_saved_report_scope_in_dry_run_and_apply(tmp_path,correction):
+    report=_report_with_sidecar(tmp_path)
+    database=_registry_database_for_report(tmp_path,report)
+    with sqlite3.connect(database) as db:
+        report_id,article_id,version_id,discovery_id=db.execute("SELECT report_id,article_id,version_id,discovery_id FROM report_appearances ORDER BY ordinal LIMIT 1").fetchone()
+        if correction == "ambiguous":
+            source_id,url=db.execute("SELECT source_id,canonical_url FROM articles WHERE article_id=?",(article_id,)).fetchone()
+            db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('ambiguous-material',?,?,'2026-08-10','2026-08-10')",(url,source_id))
+            db.execute("INSERT INTO article_versions SELECT 'ambiguous-version','ambiguous-material',observed_title,canonical_title,observed_summary,content_fingerprint,content_basis,first_seen,last_seen FROM article_versions WHERE version_id=?",(version_id,))
+            db.execute("INSERT INTO discoveries SELECT 'ambiguous-discovery',report_id,99,section,pillar,'ambiguous-material','ambiguous-version',raw_url,observed_title,observed_summary,1,NULL FROM discoveries WHERE discovery_id=?",(discovery_id,))
+            db.execute("INSERT INTO report_appearances(report_id,article_id,version_id,discovery_id,section,pillar,ordinal,disposition,observation_status) SELECT report_id,'ambiguous-material','ambiguous-version','ambiguous-discovery',section,pillar,99,disposition,observation_status FROM report_appearances WHERE discovery_id=?",(discovery_id,))
+        elif correction == "unapproved_locator":
+            db.execute("UPDATE articles SET canonical_url='https://example.test/unapproved-old-locator' WHERE article_id=?",(article_id,))
+        else:
+            other=db.execute("SELECT version_id FROM report_appearances WHERE article_id!=?",(article_id,)).fetchone()[0]
+            db.execute("UPDATE report_appearances SET version_id=? WHERE article_id=?",(other,article_id))
+    before=database.read_bytes()
+    for dry_run in (True,False):
+        with pytest.raises(RegistryInputError,match="target article membership"):
+            import_report_semantics(report,expected_report_sha256=_report_sha256(report),dry_run=dry_run,
+                database=database,backup_dir=tmp_path/"backups")
+        assert database.read_bytes() == before
+        assert not (tmp_path/"backups").exists()
+
+
+def test_sidecar_join_uses_unique_report_member_ids_instead_of_url_hash(tmp_path):
+    report=_report_with_sidecar(tmp_path)
+    payload=json.loads(semantic_sidecar_path(report).read_text())
+    target=_target_article_identities(report)
+    first=next(key for key,value in target.items() if value[0] == "https://example.test/first")
+    target["approved-existing-id"]=target.pop(first)
+    matched,unmatched=_build_records(payload,target)
+    assert not unmatched
+    assert next(row["article_id"] for row in matched if row["canonical_url"] == "https://example.test/first") == "approved-existing-id"
+
+
+def test_semantic_import_rechecks_exact_report_version_binding_under_apply_lock(tmp_path,monkeypatch):
+    report=_report_with_sidecar(tmp_path)
+    database=_registry_database_for_report(tmp_path,report)
+    real_apply=semantic_import._apply
+    def move_version_before_lock(*args,**kwargs):
+        from climate_registry.audit import _content_fingerprint
+        with sqlite3.connect(database) as db:
+            discovery,version=db.execute("SELECT discovery_id,version_id FROM report_appearances ORDER BY ordinal LIMIT 1").fetchone()
+            title,summary,prior_fingerprint=db.execute("SELECT observed_title,observed_summary,content_fingerprint FROM article_versions WHERE version_id=?",(version,)).fetchone()
+            replacement_summary=summary+" New independently observed replacement content."
+            replacement_fingerprint=_content_fingerprint(title,replacement_summary)
+            assert replacement_fingerprint != prior_fingerprint
+            db.execute("INSERT INTO article_versions SELECT 'rebound-version',article_id,observed_title,canonical_title,?,?,content_basis,first_seen,last_seen FROM article_versions WHERE version_id=?",(replacement_summary,replacement_fingerprint,version))
+            db.execute("UPDATE discoveries SET version_id='rebound-version' WHERE discovery_id=?",(discovery,))
+            db.execute("UPDATE report_appearances SET version_id='rebound-version' WHERE discovery_id=?",(discovery,))
+        return real_apply(*args,**kwargs)
+    monkeypatch.setattr(semantic_import,"_apply",move_version_before_lock)
+    with pytest.raises(RegistryInputError,match="membership version changed"):
+        import_report_semantics(report,expected_report_sha256=_report_sha256(report),dry_run=False,
+            database=database,backup_dir=tmp_path/"backups")
+    assert _semantics_rows(database) == [] and not (tmp_path/"backups").exists()

@@ -90,7 +90,7 @@ from climate_registry.pdf_pipeline import (
 )
 from climate_registry.information_checks import merge_checked_observation, deduplicate_pdf_occurrences
 from climate_registry.publication import _public_dto, _pdf_dto, _calendar_dto, _merge_pdf_article_payloads
-from climate_registry.list_projection import RegistryListProjection, category_collection
+from climate_registry.list_projection import RegistryListProjection, category_collection, group_pdf_articles
 from climate_registry.display import DisplayReader, display_snapshot
 from climate_registry.range_reports import (
     RENDERER_VERSION,
@@ -855,7 +855,8 @@ def _pdf_report(document_sha256: str, *, include_bytes: bool = False, page: int 
         if pagination is None:
             return report
         return {**{key: value for key, value in report.items() if key != "pages"},
-            "pagination": pagination, "article_offset": article_offset}
+            "pagination": pagination, "article_offset": article_offset,
+            "article_count": sum(kind == "article" for kind, _ in catalog)}
     try:
         public = public_reader.pdf_report(document_sha256, include_bytes=include_bytes, module_keys=module_keys)
     except RegistryNotFoundError:
@@ -873,10 +874,9 @@ def _pdf_report(document_sha256: str, *, include_bytes: bool = False, page: int 
         return next((item for item in (public, runtime) if item and item["pdf_bytes"] is not None), public or runtime)
     if not public or not runtime:
         return paged(public or runtime)
-    by_url = {item["canonical_url"]: item for item in public["articles"]}
-    for item in runtime["articles"]:
-        by_url[item["canonical_url"]] = _merge_pdf_article_payloads(by_url.get(item["canonical_url"]), item)
-    public["articles"] = list(by_url.values())
+    from climate_registry.list_projection import group_pdf_articles
+    public["articles"] = list(group_pdf_articles(public["articles"] + runtime["articles"]).values())
+    public["article_count"] = len(public["articles"])
     public["calendar_items"] = _merge_pdf_calendar_items(public["calendar_items"], runtime["calendar_items"])
     public["source_filenames"] = sorted(set(public["source_filenames"] + runtime["source_filenames"]))
     public["report_pdf"] = public["report_pdf"] or runtime["report_pdf"]
@@ -1051,7 +1051,7 @@ def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pil
     web_reader, _, manifest = _range_report_overlay()
     active_ids = {item["article_id"] for item in (manifest or {}).get("web_items", [])}
     readers = [(_registry_reader(), None)] + ([(web_reader, active_ids)] if web_reader else [])
-    core_by_url, by_url = {}, {}
+    core_by_id, by_identity = {}, {}
     for reader, allowed_ids in readers:
         if allowed_ids is None:
             core = _all_registry_pages(reader.articles)
@@ -1059,7 +1059,7 @@ def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pil
             from climate_registry.wiki import _pinned_web_article
             core = [dict(_pinned_web_article(reader, [item for item in manifest["web_items"]
                 if item["article_id"] == article_id]), pdf_occurrence_count=0) for article_id in sorted(allowed_ids)]
-        core_by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in core
+        core_by_id.update({item["article_id"]: dict(item, source_kind="registry") for item in core
             if allowed_ids is None or item["article_id"] in allowed_ids})
         if allowed_ids is None:
             matches = _all_registry_pages(reader.articles, **filters) if any(filters.values()) else core
@@ -1069,23 +1069,26 @@ def _registry_article_page(parsed_page, parsed_size, *, query="", source="", pil
                 and (not source or item.get("source") == source)
                 and (not report_date or any(a.get("report_date") == report_date for a in item.get("appearances", [])))
                 and (not pillar or any(o.get("pillar") == pillar for a in item.get("acquisition_observations", []) for o in a.get("origins", [])))]
-        by_url.update({item["canonical_url"]: dict(item, source_kind="registry") for item in matches
+        by_identity.update({"article:" + item["article_id"]: dict(item, source_kind="registry") for item in matches
             if allowed_ids is None or item["article_id"] in allowed_ids})
     pdf_method = lambda page, page_size, **filters: registry_pdf_articles(
         page=str(page), page_size=str(page_size), include_linked=True, **filters)
     pdf_items = _all_registry_pages(pdf_method)
     for item in pdf_items:
-        core = core_by_url.get(item["canonical_url"])
+        owner = item.get("core_article_id") or item.get("canonical_display_article_id")
+        core = core_by_id.get(owner)
         if core:
             core.update(source_label="Registry · PDF import", pdf_occurrence_count=item["occurrence_count"])
-    by_url = {url: core_by_url[url] for url in by_url}
+    by_identity = {key: core_by_id[item["article_id"]] for key, item in by_identity.items()}
     if not pillar:
         pdf_matches = _all_registry_pages(pdf_method, query=query, source=source, report_date=report_date) if any(
             (query, source, report_date)) else pdf_items
         for item in pdf_matches:
-            core = core_by_url.get(item["canonical_url"])
-            by_url[item["canonical_url"]] = core or item
-    items = list(by_url.values())
+            owner = item.get("core_article_id") or item.get("canonical_display_article_id")
+            core = core_by_id.get(owner)
+            key = "article:" + owner if owner else "pdf_article:" + item["article_id"]
+            by_identity[key] = core or item
+    items = list(by_identity.values())
     sort_articles_by_publication_date(items)
     offset = (parsed_page - 1) * parsed_size
     return {"items": [(_pdf_dto(item) if item.get("source_kind") == "pdf" else _public_dto(item)) for item in items[offset:offset + parsed_size]], "pagination": _pagination(parsed_page, parsed_size, len(items))}
@@ -1170,14 +1173,10 @@ def registry_pdf_articles(
         public_items = _registry_reader().pdf_articles_all(include_linked=include_linked)
         runtime_items = [] if article_ids is None else reader.pdf_articles_all(
             allowed_occurrence_ids=article_ids, include_linked=include_linked)
-        by_url: dict[str, dict[str, Any]] = {}
-        for item in public_items:
-            by_url[item["canonical_url"]] = _merge_pdf_article_payloads(item, None)
-        for item in runtime_items:
-            url = item["canonical_url"]
-            by_url[url] = _merge_pdf_article_payloads(by_url.get(url), item)
+        grouped = group_pdf_articles([*public_items, *runtime_items])
+        items = [item for key, item in grouped.items() if include_linked or not key.startswith("article:")]
         return page_pdf_articles(
-            list(by_url.values()), page=parsed_page, page_size=parsed_size,
+            items, page=parsed_page, page_size=parsed_size,
             query=query, source=source, report_date=report_date,
         )
     def public_payload():
@@ -1205,12 +1204,14 @@ def registry_pdf_article(article_id: str) -> dict:
             runtime = reader.pdf_article(article_id, allowed_occurrence_ids=article_ids)
         except RegistryNotFoundError:
             runtime = None
+        def counterpart(item, candidates):
+            groups = group_pdf_articles([item])
+            # A partial parent is not whole-entity authority for another source.
+            return group_pdf_articles(candidates).get(next(iter(groups))) if len(groups) == 1 else None
         if runtime is not None and public is None:
-            public = next((item for item in public_reader.pdf_articles_all()
-                if item["canonical_url"] == runtime["canonical_url"]), None)
-        elif public is not None and (runtime is None or runtime["canonical_url"] != public["canonical_url"]):
-            runtime = next((item for item in reader.pdf_articles_all(allowed_occurrence_ids=article_ids)
-                if item["canonical_url"] == public["canonical_url"]), None)
+            public = counterpart(runtime, public_reader.pdf_articles_all(include_linked=True))
+        elif public is not None and runtime is None:
+            runtime = counterpart(public, reader.pdf_articles_all(allowed_occurrence_ids=article_ids, include_linked=True))
         payload = _merge_pdf_article_payloads(public, runtime)
         if payload is None:
             raise RegistryNotFoundError("article not found")
@@ -1290,13 +1291,10 @@ def registry_article(article_id: str) -> dict:
         if web_reader and article_id in active_ids:
             payload.pop("pdf_occurrences", None)
         for reader, allowed_ids in [(_registry_reader(), None)] + ([(pdf_reader, set((manifest or {}).get("pdf_occurrence_ids", [])))] if pdf_reader else []):
-            with reader.connect() as connection:
-                row = connection.execute("SELECT article_id FROM pdf_intake_articles WHERE canonical_url=?",
-                    (payload["canonical_url"],)).fetchone() if reader._has_pdf_intake(connection) else None
-                if row:
-                    occurrences = reader._pdf_occurrences(connection, row[0], payload["canonical_url"],
-                        pdf_article_id=row[0], allowed_occurrence_ids=allowed_ids)
-                    payload["pdf_occurrences"] = deduplicate_pdf_occurrences(payload.get("pdf_occurrences", []) + occurrences)
+            imported = group_pdf_articles(reader.pdf_articles_all(allowed_occurrence_ids=allowed_ids, include_linked=True))
+            occurrences = imported.get("article:" + payload["article_id"], {}).get("occurrences", [])
+            if occurrences:
+                payload["pdf_occurrences"] = deduplicate_pdf_occurrences(payload.get("pdf_occurrences", []) + occurrences)
         if "pdf_occurrences" in payload:
             payload["pdf_occurrences"] = deduplicate_pdf_occurrences(payload["pdf_occurrences"])
         return payload

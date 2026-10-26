@@ -153,6 +153,10 @@ def _parser() -> argparse.ArgumentParser:
         if name == "plan-owner-check":
             owner.add_argument("--kind", required=True, choices=["article", "pdf_article", "meeting", "pdf_meeting"])
             owner.add_argument("--id", required=True)
+            owner.add_argument("--identity-correction", action="store_true",
+                help="Plan an exact semantic identity, URL, disposition and body/event relation correction")
+            owner.add_argument("--identity-participant", action="append", default=[], metavar="KIND:ID",
+                help="Freeze an alias or Dates participant in the identity scope; repeat as needed")
             owner.add_argument("--with-editorial-metadata", action="store_true",
                 help="Plan an explicitly versioned v2 article metadata scope")
             owner.add_argument("--publication-date-only", action="store_true",
@@ -242,6 +246,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 if args.command == "plan-owner-check":
                     result = plan_owner_check(args.database, args.kind, args.id,
+                        identity_correction=args.identity_correction, identity_participants=[value.split(":", 1) for value in args.identity_participant],
                         with_editorial_metadata=args.with_editorial_metadata,
                         publication_date_only=args.publication_date_only, date_fields=args.date_field,
                         activity_dates_only=args.activity_dates_only, human_date_override=args.human_date_override)

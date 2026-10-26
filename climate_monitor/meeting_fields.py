@@ -27,7 +27,7 @@ def pdf_meeting_fields(item: dict[str, Any]) -> dict[str, Any]:
         return result
     result = dict(item)
     result.update(
-        event_type=item.get("event_type"), organizer=item.get("organizer") or item.get("publisher"),
+        event_type=item.get("event_type"), organizer=item.get("organizer"),
         status=item.get("status"), event_timezone=item.get("event_timezone") or item.get("timezone"),
         relevance_reason=item.get("relevance_reason") or item.get("relevance"),
         origin="pdf_import", collection_status=item.get("collection_status") or "pending",

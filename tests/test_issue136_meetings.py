@@ -29,11 +29,11 @@ from climate_registry.acquisition import PublicationDatePolicy, store_acquisitio
 from climate_registry.schema import apply_migrations
 
 
-def _database(tmp_path, bodies, *, target_version=None):
+def _database(tmp_path, bodies, *, target_version=None, source_id="source"):
     database = tmp_path / "registry.sqlite3"
     connection = sqlite3.connect(database)
     apply_migrations(connection, target_version=target_version)
-    connection.execute("INSERT INTO sources VALUES ('source', 'example.com', 'Example', '2026-01-01', '2026-01-01')")
+    connection.execute("INSERT INTO sources VALUES (?, 'example.com', 'Example', '2026-01-01', '2026-01-01')",(source_id,))
     connection.execute(
         "INSERT INTO acquisition_batches VALUES (?,?,?,?,?,?,?,?,?,?)",
         ("batch", "pre-report-acquisition-batch.v1", "2026-01-05", "2026-01-05T00:00:00Z",
@@ -46,8 +46,8 @@ def _database(tmp_path, bodies, *, target_version=None):
         digest = hashlib.sha256(body.encode()).hexdigest()
         connection.execute(
             """INSERT INTO articles(article_id, canonical_url, source_id, first_seen, last_seen)
-               VALUES (?, ?, 'source', '2026-01-01', '2026-01-01')""",
-            (article_id, url),
+               VALUES (?, ?, ?, '2026-01-01', '2026-01-01')""",
+            (article_id, url, source_id),
         )
         connection.execute(
             """INSERT INTO article_content_versions VALUES
@@ -93,7 +93,7 @@ def test_schema_v12_keeps_meeting_reads_and_rejects_writes(tmp_path):
 
     assert query_events(database, base_date="2026-01-01", timezone_name="UTC")["records"] == []
     assert load_snapshot(database, "snapshot-v12")["records"] == []
-    with pytest.raises(ValueError, match="schema 26 for writes"):
+    with pytest.raises(ValueError, match="schema 27 for writes"):
         freeze_snapshot(database, base_date="2026-01-01", timezone_name="UTC")
 
 
@@ -1227,8 +1227,8 @@ def test_schema_10_upgrades_to_exact_versioned_meeting_contract():
     connection = sqlite3.connect(":memory:")
     apply_migrations(connection, target_version=10)
     assert validate_registry_contract(connection) == 10
-    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
-    assert validate_registry_contract(connection) == 26
+    assert apply_migrations(connection) == [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+    assert validate_registry_contract(connection) == 27
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"meeting_runs", "meeting_run_items", "climate_events", "climate_event_sources",
             "climate_event_versions", "meeting_snapshots"} <= tables
@@ -1239,8 +1239,8 @@ def test_schema_11_upgrades_existing_meeting_sources_without_losing_evidence(tmp
     connection = sqlite3.connect(database)
     apply_migrations(connection, target_version=11)
     assert validate_registry_contract(connection) == 11
-    assert apply_migrations(connection) == [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
-    assert validate_registry_contract(connection) == 26
+    assert apply_migrations(connection) == [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+    assert validate_registry_contract(connection) == 27
     columns = {row[1] for row in connection.execute("PRAGMA table_info(climate_event_sources)")}
     assert {"candidate_ordinal", "interpretation_seq"} <= columns
     connection.close()

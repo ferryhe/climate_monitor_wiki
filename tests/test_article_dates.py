@@ -327,25 +327,52 @@ def test_linked_pdf_dates_flow_to_the_core_article_detail_and_card(tmp_path):
         assert payload["revision_date"] == "2026-08-15"
 
 
-def test_pdf_date_import_stages_core_owner_when_core_article_id_is_null(tmp_path):
-    from climate_registry.publication import snapshot_entity
+@pytest.mark.parametrize("approved_link",[False,True])
+@pytest.mark.parametrize("date_kind,value,precision",[("updated","2026-10-15","day"),
+    ("published","2026-09","month"),("revised","2026-08","month")])
+def test_pdf_date_import_stages_core_owner_when_core_article_id_is_null(tmp_path,approved_link,date_kind,value,precision):
+    from climate_registry.publication import canonical_entity
+    from test_verified_publication import _check,_approve_all
+    from test_identity_relations import _merge_identity
 
     database = _database(tmp_path / "registry.sqlite3")
     with sqlite3.connect(database) as connection:
+        connection.execute("""INSERT INTO article_versions VALUES(
+            'version-a','article-a','Source article','Source article','Source summary',
+            'fixture','report-title-summary','2026-01-01','2026-01-01')""")
+        connection.execute("UPDATE articles SET current_version_id='version-a' WHERE article_id='article-a'")
         _pdf_article(connection, article_id="pdf-a", url="https://example.org/a", core_article_id=None)
-    item = _reviewed_typed_observation("updated", "2026-10-15", record_id="pdf-update",
-        precision="day")
+    _check(database,tmp_path,ids={"core:article-a","pdf-occurrence"},
+        body="Source article. Source summary. PDF article. Same climate report landing and download.")
+    _approve_all(database)
+    if approved_link:
+        _merge_identity(database,tmp_path,[("pdf_article","pdf-a")],identity="article-a")
+    with sqlite3.connect(database) as connection:
+        previous=connection.execute("SELECT latest_candidate_sha256,published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='article-a'").fetchone()
+        assert previous[0] == previous[1]
+        assert connection.execute("SELECT core_article_id FROM pdf_intake_articles WHERE article_id='pdf-a'").fetchone() == (None,)
+    item = _reviewed_typed_observation(date_kind,value,record_id="pdf-update",precision=precision)
     item.update(article_id="pdf-a", canonical_url="https://example.org/a")
     assert import_observations(database, _payload(item), entity_kind="pdf_article", write=True) == {
         "inserted": 1, "already_present": 0
     }
     with sqlite3.connect(database) as connection:
-        row = connection.execute("""SELECT c.snapshot_json FROM registry_publication p
-            JOIN registry_candidates c ON c.candidate_sha256=p.latest_candidate_sha256
-            WHERE p.entity_kind='article' AND p.entity_id='article-a'""").fetchone()
-        assert row is not None
-        snapshot = json.loads(row[0])
-    assert len(snapshot["tables"]["pdf_article_date_observations"]) == 1
+        current=connection.execute("SELECT latest_candidate_sha256,published_candidate_sha256 FROM registry_publication WHERE entity_kind='article' AND entity_id='article-a'").fetchone()
+        assert current[1] == previous[1]  # Date intake still needs its own approval.
+        expected=("article","article-a") if approved_link else ("pdf_article","pdf-a")
+        assert canonical_entity(connection,"pdf_article","pdf-a") == expected
+        assert (current[0] != previous[0]) == approved_link
+        owner=current[0] if approved_link else connection.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind='pdf_article' AND entity_id='pdf-a'").fetchone()[0]
+        snapshot=json.loads(connection.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?",(owner,)).fetchone()[0])
+        rows=snapshot["tables"]["pdf_article_date_observations"]
+        assert len(rows) == 1
+        assert rows[0]["article_id"] == "pdf-a" and rows[0]["observed_at"] == value
+        evidence=json.loads(rows[0]["evidence_json"])
+        assert evidence["date_kind"] == date_kind and evidence["date_precision"] == precision
+        assert evidence["source_url"] == "https://example.org/a"
+        if not approved_link:
+            article=json.loads(connection.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?",(current[0],)).fetchone()[0])
+            assert not article["tables"].get("pdf_article_date_observations")
 
 
 def test_independently_reviewed_typed_dates_survive_public_approval(tmp_path):

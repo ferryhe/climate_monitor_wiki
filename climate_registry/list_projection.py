@@ -6,7 +6,7 @@ import sqlite3
 
 from climate_monitor.publisher_mapping import publisher_name
 from climate_monitor.taxonomy import load_article_taxonomy
-from .read_api import RegistryQueryError, _pagination, _pdf_article_search_text, filter_pdf_articles, validate_page, validate_report_date
+from .read_api import RegistryContractError, RegistryQueryError, _pagination, _pdf_article_search_text, filter_pdf_articles, validate_page, validate_report_date
 from .article_dates import CONTENT_DATE_FIELDS
 
 
@@ -41,13 +41,53 @@ def category_collection(items, taxonomy=None):
         "items": [category_record(item) for item in items]}
 
 
+def pdf_article_group_key(item):
+    owner = item.get("core_article_id") or item.get("canonical_display_article_id")
+    identity = owner or item.get("article_id")
+    if not isinstance(identity, str) or not identity.strip():
+        raise RegistryContractError("approved PDF identity is missing")
+    return "article:" + identity if owner else "pdf_article:" + identity
+
+
+def group_pdf_articles(items):
+    """Group approved DTOs by existing entity/occurrence ownership, never URL.
+
+    Partial ownership leaves the other source occurrences under their PDF ID.
+    Repeated public/runtime observations merge only by exact occurrence identity.
+    """
+    from .publication import _merge_pdf_article_payloads
+    grouped = {}
+    expanded_pdf = []
+    for item in items:
+        mapped = item.get("canonical_occurrence_mappings", {})
+        if mapped and not item.get("core_article_id"):
+            for owner in set(mapped.values()):
+                occurrences = [row for row in item["occurrences"] if mapped.get(row["occurrence_id"]) == owner]
+                if not occurrences:
+                    continue
+                first = occurrences[0]
+                expanded_pdf.append({**item, "core_article_id": owner, "occurrences": occurrences,
+                    "title": first.get("title") or first.get("anchor_text"),
+                    "summary": first.get("display_summary") or first.get("summary")})
+            remainder = [row for row in item["occurrences"] if row["occurrence_id"] not in mapped]
+            if remainder:
+                standalone = {**item, "core_article_id": None, "occurrences": remainder}
+                standalone.pop("canonical_display_article_id", None)
+                expanded_pdf.append(standalone)
+        else:
+            expanded_pdf.append(item)
+    for item in expanded_pdf:
+        key = pdf_article_group_key(item)
+        grouped[key] = (_merge_pdf_article_payloads(grouped[key], item) if key in grouped else item)
+    return grouped
+
+
 class RegistryListProjection:
     def __init__(self, reader):
         # Prime once so all readers share candidate decoding and hidden-alias propagation.
         reader._public_candidates("article", "pdf_article", "meeting", "pdf_meeting")
         core = reader.approved_article_cards_all()
         pdf = reader.pdf_articles_all(include_linked=True)
-        pdf_search_by_url = {item["canonical_url"]: _pdf_article_search_text(item) for item in pdf}
         reports = reader.approved_reports_all() + reader.pdf_reports_all()
         self.status_core = reader.status()
         self.status_combined = dict(self.status_core, articles=reader.approved_merged_article_count(),
@@ -66,8 +106,9 @@ class RegistryListProjection:
                 CREATE TABLE reports (report_id TEXT, report_date TEXT, source_kind TEXT, card TEXT);
                 CREATE TABLE publishers (include_pdf INTEGER, position INTEGER, card TEXT);
             """)
-            by_url = {item["canonical_url"]: item for item in core}
-            pdf_by_url = {item["canonical_url"]: item for item in pdf}
+            # The legacy SQL `url` column is a private row key, never a source URL.
+            by_url = {"article:" + item["article_id"]: item for item in core}
+            pdf_by_url = group_pdf_articles(pdf)
             category_items = []
             for url in by_url.keys() | pdf_by_url.keys():
                 original = by_url.get(url)
@@ -97,7 +138,7 @@ class RegistryListProjection:
                     core_card["publisher"] = publisher_name(core_card.get("publisher"), [core_card.get("canonical_url")])
                 core_search = " ".join(str(original.get(key) or "") for key in
                     ("title", "summary", "canonical_url", "categories", "keywords")).casefold() if original else None
-                pdf_search = pdf_search_by_url.get(url) if imported else None
+                pdf_search = _pdf_article_search_text(imported) if imported else None
                 db.execute("INSERT INTO articles VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
                     url, merged["article_id"], merged.get("last_seen") or "", merged.get("first_seen") or "",
                     json.dumps(core_card, ensure_ascii=False) if core_card is not None else None,

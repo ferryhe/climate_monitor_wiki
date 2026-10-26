@@ -746,107 +746,21 @@ def test_dry_run_is_read_only_and_returns_exact_target_plan(weekly_fixture):
 
 
 def test_legacy_public_view_requires_explicit_migration_before_weekly_promotion(weekly_fixture):
+    # Use the real legacy contract; a v27 table relabelled as v3 lacks URL uniqueness.
+    from climate_registry.schema import apply_migrations
     connection = sqlite3.connect(weekly_fixture.database)
-    with connection:
-        from climate_registry.schema import DISPLAY_DIRTY_TRIGGERS, DISPLAY_TABLE_COLUMNS
-        for name in DISPLAY_DIRTY_TRIGGERS:
-            connection.execute(f"DROP TRIGGER {name}")
-        for name in DISPLAY_TABLE_COLUMNS:
-            connection.execute(f"DROP TABLE {name}")
-        connection.execute("DROP TABLE registry_publication")
-        connection.execute("DROP TABLE registry_reviews")
-        connection.execute("DROP TABLE registry_candidates")
-        connection.execute("DROP TABLE knowledge_versions")
-        connection.execute("DROP TABLE article_check_attempts")
-        connection.execute("DROP TABLE article_check_runs")
-        connection.execute("DROP TABLE meeting_check_attempts")
-        connection.execute("DROP TABLE meeting_check_runs")
-        connection.execute("DROP TABLE pdf_article_date_observations")
-        connection.execute("DROP TABLE pdf_source_coverage")
-        connection.execute("DROP TABLE article_date_observations")
-        connection.execute("DROP TABLE meeting_snapshots")
-        connection.execute("DROP TABLE climate_event_sources")
-        connection.execute("DROP TABLE climate_event_versions")
-        connection.execute("DROP TABLE climate_events")
-        connection.execute("DROP TABLE meeting_run_items")
-        connection.execute("DROP TABLE meeting_runs")
-        connection.execute("DROP TABLE pdf_intake_document_sources")
-        connection.execute("DROP TABLE pdf_intake_calendar_items")
-        connection.execute("DROP TABLE pdf_intake_article_occurrences")
-        connection.execute("DROP TABLE pdf_intake_articles")
-        connection.execute("DROP TABLE pdf_intake_summary_adoptions")
-        connection.execute("DROP TABLE pdf_intake_documents")
-        connection.execute("DROP TABLE acquisition_items")
-        connection.execute("DROP TABLE acquisition_searches")
-        connection.execute("DROP TABLE acquisition_batches")
-        connection.execute("DROP TRIGGER article_capture_resolutions_validate_insert")
-        connection.execute("DROP TRIGGER article_capture_resolutions_are_append_only_update")
-        connection.execute("DROP TRIGGER article_capture_resolutions_are_append_only_delete")
-        connection.execute("DROP TABLE article_capture_resolutions")
-        connection.execute("DROP TABLE IF EXISTS article_semantics")
-        connection.execute(
-            "DROP INDEX IF EXISTS idx_article_semantics_report"
-        )
-        connection.execute("DROP INDEX IF EXISTS idx_reports_id_sha256")
-        connection.execute("DELETE FROM schema_migrations WHERE version > 3")
-        connection.execute(
-            """CREATE TEMP TABLE article_enrichments_v3 AS
-               SELECT enrichment_id, content_version_id, status, summary, categories_json,
-                      keywords_json, language, generator_kind, generator_name,
-                      generator_version, generated_at, error_code, error_message
-               FROM article_enrichments"""
-        )
-        connection.execute("DROP TABLE article_enrichments")
-        connection.execute(
-            """CREATE TABLE article_enrichments (
-                enrichment_id TEXT PRIMARY KEY,
-                content_version_id TEXT NOT NULL REFERENCES article_content_versions(content_version_id),
-                status TEXT NOT NULL CHECK (status IN ('complete', 'failed')),
-                summary TEXT,
-                categories_json TEXT,
-                keywords_json TEXT,
-                language TEXT,
-                generator_kind TEXT NOT NULL CHECK (generator_kind IN ('deterministic', 'model')),
-                generator_name TEXT NOT NULL,
-                generator_version TEXT NOT NULL,
-                generated_at TEXT NOT NULL,
-                error_code TEXT,
-                error_message TEXT,
-                CHECK (
-                    (status = 'complete' AND summary IS NOT NULL AND categories_json IS NOT NULL
-                     AND keywords_json IS NOT NULL AND language IS NOT NULL
-                     AND length(trim(summary)) > 0 AND length(trim(categories_json)) > 0
-                     AND length(trim(keywords_json)) > 0 AND length(trim(language)) > 0
-                     AND error_code IS NULL AND error_message IS NULL)
-                    OR
-                    (status = 'failed' AND summary IS NULL AND categories_json IS NULL
-                     AND keywords_json IS NULL AND language IS NULL
-                     AND error_code IS NOT NULL AND length(trim(error_code)) > 0)
-                )
-            )"""
-        )
-        connection.execute(
-            """INSERT INTO article_enrichments
-               SELECT * FROM article_enrichments_v3"""
-        )
-        connection.execute("DROP TABLE article_enrichments_v3")
-        connection.execute(
-            "CREATE INDEX idx_enrichments_content_generated "
-            "ON article_enrichments(content_version_id, generated_at DESC)"
-        )
-        connection.execute(
-            """CREATE TRIGGER article_enrichments_are_append_only_update
-               BEFORE UPDATE ON article_enrichments BEGIN
-                   SELECT RAISE(ABORT, 'article enrichments are append-only');
-               END"""
-        )
-        connection.execute(
-            """CREATE TRIGGER article_enrichments_are_append_only_delete
-               BEFORE DELETE ON article_enrichments BEGIN
-                   SELECT RAISE(ABORT, 'article enrichments are append-only');
-               END"""
-        )
-        connection.execute("PRAGMA user_version = 3")
+    legacy = sqlite3.connect(":memory:")
+    apply_migrations(legacy, target_version=3)
+    legacy.execute("PRAGMA foreign_keys=OFF")
+    for (table,) in legacy.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        if table.startswith("sqlite_") or table == "schema_migrations":
+            continue
+        columns = ",".join(row[1] for row in legacy.execute(f'PRAGMA table_info("{table}")'))
+        rows = connection.execute(f'SELECT {columns} FROM "{table}"').fetchall()
+        legacy.executemany(f'INSERT INTO "{table}" ({columns}) VALUES({",".join("?" for _ in columns.split(","))})', rows)
+    legacy.commit()
+    legacy.backup(connection)
+    legacy.close()
     connection.close()
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
@@ -881,11 +795,11 @@ def test_legacy_public_view_requires_explicit_migration_before_weekly_promotion(
     assert result["promotion"] == "performed"
     assert api_server.RegistryReader(
         weekly_fixture.database, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 26
+    ).status()["schema_version"] == 27
     backup = weekly_fixture.backup_dir / result["backup_name"]
     assert api_server.RegistryReader(
         backup, repository_root=weekly_fixture.repository
-    ).status()["schema_version"] == 26
+    ).status()["schema_version"] == 27
     assert backup.read_bytes() == migrated_bytes
 
 
@@ -2329,3 +2243,27 @@ def test_weekly_private_artifact_rejects_incomplete_monitoring_without_public_na
         refresh._verify_sha_binding(SimpleNamespace(date=TARGET, source_dir=weekly_fixture.source_dir,
             database=weekly_fixture.database, artifact_root=weekly_fixture.artifact_root), result)
     assert weekly_fixture.database.read_bytes() == before
+
+
+
+def test_weekly_preflight_and_writer_reuse_approved_locator_identity(weekly_fixture, tmp_path):
+    from test_verified_publication import _check, _approve_all
+    from test_identity_relations import _manifest as identity_manifest, _ingest, _approve
+    from climate_registry.acquisition import _article_identity
+    database=weekly_fixture.database
+    with sqlite3.connect(database) as db:
+        identity=db.execute("SELECT article_id FROM articles WHERE canonical_url='https://example.com/previous'").fetchone()[0]
+    _check(database,tmp_path,ids={"core:"+identity},body="Previous. Climate risk and insurance regulation changed this week. Same climate report landing and download.")
+    _approve_all(database)
+    manifest=identity_manifest(database,identity=identity);manifest["canonical_url"]="https://example.com/target"
+    _approve(database,tmp_path,_ingest(database,tmp_path,manifest))
+    dry=weekly.weekly_sync(**weekly_fixture.arguments(dry_run=True))
+    assert dry["target_article_ids"]==[identity]
+    assert dry["would_add_articles"]==0
+    formal=weekly.weekly_sync(**weekly_fixture.arguments())
+    assert formal["target_article_ids"]==[identity] and formal["articles_added"]==0
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT article_id FROM report_appearances WHERE report_id=?",("report-"+TARGET,)).fetchall()==[(identity,)]
+        assert db.execute("SELECT raw_url FROM discoveries WHERE report_id=?",("report-"+TARGET,)).fetchall()==[("https://example.com/target",)]
+        assert db.execute("SELECT count(*) FROM articles").fetchone()[0]==1
+        assert _article_identity(db,{"canonical_url":"https://example.com/target"})==identity

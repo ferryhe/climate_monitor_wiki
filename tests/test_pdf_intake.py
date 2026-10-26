@@ -1328,7 +1328,7 @@ def test_cli_writes_and_persists_bundle_idempotently(tmp_path, monkeypatch):
     assert bundle["documents"][0]["source"]["filename"] == "source.pdf"
     import sqlite3
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (26,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (27,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_documents").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_articles").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM pdf_intake_article_occurrences").fetchone() == (0,)
@@ -1361,7 +1361,7 @@ def test_cli_rejects_output_aliases_before_overwriting_pdf_or_registry(tmp_path,
         assert source.read_bytes() == original_pdf
         import sqlite3
         with sqlite3.connect(database) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone() == (26,)
+            assert connection.execute("PRAGMA user_version").fetchone() == (27,)
     assert not backup_dir.exists()
 
 
@@ -1394,7 +1394,7 @@ def test_registry_tracks_rescheduled_calendar_occurrence(tmp_path, monkeypatch):
     assert [row[2] for row in rows] == ["2026-09-04", "2026-09-05"]
 
 
-def test_pdf_links_only_an_existing_eligible_core_and_reimport_keeps_aliases_stable(tmp_path, monkeypatch):
+def test_pdf_same_url_candidates_stay_independent_and_reimport_keeps_origins(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     source = tmp_path / "report.pdf"
     _report_pdf_with_two_articles(source)
@@ -1411,7 +1411,7 @@ def test_pdf_links_only_an_existing_eligible_core_and_reimport_keeps_aliases_sta
             "summary": "PDF-only homepage observation", "summary_basis": "verbatim_pdf_page_context",
         }],
     })
-    # This hand-authored legacy v1 link-confirmation fixture predates exact G2 replay.
+    # This hand-authored legacy v1 source fixture predates exact G2 replay.
     bundle.pop("source_coverage")
     database = tmp_path / "registry.sqlite3"
     initialize_registry(database)
@@ -1448,13 +1448,13 @@ def test_pdf_links_only_an_existing_eligible_core_and_reimport_keeps_aliases_sta
     core = reader.articles(page_size=10)["items"]
     assert {item["article_id"] for item in core} == {"core-first", "core-news"}
     assert {item["article_id"]: item["pdf_occurrence_count"] for item in core} == {
-        "core-first": 1, "core-news": 0,
+        "core-first": 0, "core-news": 0,
     }
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM article_versions").fetchone() == (2,)
         assert connection.execute(
             "SELECT COUNT(*) FROM pdf_intake_articles WHERE core_article_id IS NOT NULL"
-        ).fetchone() == (1,)
+         ).fetchone() == (0,)
         assert connection.execute(
             "SELECT core_article_id, confirmation_basis FROM pdf_intake_articles WHERE article_id='pdf-homepage'"
         ).fetchone() == (None, None)
@@ -1465,9 +1465,9 @@ def test_pdf_links_only_an_existing_eligible_core_and_reimport_keeps_aliases_sta
     connection.close()
     detail = reader.article("core-first")
     assert detail["summary"] is None and detail["report_summary"] == "Core report summary."
-    assert "summary" in detail["pdf_occurrences"][0]
+    assert not detail.get("pdf_occurrences")
     assert {item["article_id"] for item in reader.pdf_articles()["items"]} == {
-        "pdf-homepage", bundle["articles"][1]["article_id"],
+        "pdf-homepage", first["article_id"], bundle["articles"][1]["article_id"],
     }
     persist_pdf_intake(database, tmp_path / "second-backups", bundle)
     with sqlite3.connect(database) as connection:
@@ -1478,7 +1478,7 @@ def test_pdf_links_only_an_existing_eligible_core_and_reimport_keeps_aliases_sta
     connection.close()
 
 
-def test_existing_pdf_observation_reconciles_after_an_exact_core_article_arrives(tmp_path, monkeypatch):
+def test_existing_pdf_observation_stays_independent_when_same_url_core_arrives(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     source = tmp_path / "report.pdf"
     _report_pdf_with_two_articles(source)
@@ -1504,10 +1504,10 @@ def test_existing_pdf_observation_reconciles_after_an_exact_core_article_arrives
         reconcile_pdf_article_links(connection, observed_at="2026-09-02")
         assert connection.execute(
             "SELECT core_article_id FROM pdf_intake_articles WHERE article_id=?", (article["article_id"],)
-        ).fetchone() == ("core",)
+        ).fetchone() == (None,)
         assert connection.execute(
             "SELECT article_id FROM url_aliases WHERE raw_url=?", (article["occurrences"][0]["raw_url"],)
-        ).fetchone() == ("core",)
+        ).fetchone() is None
         connection.commit()
     connection.close()
 
@@ -1539,7 +1539,7 @@ def test_pdf_reimport_with_landing_page_label_does_not_confirm_an_unclassified_o
     assert article["article_id"] in {item["article_id"] for item in reader.pdf_articles()["items"]}
 
 
-def test_v15_migration_reconciles_only_exact_evidenced_pdf_articles(tmp_path):
+def test_v15_migration_preserves_pdf_ids_without_inventing_identity_from_url_or_label(tmp_path):
     database = tmp_path / "registry.sqlite3"
     connection = sqlite3.connect(database)
     apply_migrations(connection, target_version=15)
@@ -1570,20 +1570,20 @@ def test_v15_migration_reconciles_only_exact_evidenced_pdf_articles(tmp_path):
           json.dumps({"occurrence_id": "occ-home"}))),
     )
     connection.commit()
-    assert apply_migrations(connection) == [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+    assert apply_migrations(connection) == [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
     assert connection.execute(
         "SELECT core_article_id, confirmation_basis FROM pdf_intake_articles WHERE article_id='pdf-exact'"
-    ).fetchone() == ("core", "exact_url_eligible_detail")
+    ).fetchone() == (None, None)
     assert connection.execute(
         "SELECT core_article_id FROM pdf_intake_articles WHERE article_id='pdf-home'"
     ).fetchone() == (None,)
     connection.close()
     from climate_registry.read_api import RegistryReader
     detail = RegistryReader(database, public=False, repository_root=tmp_path / "app").article("core")
-    assert detail["pdf_occurrences"][0]["occurrence_id"] == "occ-exact"
+    assert not detail.get("pdf_occurrences")
     assert {item["article_id"] for item in RegistryReader(
         database, public=False, repository_root=tmp_path / "app"
-    ).pdf_articles()["items"]} == {"pdf-home"}
+    ).pdf_articles()["items"]} == {"pdf-home", "pdf-exact"}
 
 
 def test_registry_backfills_classification_and_tracks_duplicate_pdf_sources(tmp_path, monkeypatch):
@@ -2046,7 +2046,7 @@ def test_registry_v13_reimport_preserves_occurrence_ids_and_raw_metadata(tmp_pat
     persist_pdf_intake(database, tmp_path / "backups", bundle)
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (26,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (27,)
         original_pdf, created_at, modified_at, raw_metadata = connection.execute(
             """SELECT original_pdf, pdf_created_at, pdf_modified_at, pdf_metadata_json
                FROM pdf_intake_documents"""

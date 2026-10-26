@@ -366,6 +366,7 @@ def _range_source_read(
     additional_evidenced_dates: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Freeze persisted Registry evidence without consulting reports or the web."""
+    from .publication import public_pdf_source_provenance
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
     observations: dict[str, list[dict[str, Any]]] = defaultdict(list)
     article_rows: dict[str, dict[str, Any]] = {}
@@ -635,9 +636,6 @@ def _range_source_read(
                  "document_sha256": row["source_document_sha256"], "page": row["page"]}
                 if isinstance(evidence_text, str) and evidence_text.strip() else None
             )
-            source_rows = RegistryReader._pdf_document_sources(
-                connection, row["source_document_sha256"]
-            )
             pdf_title = (
                 raw.get("anchor_text") or row["title"] or row["raw_url"]
                 if pdf_occurrence_ids is None
@@ -663,7 +661,8 @@ def _range_source_read(
                 "observed_at": row["imported_at"],
                 "publication_date": row["publication_date"],
                 "publication_date_evidence": evidence,
-                "source_observations": source_rows,
+                "source_observations": public_pdf_source_provenance(
+                    RegistryReader._pdf_document_sources(connection,row["source_document_sha256"])),
                 "report_fields": report_fields,
                 "pdf_classification": _json_object(row["type_safe_classification_json"], "PDF classification") or {},
                 "structured_report": any("IN WINDOW" in page["text"] for page in document.get("pages", [])),
@@ -708,7 +707,7 @@ def _range_source_read(
                         "period_start":item.get("period_start"),"period_end":item.get("period_end"),"page":item.get("page"),
                         "url":item.get("raw_url"),"title":item.get("anchor_text") or article["title"],
                         "summary":item.get("summary"),"observed_at":item.get("imported_at"),"publication_date":item.get("publication_date"),
-                        "publication_date_evidence":evidence,"source_observations":item.get("source_observations",[]),"report_fields":item.get("report_fields"),
+                        "publication_date_evidence":evidence,"source_observations":public_pdf_source_provenance(item.get("source_provenance",[])),"report_fields":item.get("report_fields"),
                         "pdf_classification":article.get("type_safe_classification") or {},"structured_report":item.get("structured_report",False)}
                     pdf_observations.append(observation)
                     identity=observation["core_article_id"]
@@ -718,6 +717,21 @@ def _range_source_read(
                         if published and evidence:
                             value={"date":published,"observation_id":item["occurrence_id"],"basis":"pdf_stated_publication_date","evidence":evidence}
                             pdf_publication_dates[identity].append(value);evidenced_dates[identity].append(value)
+        approved_pdf_owners = {occurrence_id: identity for article in pdf_details.values()
+            for occurrence_id, identity in article.get("canonical_occurrence_mappings", {}).items()
+            if identity in public_details}
+        for observation in pdf_observations:
+            identity = approved_pdf_owners.get(observation["observation_id"])
+            if not identity or observation["confirmation_basis"] == "exact_url_eligible_detail":
+                continue
+            observation["core_article_id"] = identity
+            observations[identity].append(observation)
+            published = _day_precision_publication_date(observation["publication_date"])
+            if published and observation["publication_date_evidence"]:
+                value = {"date": published, "observation_id": observation["observation_id"],
+                    "basis": "pdf_stated_publication_date", "evidence": observation["publication_date_evidence"]}
+                pdf_publication_dates[identity].append(value)
+                evidenced_dates[identity].append(value)
         for article_id, values in (additional_evidenced_dates or {}).items():
             if article_id in article_rows:
                 for item in values:
@@ -1023,7 +1037,6 @@ def _range_source_read(
             })
 
         selected_ids = {item["article_id"] for item in articles}
-        core_details_by_url = {detail["canonical_url"]: detail for detail in public_details.values()}
         pdf_source_updates = []
         pdf_exclusions = {"non_overlapping_coverage": 0, "unknown_coverage": 0}
         seen_pdf_observations: set[tuple[Any, ...]] = set()
@@ -1037,7 +1050,8 @@ def _range_source_read(
             seen_pdf_observations.add(identity)
             article_id = item["core_article_id"]
             confirmed_link = (
-                item["confirmation_basis"] == "exact_url_eligible_detail"
+                (item["confirmation_basis"] == "exact_url_eligible_detail"
+                    or approved_pdf_owners.get(item["observation_id"]) == article_id)
                 and isinstance(article_id, str)
             )
             formal_link = confirmed_link and article_id in article_rows
@@ -1082,7 +1096,7 @@ def _range_source_read(
                 update.get("publisher"), [update.get("canonical_url"), update.get("url")],
             )
             # Keep current approved categories separate from the historical PDF row topic.
-            core_detail = core_details_by_url.get(item.get("canonical_url") or item["url"])
+            core_detail = public_details.get(article_id) if confirmed_link else None
             detail = core_detail or pdf_details.get(item["pdf_article_id"], {})
             reference = detail.get("record_reference")
             if reference is None and detail.get("published_candidate_sha256"):

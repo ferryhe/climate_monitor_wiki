@@ -173,22 +173,24 @@ def test_unified_articles_share_pagination_and_keep_linked_pdf_details(tmp_path,
     bundle = import_pdf_reports([path])
     persist_pdf_intake(database, tmp_path / "backups", bundle)
     result = client.get("/api/registry/articles?include_pdf=true&page_size=1").json()
-    assert result["pagination"]["total"] == 2 and result["pagination"]["pages"] == 2
-    items = result["items"] + client.get("/api/registry/articles?include_pdf=true&page_size=1&page=2").json()["items"]
+    assert result["pagination"]["total"] == 3 and result["pagination"]["pages"] == 3
+    items = result["items"] + [row for page in (2,3) for row in client.get(f"/api/registry/articles?include_pdf=true&page_size=1&page={page}").json()["items"]]
+    assert len({item["article_id"] for item in items}) == 3
     assert len({item["canonical_url"] for item in items}) == 2
     assert {item["source_kind"] for item in items} == {"registry", "pdf"}
     core = next(item for item in items if item["source_kind"] == "registry")
-    assert core["source_label"] == "Registry · PDF import"
+    assert core.get("source_label") != "Registry · PDF import" and core.get("pdf_occurrence_count",0) == 0
     core_search = client.get("/api/registry/articles?include_pdf=true&query=Core").json()["items"]
-    assert len(core_search) == 1 and core_search[0]["source_label"] == core["source_label"]
-    assert core_search[0]["pdf_occurrence_count"] == core["pdf_occurrence_count"]
+    assert len(core_search) == 1 and core_search[0].get("source_label") == core.get("source_label")
+    assert core_search[0].get("pdf_occurrence_count",0) == 0
     searched = client.get("/api/registry/articles?include_pdf=true&query=First").json()["items"]
-    assert len(searched) == 1 and searched[0]["article_id"] == core["article_id"] and searched[0]["source_kind"] == "registry"
-    assert client.get(f"/api/registry/articles/{searched[0]['article_id']}").json()["report_summary"] == "Core report summary."
-    assert client.get(f"/api/registry/articles/{core['article_id']}").json()["pdf_occurrences"]
+    assert len(searched) == 1 and searched[0]["article_id"] != core["article_id"] and searched[0]["source_kind"] == "pdf"
+    assert client.get(f"/api/registry/pdf-intake/articles/{searched[0]['article_id']}").json()["occurrences"]
+    detail=client.get(f"/api/registry/articles/{core['article_id']}").json()
+    assert detail["report_summary"] == "Core report summary." and not detail.get("pdf_occurrences")
     assert client.get("/api/registry/articles?include_pdf=true&query=Second").json()["pagination"]["total"] == 1
     assert client.get("/api/registry/articles?include_pdf=true&source=missing.org").json()["pagination"]["total"] == 0
-    assert client.get("/api/registry/status?include_pdf=true").json()["articles"] == 2
+    assert client.get("/api/registry/status?include_pdf=true").json()["articles"] == 3
 
 
 def test_pdf_history_lists_archives_and_downloads_both_while_filtering_extracted_content(tmp_path, monkeypatch):
@@ -249,6 +251,7 @@ def test_active_web_article_excludes_pending_pdf_until_separately_activated(tmp_
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     with sqlite3.connect(runtime) as connection:
         connection.execute("UPDATE articles SET canonical_url='https://example.org/first-study' WHERE article_id='article-a'")
+        existing_links=connection.execute("SELECT article_id,core_article_id,confirmation_basis FROM pdf_intake_articles ORDER BY article_id").fetchall()
     path = tmp_path / "pending.pdf"
     _report_pdf_with_two_articles(path)
     bundle = import_pdf_reports([path])
@@ -269,8 +272,23 @@ def test_active_web_article_excludes_pending_pdf_until_separately_activated(tmp_
     assert client.get("/api/registry/pdf-intake/articles").json()["pagination"]["total"] == 0
     manifest["pdf_occurrence_ids"] = [item["occurrence_id"] for article in bundle["articles"] for item in article["occurrences"]]
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (reader, reader, manifest))
-    assert len(client.get("/api/registry/articles/article-a").json()["pdf_occurrences"]) == 1
-    assert client.get("/api/registry/articles?include_pdf=true").json()["items"][0].get("pdf_occurrence_count", 0) == 1
+    # Activating source observations is not approval that they are this web Article.
+    detail=client.get("/api/registry/articles/article-a").json()
+    assert not detail.get("pdf_occurrences")
+    assert detail["content"]["content_version_id"] == identity["content_version_id"]
+    assert detail["summary"].startswith("Summary for Registry-only climate article")
+    listed=client.get("/api/registry/articles?include_pdf=true").json()
+    assert listed["pagination"]["total"] == 3
+    assert {row["article_id"] for row in listed["items"]} == {"article-a"}|{row["article_id"] for row in bundle["articles"]}
+    assert next(row for row in listed["items"] if row["article_id"] == "article-a").get("pdf_occurrence_count",0) == 0
+    assert client.get("/api/registry/pdf-intake/articles").json()["pagination"]["total"] == 2
+    with sqlite3.connect(runtime) as connection:
+        # The range fixture already has older explicit link rows. This import
+        # neither rewrites them nor grants identity to these newly activated sources.
+        imported_ids={row["article_id"] for row in bundle["articles"]}
+        rows=connection.execute("SELECT article_id,core_article_id,confirmation_basis FROM pdf_intake_articles ORDER BY article_id").fetchall()
+        assert all(row in rows for row in existing_links)
+        assert all(row[1] is None and row[2] is None for row in rows if row[0] in imported_ids)
 
 
 def test_verified_article_uses_existing_body_enrichment_and_conflict_has_none(tmp_path):
@@ -330,22 +348,9 @@ def test_duplicate_observations_remain_checkable_and_runtime_can_refresh(tmp_pat
     monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
     client = TestClient(api_server.app)
     listed = client.get("/api/registry/articles?include_pdf=true").json()["items"]
-    assert len(listed) == 1 and listed[0]["occurrence_count"] == 2
-    assert len(client.get("/api/registry/pdf-intake/articles/pdf-article").json()["occurrences"]) == 2
-    linked = tmp_path / "linked"
-    linked.mkdir()
-    client, linked_database = _client(monkeypatch, linked)
-    with sqlite3.connect(linked_database) as connection:
-        connection.execute("UPDATE articles SET canonical_url='https://example.org/events'")
-        connection.execute("ATTACH DATABASE ? AS imported", (str(database),))
-        connection.execute("INSERT INTO pdf_intake_documents SELECT * FROM imported.pdf_intake_documents")
-        connection.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at,core_article_id) VALUES('pdf-article','https://example.org/events','Climate publication','2026-10-04','core-climate-study')")
-        connection.execute("INSERT INTO pdf_intake_article_occurrences SELECT * FROM imported.pdf_intake_article_occurrences")
-    pages = render_runtime_registry(tmp_path / "confirmed-wiki", web_database=None, pdf_database=linked_database,
-        manifest={"web_items": [], "pdf_occurrence_ids": ["article-1", "article-copy"]})
-    assert pages["article-core-climate-study.md"].count("Emissions decreased.") == 1
-    assert len(client.get("/api/registry/articles/core-climate-study").json()["pdf_occurrences"]) == 2
-    assert client.get("/api/registry/articles?include_pdf=true").json()["items"][0]["pdf_occurrence_count"] == 2
+    assert len(listed) == 1 and listed[0]["occurrence_count"] == 3
+    retained=client.get("/api/registry/pdf-intake/articles/pdf-article").json()["occurrences"]
+    assert {item["occurrence_id"] for item in retained} == {"article-1","article-2","article-copy"}
 
 
 def test_duplicate_pdf_passages_merge_checks_but_keep_different_reports():
@@ -416,6 +421,24 @@ def test_pdf_source_handoff_retains_published_baseline_and_late_retry_keeps_huma
     database = _seed(tmp_path)
     _ingest(database, tmp_path, _manual(database))
     reader = RegistryReader(database, repository_root=tmp_path / "application")
+    from test_verified_publication import _check,_approve_all
+    from test_identity_relations import _merge_identity
+    known=tmp_path/"known-same-object.pdf"
+    canvas=Canvas(str(known),invariant=1)
+    canvas.drawString(50,760,"UPDATES")
+    canvas.drawString(50,740,"Original PDF title")
+    canvas.drawString(50,720,"Original PDF observation")
+    canvas.linkURL("https://example.org/good",(48,738,280,755),relative=0)
+    canvas.save()
+    known_bundle=import_pdf_reports([known])
+    known_article=known_bundle["articles"][0]
+    persist_pdf_intake(database,tmp_path/"pdf-backups",known_bundle)
+    management=RegistryReader(database,repository_root=tmp_path/"application",public=False)
+    assert management.pdf_source_coverage(known_bundle["documents"][0]["source"]["sha256"])["history"][0]["published_baselines"][0]["status"] == "pending_g4"
+    _check(database,tmp_path,ids={"core:good",*[row["occurrence_id"] for row in known_article["occurrences"]]},
+        body="Title good. Summary good. Original PDF title. Original PDF observation. Same climate report landing and download.")
+    _approve_all(database)
+    _merge_identity(database,tmp_path,[("pdf_article",known_article["article_id"])])
     before = reader.article("good")
     source = tmp_path / "old-original-upload.pdf"
     canvas = Canvas(str(source), invariant=1)
@@ -488,3 +511,28 @@ def test_incremental_checker_dispatches_in_both_seasons_and_during_daytime(tmp_p
         with pytest.raises(SystemExit) as missing:
             exec(compile(packet.read_text(), "daily-check", "exec"), {})
         assert missing.value.code == 2 and os.environ["TYPESAFE_API_KEY"] == ""
+
+
+def test_reviewed_pdf_alias_keeps_duplicate_source_ids_and_single_body_render(tmp_path,monkeypatch):
+    monkeypatch.undo()
+    from test_identity_relations import _seed,_merge_identity
+    from test_registry_publication import _pdf
+    from test_verified_publication import _check,_approve_all
+    from climate_registry.publication import public_wiki_pages
+    database=_seed(tmp_path)
+    with sqlite3.connect(database) as db:
+        _pdf(db,identity="pdf-copy",url="https://example.org/good",occurrence_id="article-1",verified=False)
+        row=list(db.execute("SELECT * FROM pdf_intake_article_occurrences WHERE occurrence_id='article-1'").fetchone())
+        row[0]="article-copy"
+        db.execute("INSERT INTO pdf_intake_article_occurrences VALUES(?,?,?,?,?,?,?,?,?,?)",row)
+    _check(database,tmp_path,ids={"core:good","article-1","article-copy"},
+        body="Title good. Summary good. Original PDF title. Original PDF observation. Same climate report landing and download.")
+    _approve_all(database)
+    _merge_identity(database,tmp_path,[("pdf_article","pdf-copy")])
+    reader=RegistryReader(database,repository_root=tmp_path/"application")
+    for direct in (True,False):
+        with reader.public_snapshot(direct=direct):
+            assert {row["occurrence_id"] for row in reader.article("good")["pdf_occurrences"]} == {"article-1","article-copy"}
+            assert next(item for item in reader.articles()["items"] if item["article_id"] == "good")["pdf_occurrence_count"] == 2
+    pages=public_wiki_pages(database)
+    assert pages["article-good.md"].count("Original PDF observation") == 1
