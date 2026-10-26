@@ -58,8 +58,15 @@ def _plan(connection, database, kind, identity):
         "source_snapshot_sha256": digest(snapshot), "targets": snapshot["information_targets"]}
 
 
-def plan_owner_check(database, kind, identity, *, with_editorial_metadata=False, publication_date_only=False, date_fields=None, activity_dates_only=False, human_date_override=False):
+def plan_owner_check(database, kind, identity, *, identity_correction=False, identity_participants=(), with_editorial_metadata=False, publication_date_only=False, date_fields=None, activity_dates_only=False, human_date_override=False):
     """Read-only live binding; observations are templates, never a factual PASS."""
+    if identity_correction:
+        if any((with_editorial_metadata, publication_date_only, date_fields, activity_dates_only, human_date_override)):
+            raise ValueError("identity and human/source-date authority require separate exact scopes")
+        from .identity import plan_identity_check
+        return plan_identity_check(database, kind, identity, participants=identity_participants)
+    if identity_participants:
+        raise ValueError("identity participants require the explicit identity correction scope")
     database = resolve_database(database)
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as connection:
         require_publication_migration(connection)
@@ -322,6 +329,9 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
 
 
 def validate_manifest(manifest, *, require_current_taxonomy=True, strict_date_types=False):
+    from .identity import SCOPE as IDENTITY_SCOPE, _validate as validate_identity_manifest
+    if isinstance(manifest, dict) and manifest.get("schema_version") == IDENTITY_SCOPE:
+        return validate_identity_manifest(manifest)
     from .owner_dates import DATE_CHECK_VERSION, validate_date_manifest
     if not isinstance(manifest, dict) or not isinstance(manifest.get("plan"), dict):
         raise ValueError("owner check and plan must be objects")
@@ -400,6 +410,9 @@ def _backup(connection, database, backup_dir):
 
 
 def _ingest_one(connection, database, manifest, apply):
+    from .identity import SCOPE as IDENTITY_SCOPE, ingest_identity_check
+    if manifest["schema_version"] == IDENTITY_SCOPE:
+        return ingest_identity_check(connection, database, manifest, apply)
     from .owner_dates import DATE_CHECK_VERSION, ingest_date_check
     if manifest["schema_version"] == DATE_CHECK_VERSION:
         return ingest_date_check(connection, database, manifest, apply)
@@ -416,6 +429,8 @@ def _ingest_one(connection, database, manifest, apply):
         latest = connection.execute("SELECT latest_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", (plan["entity_kind"], plan["entity_id"])).fetchone()
         row = connection.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (latest[0],)).fetchone()
         current = snapshot_entity(connection, plan["entity_kind"], plan["entity_id"])
+        from .identity import retain_approved_identity
+        retain_approved_identity(connection,current)
         previous = json.loads(row[0]); previous.pop("derived_display", None); previous.pop("enrichment_scope", None)
         if digest(current) != digest(previous) or not any(value["run_id"] == run_id for value in previous["dependencies"].get(prefix + "_check_runs", [])):
             raise ValueError("owner check repeat has changed live sources or candidate")
@@ -474,10 +489,13 @@ def prepare_owner_checks(database, manifests, *, root):
                 key = (plan["entity_kind"], plan["entity_id"])
                 if Path(plan["registry_database"]).resolve() != database or keys.count(key) != 1:
                     raise ValueError("owner preparation requires unique canonical entities in this Registry")
-                if len({entry["target"]["check_kind"] for entry in manifest["observations"]}) != 1:
+                from .identity import SCOPE as IDENTITY_SCOPE
+                identity_scope = manifest.get("schema_version") == IDENTITY_SCOPE
+                if not identity_scope and len({entry["target"]["check_kind"] for entry in manifest["observations"]}) != 1:
                     raise ValueError("one owner check run must use one information kind")
                 _ingest_one(connection, database, manifest, False)
-                valid.append((index, manifest, plan["expected_state"]["latest_candidate_sha256"]))
+                state = plan["participants"][0]["expected_state"] if identity_scope else plan["expected_state"]
+                valid.append((index, manifest, state["latest_candidate_sha256"]))
             except (ValueError, KeyError, TypeError, RegistryInputError) as exc:
                 plan = manifest.get("plan") if isinstance(manifest, dict) else None
                 plan = plan if isinstance(plan, dict) else {}
@@ -506,7 +524,7 @@ def ingest_owner_check(database, manifest, *, queue_dir, backup_dir=None, apply=
             validate_manifest(item, strict_date_types=True)
             if Path(item["plan"]["registry_database"]).resolve() != database:
                 raise ValueError("owner plan belongs to another Registry")
-            if len({entry["target"]["check_kind"] for entry in item["observations"]}) != 1:
+            if item.get("schema_version") != "article_identity_relations.v1" and len({entry["target"]["check_kind"] for entry in item["observations"]}) != 1:
                 raise ValueError("one owner check run must use one information kind")
             key = (item["plan"]["entity_kind"], item["plan"]["entity_id"])
             if key in keys:
@@ -678,6 +696,9 @@ def owner_review_template(database, candidate_sha256):
         row = connection.execute("SELECT snapshot_json FROM registry_candidates WHERE candidate_sha256=?", (candidate_sha256,)).fetchone()
         if row is None or digest(json.loads(row[0])) != candidate_sha256:
             raise RegistryInputError("owner review candidate not found or hash differs")
+        from .identity import OVERLAY as IDENTITY, is_identity_scope, review_template as identity_review_template
+        if is_identity_scope(json.loads(row[0])):
+            return identity_review_template(json.loads(row[0]))
         from .owner_dates import OVERLAY, date_review_template
         if OVERLAY in json.loads(row[0]):
             return date_review_template(json.loads(row[0]))
@@ -695,6 +716,9 @@ def owner_review_template(database, candidate_sha256):
 
 
 def validate_review(snapshot, receipt):
+    from .identity import OVERLAY as IDENTITY, is_identity_scope, validate_review as validate_identity_review
+    if is_identity_scope(snapshot):
+        return validate_identity_review(snapshot, receipt)
     from .owner_dates import OVERLAY, validate_date_review
     if OVERLAY in snapshot:
         return validate_date_review(snapshot, receipt)
@@ -735,6 +759,18 @@ def _approve_one(connection, database, receipt, apply):
     snapshot = json.loads(row[0])
     if digest(snapshot) != sha:
         raise ValueError("candidate hash differs")
+    from .identity import OVERLAY as IDENTITY, is_identity_scope, _current as current_identity, validate_review as validate_identity_review
+    if is_identity_scope(snapshot):
+        validate_identity_review(snapshot, receipt)
+        review_id = digest([sha, "pass", receipt])
+        repeat = connection.execute("SELECT 1 FROM registry_reviews WHERE review_id=?", (review_id,)).fetchone()
+        current_identity(connection, snapshot, allow_published=bool(repeat))
+        if repeat:
+            return {"status": "no-op", "review_id": review_id, "candidate_sha256": sha}
+        if not apply:
+            return {"status": "dry_run", "review_id": review_id}
+        _approve(connection, sha, receipt)
+        return {"status": "approved", "review_id": review_id, "candidate_sha256": sha}
     from .owner_dates import OVERLAY, approve_date_check
     if OVERLAY in snapshot:
         return approve_date_check(connection, database, snapshot, receipt, apply)
@@ -753,6 +789,8 @@ def _approve_one(connection, database, receipt, apply):
                     raise ValueError("owner review publication or visibility binding changed")
     # A new live write cannot be hidden by a still-current latest pointer.
     current = snapshot_entity(connection, snapshot["entity_kind"], snapshot["entity_id"])
+    from .identity import retain_approved_identity
+    retain_approved_identity(connection,current)
     candidate = dict(snapshot); candidate.pop("derived_display", None); candidate.pop("enrichment_scope", None)
     if digest(current) != digest(candidate):
         raise ValueError("owner review live source changed; stage and review again")
@@ -788,7 +826,9 @@ def _require_owner_lifecycle(connection, database, receipts, lifecycle_root):
     for sha, snapshot in ordinary.items():
         # Ingest creates a new SHA; preparation registered this check's exact input.
         references = {sha}
-        if OVERLAY in snapshot:
+        if "identity_correction" in snapshot:
+            references.add(snapshot["identity_correction"]["manifest"]["plan"]["participants"][0]["expected_state"]["latest_candidate_sha256"])
+        elif OVERLAY in snapshot:
             references.add(snapshot[OVERLAY]["manifest"]["plan"]["expected_state"]["latest_candidate_sha256"])
         else:
             attempts = {binding["attempt_id"] for binding in review_bindings(snapshot)}

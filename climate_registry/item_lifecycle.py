@@ -60,6 +60,7 @@ def _reference(snapshot):
     return {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"],
         "information_targets": snapshot.get("information_targets", []),
         "enrichment_scope": snapshot.get("enrichment_scope"),
+        "identity_scope_sha256": digest(snapshot["identity_correction"]) if "identity_correction" in snapshot else None,
         "date_scope": snapshot.get("publication_date_only", {}).get("manifest", {}).get("plan"),
         "content_versions": [{key: row.get(key) for key in ("article_id", "content_version_id", "content_sha256")}
             for row in snapshot.get("tables", {}).get("article_content_versions", [])]}
@@ -208,7 +209,12 @@ def partition_items(connection, root, candidate_sha256s, *, require_information=
             if row[0] != sha:
                 raise ValueError("candidate_changed: reconcile retained candidate against current publication")
             from .enrichment_contract import validate_content_baselines
-            validate_content_baselines(connection, snapshot, sha)
+            from .identity import is_identity_scope
+            if is_identity_scope(snapshot):
+                from .identity import _current
+                _current(connection, snapshot)
+            else:
+                validate_content_baselines(connection, snapshot, sha)
             latest_review = result["reviews"][-1] if result["reviews"] else None
             if latest_review and latest_review["status"] in {"needs_correction", "rejected"}:
                 result.update(classification="held", stage="needs_correction", next_owner="author",
@@ -238,6 +244,8 @@ def partition_items(connection, root, candidate_sha256s, *, require_information=
             if snapshot.get("publication_date_only"):
                 result.update(classification="held", stage="awaiting_independent_review", next_owner="G1",
                     reason="date_scope_uses_existing_owner_date_writer")
+            elif is_identity_scope(snapshot):
+                pass  # The exact inherited approved scope is checked above.
             elif require_information and not information_ready(connection, snapshot, information_groups=groups):
                 result.update(classification="held", stage="awaiting_enrichment", next_owner="T1/G7",
                     reason="source_bound_information_not_ready")

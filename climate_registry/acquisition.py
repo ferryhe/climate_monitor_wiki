@@ -325,13 +325,82 @@ def is_resolved_acquisition_item(item: Mapping[str, Any]) -> bool:
     )
 
 
+def _identity_locator(item):
+    return item["canonical_url"], (item.get("semantic_identity") or {}).get("key", "")
+
+
+def _stored_identity_locator(row):
+    origins = json.loads(row["origins_json"])
+    key = next((origin["semantic_identity"]["key"] for origin in origins if origin.get("semantic_identity")), "")
+    return canonical_url(row["raw_url"]), key
+
+
+def _retained_material_keys(snapshot, article_ids):
+    """Read explicit material keys only from the approved group's retained origins."""
+    pending, seen, keys = [snapshot], set(), set()
+    while pending:
+        current = pending.pop()
+        for row in current.get("tables", {}).get("acquisition_items", []):
+            if row["article_id"] in article_ids:
+                keys.update(origin["semantic_identity"]["key"] for origin in json.loads(row["origins_json"])
+                    if origin.get("semantic_identity"))
+        refs = [*current.get("identity_history", []), *current.get("approved_identity_history", []),
+            *current.get("identity_correction", {}).get("manifest", {}).get("plan", {}).get("participants", [])]
+        for ref in refs:
+            source = ref["snapshot"]
+            if source["entity_kind"] != "article" or source["entity_id"] not in article_ids:
+                continue
+            sha = ref.get("expected_state", {}).get("published_candidate_sha256") or next(
+                (review["candidate_sha256"] for review in ref.get("reviews", [])), None)
+            if sha and sha not in seen:
+                seen.add(sha)
+                pending.append(source)
+    return keys
+
+
+def _article_identity(connection, item):
+    canonical, key = _identity_locator(item)
+    if key:
+        identity = _stable_id("article", canonical + "\nmaterial:" + key)
+    else:
+        identity = None
+    rows = connection.execute("SELECT article_id FROM articles WHERE canonical_url=?", (canonical,)).fetchall()
+    mappings, views = {}, {}
+    has_mapping = (connection.execute("""SELECT 1 FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
+        WHERE json_type(c.snapshot_json,'$.identity_correction')='object' OR json_type(c.snapshot_json,'$.approved_identity_history')='array' LIMIT 1""").fetchone()
+        if connection.execute("PRAGMA user_version").fetchone()[0] >= 21 else None)
+    if has_mapping:
+        from .publication import published_snapshots, ENTITY_TABLES
+        from .identity import approved_aliases
+        views = published_snapshots(connection, tuple(ENTITY_TABLES), include_hidden=True)
+        mappings = approved_aliases(views)
+    roots = {mappings.get(("article", row[0]), ("article", row[0]))[1] for row in rows}
+    roots.update(identity for (kind, identity), snapshot in views.items() if kind == "article"
+        and (canonical in snapshot.get("identity_mapping", {}).get("locators", [])
+            or any(row.get("canonical_url") == canonical for row in snapshot.get("tables", {}).get("articles", []))))
+    if key and views:
+        from .identity import article_source_ids
+        matching = {root for root in roots if ("article", root) in views
+            and key in _retained_material_keys(views[("article", root)], article_source_ids(views[("article", root)]))}
+        if len(matching) > 1:
+            raise ValueError("ambiguous URL and retained material key require an exact reviewed identity scope")
+        if matching:
+            identity = next(iter(matching))
+    if identity is None:
+        if len(roots) > 1:
+            raise ValueError("ambiguous URL requires an explicit evidenced semantic identity")
+        identity = next(iter(roots)) if roots else _stable_id("article", canonical)
+    mapped = mappings.get(("article", identity))
+    return mapped[1] if mapped else identity
+
+
 def _merge_same_batch_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge successful duplicate discoveries without erasing fetch outcomes."""
     successful_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     observation_groups: list[list[dict[str, Any]]] = []
     for item in items:
         if _is_successful_item(item):
-            key = (item["canonical_url"], item["evidence"]["content_hash"])
+            key = (*_identity_locator(item), item["evidence"]["content_hash"])
             successful_groups.setdefault(key, []).append(item)
         else:
             # Every non-success item is a durable fetch/processing observation,
@@ -359,6 +428,7 @@ def _merge_same_batch_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]
             "source": item["source"], "url": item["url"],
             "discovered_at": item["discovered_at"],
             "disposition": "successful" if _is_successful_item(item) else "unresolved",
+            **({"semantic_identity": item["semantic_identity"]} if item.get("semantic_identity") else {}),
         } for item in grouped]
         primary["origins"] = origins
         primary["selected"] = any(bool(item.get("selected")) for item in grouped)
@@ -378,7 +448,7 @@ def _merge_same_batch_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]
     ))
     by_url: dict[str, list[dict[str, Any]]] = {}
     for item in merged:
-        by_url.setdefault(item["canonical_url"], []).append(item)
+        by_url.setdefault(_identity_locator(item), []).append(item)
     reconciled: list[dict[str, Any]] = []
     for canonical in sorted(by_url):
         observations = by_url[canonical]
@@ -576,6 +646,12 @@ def _validate_item(raw: Any, policy: PublicationDatePolicy) -> dict[str, Any]:
         bool(item.get("selected")) and date_status == "eligible"
         and classification == "full_content" and item["processing_status"] == "complete"
     )
+    identity = item.get("semantic_identity")
+    if identity is not None:
+        if (not isinstance(identity, dict) or set(identity) != {"key", "excerpt", "reason"}
+                or not all(isinstance(identity.get(key), str) and identity[key].strip() for key in identity)
+                or len(identity["key"]) > 128 or identity["excerpt"] not in evidence["content"]):
+            raise ValueError("semantic identity needs a material key and literal retained body evidence")
     return {
         **item, "canonical_url": canonical, "published": published,
         "date_status": date_status, "date_evidence": date_evidence,
@@ -650,7 +726,7 @@ def _store_acquisition_batch_locked(
     decision, no_search_reason, searches, items = validate_acquisition_records(payload, policy)
     items = _merge_same_batch_items(items)
     success_fetch_ids = {
-        (item["canonical_url"], item["evidence"]["content_hash"]):
+        (*_identity_locator(item), item["evidence"]["content_hash"]):
             _stable_id("fetch", f"{batch_id}\n{ordinal}")
         for ordinal, item in enumerate(items, 1)
         if _is_successful_item(item)
@@ -658,13 +734,13 @@ def _store_acquisition_batch_locked(
     for item in items:
         resolved_hash = item.get("_resolved_by_content_hash")
         item["resolved_by_fetch_id"] = (
-            success_fetch_ids[(item["canonical_url"], resolved_hash)]
+            success_fetch_ids[(*_identity_locator(item), resolved_hash)]
             if resolved_hash is not None else None
         )
     selected_versions: dict[str, set[str]] = {}
     for item in items:
         if item["effective_selected"]:
-            selected_versions.setdefault(item["canonical_url"], set()).add(
+            selected_versions.setdefault(_identity_locator(item), set()).add(
                 item["evidence"]["content_hash"])
     if any(len(hashes) > 1 for hashes in selected_versions.values()):
         raise ValueError("same batch has conflicting selected content versions for one article")
@@ -725,7 +801,7 @@ def _store_acquisition_batch_locked(
 def _insert_item(connection: sqlite3.Connection, batch_id: str, ordinal: int,
                  item: dict[str, Any]) -> None:
     canonical = item["canonical_url"]
-    article_id = _stable_id("article", canonical)
+    article_id = _article_identity(connection, item)
     hostname = (urlparse(canonical).hostname or "unknown").removeprefix("www.")
     source_id = _stable_id("source", hostname)
     observed = item["discovered_at"]
@@ -1025,9 +1101,9 @@ def _reconcile_acquisition_batch(
                WHERE ai.batch_id=? AND f.fetch_status='success'""",
             (batch_id,),
         ):
-            existing_successes[(row["canonical_url"], row["content_sha256"])] = row
+            existing_successes[(*_stored_identity_locator(row), row["content_sha256"])] = row
         incoming_success_keys = {
-            (item["canonical_url"], item["evidence"]["content_hash"])
+            (*_identity_locator(item), item["evidence"]["content_hash"])
             for item in items if _is_successful_item(item)
         }
         if set(existing_successes) - incoming_success_keys:
@@ -1042,7 +1118,7 @@ def _reconcile_acquisition_batch(
         }
         new_items = []
         for item in items:
-            key = (item["canonical_url"], item["evidence"].get("content_hash"))
+            key = (*_identity_locator(item), item["evidence"].get("content_hash"))
             existing = existing_successes.get(key) if _is_successful_item(item) else None
             if existing is not None:
                 if not _verified_item_matches(existing, item):
@@ -1061,13 +1137,13 @@ def _reconcile_acquisition_batch(
         for ordinal, item in new_items:
             resolved_hash = item.get("_resolved_by_content_hash")
             item["resolved_by_fetch_id"] = (
-                success_fetch_ids[(item["canonical_url"], resolved_hash)]
+                success_fetch_ids[(*_identity_locator(item), resolved_hash)]
                 if resolved_hash is not None else None
             )
             _insert_item(connection, batch_id, ordinal, item)
 
-        for (canonical, _content_hash), fetch_id in success_fetch_ids.items():
-            article_id = _stable_id("article", canonical)
+        for (canonical, material_key, _content_hash), fetch_id in success_fetch_ids.items():
+            article_id = connection.execute("SELECT article_id FROM article_fetches WHERE fetch_id=?", (fetch_id,)).fetchone()[0]
             connection.execute(
                 """UPDATE acquisition_items SET resolved_by_fetch_id=?
                    WHERE batch_id=? AND article_id=? AND resolved_by_fetch_id IS NULL

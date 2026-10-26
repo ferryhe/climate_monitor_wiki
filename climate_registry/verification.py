@@ -238,6 +238,9 @@ def _manual_public_facts(snapshot, target, row, packet, reviews):
 
 def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_binding=None):
     """Only evidence frozen in this exact version can establish its public facts."""
+    from .identity import OVERLAY as IDENTITY, is_identity_scope, verdict as identity_verdict
+    if is_identity_scope(snapshot):
+        return identity_verdict(snapshot, reviews)
     from .owner_dates import OVERLAY, date_verdict
     if OVERLAY in snapshot:
         return date_verdict(snapshot, reviews)
@@ -324,14 +327,30 @@ def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_bind
         state = _check_state(item.pop("checks"))
         item.update(verification_status=state["verification_status"], access_status=state["access_status"], collection_status=state["collection_status"], collected_candidate=state["collected_candidate"])
         item["verified"] = state["verification_status"] == "verified"
-    native = [r for r in results.values() if r["entity_kind"] in {"article", "meeting"} and r["verified"]]
     verified = [r for r in results.values() if r["verified"]]
-    primary = (native or verified or [None])[0]
+    primary_sources = verified
+    if snapshot["entity_kind"] == "article":
+        from .identity import inherited_identity_views, approved_aliases
+        key = (snapshot["entity_kind"], snapshot["entity_id"])
+        cross_source = any((item["entity_kind"],item["entity_id"]) != key for item in verified)
+        aliases = approved_aliases({key: view for view, _ in inherited_identity_views(snapshot)}) if cross_source else {}
+        linked_pdfs = {row["article_id"] for row in tables.get("pdf_intake_articles", [])
+            if row.get("core_article_id") == snapshot["entity_id"]}
+        primary_sources = [item for item in verified if (item["entity_kind"],item["entity_id"]) == key
+            or aliases.get((item["entity_kind"],item["entity_id"])) == key
+            or item["entity_kind"] == "pdf_article" and item["entity_id"] in linked_pdfs]
+    native = [r for r in primary_sources if r["entity_kind"] in {"article", "meeting"}]
+    owners = [item for item in primary_sources if snapshot["entity_kind"] == "article" and item.get("owner_agent_verification")]
+    if owners:
+        from .acquisition_review import timestamp
+        primary = max(owners,key=lambda item:(timestamp(item["owner_agent_verification"]["checked_at"]),item["occurrence_id"]))
+    else:
+        primary = (native or primary_sources or [None])[0]
     from .enrichment_contract import reviewed_content_receipt, inherited_content_scope
     content = reviewed_content_receipt(snapshot, reviews)
     missing_content = inherited_content_scope(snapshot) and not content
     return {"eligible": bool(primary) and not missing_content, "primary": primary, "observations": results,
-        "reviewed_content": content,
+        "reviewed_content": content, "article_owner_primary": primary if owners else None,
         "reviewed_summary": _reviewed_summary(snapshot, results, reviews),
         "reasons": (["inherited_content_approval_missing"] if missing_content else []) + (sorted({reason for r in results.values() for reason in r["reasons"]}) or ([] if primary else ["no_check"]))}
 
@@ -425,6 +444,9 @@ def _public_reviewed_date_rows(snapshot, table, verdict):
 
 def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None):
     """A derived read projection; original candidate JSON and SHA never change."""
+    from .identity import OVERLAY as IDENTITY, is_identity_scope, public_view as identity_public_view
+    if is_identity_scope(snapshot):
+        return identity_public_view(snapshot, verdict)
     from .owner_dates import OVERLAY, date_public_view
     if OVERLAY in snapshot:
         return date_public_view(snapshot, verdict)
@@ -434,6 +456,8 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
         "candidate_sha256": view["_approved_candidate_sha256"]}
     if canonical:
         reference = canonical
+    elif not verdict["eligible"]:
+        reference = None
     primary_display = primary_display or _primary_display(snapshot, verdict)
     verified = {key for key, result in verdict["observations"].items() if result["verified"]}
     tables = view["tables"]
@@ -536,7 +560,7 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
     verified_pdf_articles = {row["article_id"] for row in tables.get("pdf_intake_article_occurrences", []) if row["occurrence_id"] in verified}
     for row in tables.get("pdf_intake_articles", []):
         if row["article_id"] not in verified_pdf_articles:
-            row.update(title=(primary_display or {}).get("title") or "Verified article reference", type_safe_classification_json=None)
+            row.update(title=(primary_display or {}).get("title") or ("Verified article reference" if reference else "PDF source reference"), type_safe_classification_json=None)
         else:
             owner = next((value.get("owner_agent_verification") for value in verdict["observations"].values()
                 if value["entity_kind"] == "pdf_article" and value["entity_id"] == row["article_id"] and value["verified"] and value.get("owner_agent_verification")), None)
@@ -573,7 +597,7 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
         view["derived_display"] = {key: value for key, value in view.get("derived_display", {}).items() if key == "canonical_pdf_event_id"}
         view["supplements"] = []
         for row in tables.get("pdf_intake_articles", []):
-            row.update(title=(primary_display or {}).get("title") or "Verified article reference", type_safe_classification_json=None)
+            row.update(title=(primary_display or {}).get("title") or ("Verified article reference" if reference else "PDF source reference"), type_safe_classification_json=None)
     elif snapshot["entity_kind"] == "pdf_article":
         fields = verdict["primary"]["fields"]
         from .publication import approved_display
@@ -589,7 +613,8 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
             row["title"] = fields.get("title") or fields.get("anchor_text") or "Verified PDF article"
     view["_verification"] = {"verified_occurrence_ids": sorted(verified), "primary": verdict["primary"], "metadata_only": not verdict["eligible"]}
     native_primary = next((item for item in verdict["observations"].values() if item["verified"] and item["entity_kind"] == "article"), None)
-    if snapshot["entity_kind"] == "article" and native_primary:
+    article_primary = verdict.get("article_owner_primary") or native_primary
+    if snapshot["entity_kind"] == "article" and article_primary:
         # A source binding does not verify a separately generated enrichment summary.
         view["fallback_annotations"] = {url: {**annotation, "title": "", "summary": ""}
             for url, annotation in snapshot.get("fallback_annotations", {}).items()}
@@ -600,12 +625,12 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
         reports = {row["report_id"]: row for row in view.get("dependencies", {}).get("reports", [])}
         discoveries = {row["discovery_id"]: row for row in tables.get("discoveries", [])}
         fallback_classification = {}
-        fields = native_primary["fields"]
-        if native_primary.get("owner_agent_verification"):
+        fields = article_primary["fields"]
+        if article_primary.get("owner_agent_verification"):
             for row in tables.get("article_versions", []):
                 if row.get("version_id") == current:
                     row.update(observed_title=fields["title"], canonical_title=fields["title"], observed_summary=fields["summary"])
-            view.setdefault("derived_display", {})["owner_agent_verification"] = native_primary["owner_agent_verification"]
+            view.setdefault("derived_display", {})["owner_agent_verification"] = article_primary["owner_agent_verification"]
         hidden_report_fields = set()
         from climate_monitor.dedupe import canonical_url
         for appearance in sorted(tables.get("report_appearances", []), key=lambda row:
@@ -641,8 +666,8 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
             for row in tables.get("article_enrichments", []))
         if not has_enrichment and not view["fallback_annotations"].get(article.get("canonical_url")):
             classification = {**fallback_classification, **classification}
-        fields = native_primary["fields"]
-        excluded = hidden.setdefault(native_primary["occurrence_id"], [])
+        fields = article_primary["fields"]
+        excluded = hidden.setdefault(article_primary["occurrence_id"], [])
         excluded.extend(sorted(hidden_report_fields))
         for row in tables.get("article_enrichments", []):
             if row.get("summary") and row["summary"] != fields.get("summary"):
@@ -652,7 +677,7 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
         for row in tables.get("article_semantics", []):
             excluded.extend("field_outside_verification:semantics."+key for key in ("title", "summary") if row.get(key))
             row.update(title=None, summary=None)
-        checked_bodies = {source["reader_body_sha256"] for source in native_primary["sources"] if source.get("reason") is None}
+        checked_bodies = {source["reader_body_sha256"] for source in (native_primary or article_primary)["sources"] if source.get("reason") is None}
         for row in tables.get("article_content_versions", []):
             if hashlib.sha256(row["markdown_content"].encode()).hexdigest() not in checked_bodies:
                 if row["markdown_content"]:
@@ -660,7 +685,7 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
                 row["markdown_content"] = ""
         if removed_date_observations:
             excluded.append("unverified_date_observation")
-        owner = native_primary.get("owner_agent_verification")
+        owner = article_primary.get("owner_agent_verification")
         if owner:
             tables["article_date_observations"] = (
                 _owner_article_date(owner, article)
@@ -678,7 +703,7 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
             excluded.append("field_outside_verification:derived_display.summary")
         view["supplements"] = []
         view["derived_display"] = {**view.get("derived_display", {}), **classification, "title": fields.get("title"), "summary": fields.get("summary") or "",
-            "summary_provenance": "owner_agent_verified_source" if native_primary.get("owner_agent_verification") else "verified_source_evidence"}
+            "summary_provenance": "owner_agent_verified_source" if article_primary.get("owner_agent_verification") else "verified_source_evidence"}
     if snapshot["entity_kind"] == "meeting" and verdict["primary"] and verdict["primary"].get("owner_agent_verification"):
         fields = verdict["primary"]["fields"]
         owner = verdict["primary"]["owner_agent_verification"]
@@ -789,7 +814,8 @@ def public_snapshot_view(snapshot, verdict, canonical=None, primary_display=None
     if snapshot.get("enrichment_scope"):
         from .enrichment_contract import projected_date_proofs
         view["derived_display"] = projected_date_proofs(view["derived_display"])
-    return view
+    from .identity import inherit_public_identity
+    return inherit_public_identity(snapshot, view)
 
 
 def canonical_target(snapshot):

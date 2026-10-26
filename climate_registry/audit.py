@@ -54,6 +54,7 @@ def _validate_inputs(source_dir: Path, database: Path, output_dir: Path) -> tupl
 
 
 def _insert_report(connection: sqlite3.Connection, report: ParsedReport) -> None:
+    from .acquisition import _article_identity
     report_id = f"report-{report.report_date}"
     connection.execute(
         """
@@ -80,7 +81,7 @@ def _insert_report(connection: sqlite3.Connection, report: ParsedReport) -> None
         normalized_url = canonical_url(item.url)
         if not normalized_url:
             continue
-        article_id = _stable_id("article", normalized_url)
+        article_id = _article_identity(connection, {"canonical_url": normalized_url})
         hostname = (urlparse(normalized_url).hostname or "unknown").removeprefix("www.")
         source_id = _stable_id("source", hostname)
         fingerprint = _content_fingerprint(item.title, item.summary)
@@ -506,10 +507,13 @@ def build_audit_registry(source_dir: Path, database: Path, output_dir: Path) -> 
             refresh_article_policy(connection)
             _populate(connection, reports)
             # Sources are the explicitly accepted immutable publication archive.
-            from .publication import stage_snapshot, snapshot_entity, _approve
+            from .publication import stage_snapshot, snapshot_entity, _approve, _information_groups, _identity_aliases
             with connection:
+                aliases = _identity_aliases(connection)
+                groups = _information_groups(connection, identity_aliases=aliases)
                 for (identity,) in connection.execute("SELECT article_id FROM articles").fetchall():
-                    sha = stage_snapshot(connection, snapshot_entity(connection, "article", identity, include_pending=False), basis="accepted_legacy")
+                    sha = stage_snapshot(connection, snapshot_entity(connection, "article", identity, include_pending=False,
+                        information_groups=groups, identity_aliases=aliases), basis="accepted_legacy")
                     _approve(connection, sha, {"basis": "immutable published sources audit"}, status="accepted_legacy")
                 connection.execute("PRAGMA optimize")
                 from .display import refresh_display

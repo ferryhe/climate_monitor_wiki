@@ -1515,35 +1515,12 @@ def _preflight_migration(connection: sqlite3.Connection, version: int) -> None:
 def reconcile_pdf_article_links(
     connection: sqlite3.Connection, *, observed_at: str | None = None, canonical_url: str | None = None,
 ) -> None:
-    """Link only PDF records with an exact, already evidenced core article."""
-    where = "AND pdf.canonical_url=?" if canonical_url else ""
-    rows = connection.execute(
-        """SELECT pdf.article_id, core.article_id, core.canonical_url, pdf.imported_at
-           FROM pdf_intake_articles pdf JOIN articles core ON core.canonical_url=pdf.canonical_url
-           WHERE pdf.core_article_id IS NULL AND core.document_kind='article'
-             AND core.publication_eligible=1
-             AND json_valid(pdf.type_safe_classification_json)=1
-             AND json_extract(pdf.type_safe_classification_json, '$.label')='article'
-             AND (core.current_version_id IS NOT NULL
-                  OR EXISTS (SELECT 1 FROM article_content_versions content WHERE content.article_id=core.article_id)) """ + where,
-        (canonical_url,) if canonical_url else (),
-    ).fetchall()
-    for pdf_article_id, core_article_id, canonical, imported_at in rows:
-        if not connection.execute(
-            """UPDATE pdf_intake_articles SET core_article_id=?, confirmation_basis='exact_url_eligible_detail'
-               WHERE article_id=? AND core_article_id IS NULL""", (core_article_id, pdf_article_id),
-        ).rowcount:
-            continue
-        for (raw_url,) in connection.execute(
-            "SELECT raw_url FROM pdf_intake_article_occurrences WHERE article_id=?", (pdf_article_id,),
-        ):
-            connection.execute(
-                """INSERT INTO url_aliases(raw_url, canonical_url, article_id, first_seen, last_seen, times_seen)
-                   VALUES (?, ?, ?, ?, ?, 1)
-                   ON CONFLICT(raw_url) DO UPDATE SET first_seen=MIN(first_seen, excluded.first_seen),
-                     last_seen=MAX(last_seen, excluded.last_seen), times_seen=times_seen+1""",
-                (raw_url, canonical, core_article_id, observed_at or imported_at, observed_at or imported_at),
-            )
+    """Compatibility hook: a URL or Article label cannot authorize a new link.
+
+    Existing explicit links are retained; new identity decisions use the exact
+    source/owner-review scope and its approved projection, without rewriting sources.
+    """
+    return None
 
 
 MIGRATIONS += ((23, "original_pdf_summary_adoptions", """
@@ -1666,6 +1643,29 @@ MIGRATIONS += ((26, "pdf_source_coverage", """
 """),)
 
 
+# URL is a locator, not a semantic identity. Rebuild only the two parent tables;
+# IDs, child references, row order and immutable source rows remain unchanged.
+MIGRATIONS += ((27, "semantic_article_identity", ""),)
+
+
+def _identity_url_migration(connection):
+    triggers = connection.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
+    statements = [f'DROP TRIGGER "{name}";' for name, sql in triggers]
+    for table in ("articles", "pdf_intake_articles"):
+        sql = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()[0]
+        retained = [row[0] for row in connection.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type='index' AND sql IS NOT NULL", (table,))]
+        sql = sql.replace("CREATE TABLE " + table, "CREATE TABLE " + table + "_identity_migration", 1)
+        sql = sql.replace("canonical_url TEXT NOT NULL UNIQUE", "canonical_url TEXT NOT NULL")
+        columns = ",".join(row[1] for row in connection.execute(f"PRAGMA table_info({table})"))
+        statements.extend([sql + ";", f"INSERT INTO {table}_identity_migration(rowid,{columns}) SELECT rowid,{columns} FROM {table} ORDER BY rowid;",
+            f"DROP TABLE {table};", f"ALTER TABLE {table}_identity_migration RENAME TO {table};"])
+        statements.extend(value + ";" for value in retained)
+        statements.append(f"CREATE INDEX idx_{table}_canonical_url ON {table}(canonical_url);")
+    statements.extend(sql + ";" for name, sql in triggers)
+    return "\n".join(statements)
+
+
 def apply_migrations(connection: sqlite3.Connection, *, target_version: int | None = None) -> list[int]:
     """Apply all pending schema migrations and return their version numbers."""
 
@@ -1700,19 +1700,29 @@ def apply_migrations(connection: sqlite3.Connection, *, target_version: int | No
         escaped_name = name.replace("'", "''")
         try:
             _preflight_migration(connection, version)
+            if version == 27:
+                sql = _identity_url_migration(connection)
+                connection.execute("PRAGMA foreign_keys=OFF")
             connection.executescript(
                 f"""
                 BEGIN IMMEDIATE;
                 {sql}
                 INSERT INTO schema_migrations(version, name) VALUES ({version}, '{escaped_name}');
                 PRAGMA user_version = {version};
-                COMMIT;
+                {"" if version == 27 else "COMMIT;"}
                 """
             )
+            if version == 27:
+                if connection.execute("PRAGMA foreign_key_check").fetchone():
+                    raise sqlite3.IntegrityError("semantic identity migration failed foreign key validation")
+                connection.commit()
         except Exception:
             if connection.in_transaction:
                 connection.rollback()
             raise
+        finally:
+            if version == 27:
+                connection.execute("PRAGMA foreign_keys=ON")
         installed.append(version)
     if 16 in installed:
         reconcile_pdf_article_links(connection)

@@ -597,7 +597,6 @@ def test_publisher_accepts_confirmed_pdf_only_registry_article_and_syncs_with_re
     local_remote, tmp_path
 ):
     from climate_registry.audit import build_audit_registry
-    from climate_registry.schema import reconcile_pdf_article_links
 
     _remote, production = local_remote
     sources = tmp_path / "sources"
@@ -630,7 +629,7 @@ def test_publisher_accepts_confirmed_pdf_only_registry_article_and_syncs_with_re
             "INSERT INTO pdf_intake_article_occurrences VALUES (?, 'pdf-only', ?, 2, ?, NULL, NULL, ?, ?, ?)",
             ("pdf-only-occurrence", "a" * 64, occurrence["raw_url"], "c" * 64, "d" * 64, json.dumps(occurrence)),
         )
-        reconcile_pdf_article_links(connection, observed_at="2026-08-03T08:00:00Z")
+        connection.execute("UPDATE pdf_intake_articles SET core_article_id='article-pdf-only',confirmation_basis='exact_url_eligible_detail' WHERE article_id='pdf-only'")
         assert connection.execute(
             "SELECT core_article_id, confirmation_basis FROM pdf_intake_articles WHERE article_id='pdf-only'"
         ).fetchone() == ("article-pdf-only", "exact_url_eligible_detail")

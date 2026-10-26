@@ -118,8 +118,8 @@ def _persist_source_coverage(connection, bundle, now, article_matches, calendar_
         for article in bundle["articles"]:
             if not any(item["source_document_sha256"] == source["source_document_sha256"] for item in article["occurrences"]):
                 continue
-            owner = connection.execute("SELECT core_article_id FROM pdf_intake_articles WHERE article_id=?", (article["article_id"],)).fetchone()
-            kind, identity = ("article", owner[0]) if owner and owner[0] else ("pdf_article", article["article_id"])
+            from .publication import canonical_entity
+            kind, identity = canonical_entity(connection, "pdf_article", article["article_id"])
             row = connection.execute("""SELECT p.published_candidate_sha256,c.snapshot_json FROM registry_publication p
                 JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
                 WHERE p.entity_kind=? AND p.entity_id=?""", (kind, identity)).fetchone()

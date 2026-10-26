@@ -19,7 +19,7 @@ DATE_PROOF_FIELDS = tuple(name + suffix for name in ("publication_date", "update
 SOURCES = ("site", "search", "pdf")
 SCOPES = ("native_source_fields", "owner_source_fields.v1", "owner_source_fields.v2",
     "article_publication_date_only", "article_date_fields_only", "article_activity_dates_only",
-    "human_article_dates", CONTENT_SCOPE, INITIAL_SCOPE)
+    "human_article_dates", "article_identity_relations.v1", CONTENT_SCOPE, INITIAL_SCOPE)
 
 
 def capability(source, kind, scope):
@@ -28,7 +28,10 @@ def capability(source, kind, scope):
     supported = source in SOURCES and kind in {"article", "pdf_article", "meeting", "pdf_meeting"} and scope in SCOPES
     reason = None
     required, optional = [], []
-    if scope in {CONTENT_SCOPE, INITIAL_SCOPE}:
+    if scope == "article_identity_relations.v1":
+        required = ["exact_frozen_participants", "source_body_occurrence_scope", "semantic_evidence", "new_independent_identity_review"]
+        optional = ["approved_factual_baseline_or_pending_disposition_only", "canonical_url", "same_object_aliases", "exact_body_event_relations", "reviewed_disposition"]
+    elif scope in {CONTENT_SCOPE, INITIAL_SCOPE}:
         required = (["content_update", "summary", "published_content_baseline", "approval_inheritance_baseline"] if scope == CONTENT_SCOPE
             else ["current_body", "current_version_summary_evidence", "approval_inheritance_baseline"])
         optional = ["publication_date", "updated_date", "revision_date", "applicable_human_authorization", "editorial_metadata"]
@@ -76,6 +79,9 @@ def projected_date_proofs(display):
 
 
 def _body(snapshot):
+    from .identity import is_identity_scope, OVERLAY as IDENTITY
+    if is_identity_scope(snapshot) and snapshot[IDENTITY]["manifest"]["plan"]["participants"][0]["expected_state"]["published_candidate_sha256"] is None:
+        return None  # A disposition receipt does not approve its retained body.
     if snapshot.get("entity_kind") != "article":
         return None
     article = next((row for row in snapshot.get("tables", {}).get("articles", [])
@@ -201,6 +207,9 @@ def _editorial_inheritance(connection, snapshot, sha):
     if (baseline["entity_kind"], baseline["entity_id"]) != (snapshot["entity_kind"], snapshot["entity_id"]):
         raise ValueError("editorial approval inheritance identity differs")
     reviews = _candidate_reviews(connection, sha)
+    from .identity import is_identity_scope, verdict as identity_verdict
+    if is_identity_scope(baseline) and identity_verdict(baseline, reviews).get("disposition_only"):
+        return {}
     approved, _ = _baseline_view(baseline, reviews)
     approved = approved.get("derived_display", {})
     display, inherited = snapshot.get("derived_display", {}), {}
@@ -435,11 +444,16 @@ def _published(connection, snapshot):
 
 
 def _content_origin(snapshot):
-    # A date overlay is a new approval baseline, never a new body version.
+    # Corrections change the approval baseline, never the body comparison origin.
     from .owner_dates import OVERLAY, _base
-    while OVERLAY in snapshot:
-        snapshot, _ = _base(snapshot)
-    return snapshot
+    from .identity import is_identity_scope, OVERLAY as IDENTITY
+    while True:
+        if is_identity_scope(snapshot):
+            snapshot = snapshot[IDENTITY]["manifest"]["plan"]["participants"][0]["snapshot"]
+        elif OVERLAY in snapshot:
+            snapshot, _ = _base(snapshot)
+        else:
+            return snapshot
 
 
 def bind_content_scope(connection, snapshot):
@@ -588,6 +602,16 @@ def review_projection(snapshot):
     """Derive the same handoff for authors, reviewers and downstream readers."""
     from .owner_dates import OVERLAY
     from .article_dates import validate_content_update, content_date_projection
+    from .identity import is_identity_scope
+    if is_identity_scope(snapshot):
+        from .identity import _frozen, _scope
+        _, _, manifest = _frozen(snapshot)
+        return {"schema_version": CONTRACT_VERSION, "scope": "article_identity_relations.v1",
+            "canonical": {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"]},
+            "participants": [_scope(ref) for ref in manifest["plan"]["participants"]],
+            "aliases": manifest["aliases"], "relations": manifest["relations"], "disposition": manifest["disposition"],
+            "source_evidence_sha256": digest(manifest["evidence"]), "content_generation": ("unchanged_approved_content" if manifest["plan"]["participants"][0]["expected_state"]["published_candidate_sha256"] else "not_applicable_disposition_only"),
+            "next_owners": ["G6", "G11", "G12b"]}
     original = snapshot
     overlay = snapshot.get(OVERLAY)
     binding = snapshot.get(BINDING)
@@ -666,6 +690,7 @@ def review_projection(snapshot):
         "content_binding": "stored_core_article_id" if row.get("core_article_id") == snapshot["entity_id"] and snapshot["entity_kind"] == "article" else "unavailable",
         "reason": None if row.get("core_article_id") == snapshot["entity_id"] and snapshot["entity_kind"] == "article" else "no_stored_canonical_article_link"}
         for row in tables.get("pdf_intake_articles", [])]
+    pdf_links.extend(deepcopy(snapshot.get("unlinked_pdf_references", [])))
     projection = {"schema_version": CONTRACT_VERSION, "candidate_sha256": digest(original),
         "entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"], "scope": scope,
         "source_bindings": snapshot.get("information_targets", []), "taxonomy_bindings": taxonomies,
@@ -712,6 +737,12 @@ def reviewed_content_receipt(snapshot, reviews):
 
 
 def _content_review(snapshot, reviews):
+    from .identity import is_identity_scope, OVERLAY as IDENTITY, verdict as identity_verdict
+    if is_identity_scope(snapshot):
+        if not identity_verdict(snapshot, reviews)["eligible"]:
+            return None
+        reference = snapshot[IDENTITY]["manifest"]["plan"]["participants"][0]
+        return _content_review(reference["snapshot"], reference["reviews"])
     from .owner_dates import OVERLAY, _base, date_verdict
     if OVERLAY in snapshot:
         try:

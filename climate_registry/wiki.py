@@ -497,8 +497,12 @@ def _registry_report_markdown(report_date: str, filename: str, report_sha256: st
     source_line = "Source report: " + filename + "; SHA-256: " + report_sha256
     if include_top_source:
         blocks += [source_line, ""]
+    seen = set()
     for entry in articles:
         article = entry["article"]
+        if article["article_id"] in seen:
+            continue
+        seen.add(article["article_id"])
         appearance = entry.get("appearance") or {}
         if entry.get("source_report_article"):
             summary = article.get("summary") or article.get("report_summary")
@@ -517,44 +521,50 @@ def _registry_report_markdown(report_date: str, filename: str, report_sha256: st
     return "\n".join(blocks).rstrip("\n") + "\n"
 
 
-def _render_registry_report_page(reader: RegistryReader, report_date: str, source_dir=None) -> str | None:
+def _render_registry_report_page(reader: RegistryReader, report_date: str, source_dir=None, *, source_report=None) -> str | None:
     with reader.connect() as connection:
         report = connection.execute("SELECT report_id,filename,report_sha256 FROM reports WHERE report_date=?",
             (report_date,)).fetchone()
         if report is None:
             return None
-        appearances = connection.execute("SELECT article_id,ordinal FROM report_appearances WHERE report_id=? ORDER BY ordinal,article_id",
+        appearances = connection.execute("SELECT article_id,version_id,ordinal FROM report_appearances WHERE report_id=? ORDER BY ordinal,article_id",
             (report["report_id"],)).fetchall()
-    identities = [row["article_id"] for row in appearances]
-    candidates = reader._public_candidates("article", entity_ids={"article": identities}) if identities else {}
+        if getattr(reader, "_snapshot_direct", False):
+            identities = [row["article_id"] for row in appearances]
+            candidates = reader._public_candidates("article", entity_ids={"article": identities}) if identities else {}
+        else:
+            candidates = {(kind, identity): json.loads(encoded) for kind, identity, encoded in connection.execute(
+                """SELECT DISTINCT m.entity_kind,m.entity_id,m.snapshot_json FROM public_snapshot_metadata m
+                   JOIN report_appearances ra ON ra.article_id=m.entity_id
+                   WHERE m.entity_kind='article' AND ra.report_id=?""", (report["report_id"],))}
+    from .identity import approved_aliases
+    aliases = approved_aliases(candidates)
+    details = {key: reader._article_from_snapshot(snapshot) for key, snapshot in candidates.items()}
     articles = []
     for appearance_row in appearances:
-        snapshot = candidates.get(("article", appearance_row["article_id"]))
-        if snapshot is None:
+        source = ("article", appearance_row["article_id"])
+        article = details.get(aliases.get(source, source))
+        if article is None:
             continue
-        article = reader._article_from_snapshot(snapshot)
         if article.get("document_kind") != "article" or not article.get("publication_eligible"):
             continue
         appearance = next((item for item in article.get("appearances", [])
-            if item.get("report_date") == report_date and item.get("ordinal") == appearance_row["ordinal"]), None)
+            if item.get("report_date") == report_date and item.get("ordinal") == appearance_row["ordinal"]
+            and item.get("version_id") == appearance_row["version_id"]), None)
         if appearance is not None:
             articles.append({"article": article, "appearance": appearance})
     if not articles:
         return None
 
-    source_root = Path(source_dir).resolve(strict=False) if source_dir is not None else None
-    source_report = reader._source_report(report_date, report["filename"], report["report_sha256"], archive=True) if source_root else None
+    if source_report is not None and (source_report.report_date != report_date
+            or source_report.path.name != report["filename"] or source_report.sha256 != report["report_sha256"]):
+        source_report = None
+    if source_report is None and source_dir is not None:
+        source_report = reader._source_report(report_date, report["filename"], report["report_sha256"], archive=True)
     if source_report is not None:
-        from climate_monitor.dedupe import canonical_url
-        details = {canonical_url(entry["article"]["canonical_url"]): entry["article"] for entry in articles}
-        source_articles = []
-        for observed in source_report.articles:
-            detail = details.get(canonical_url(observed.url))
-            if detail is not None:
-                source_articles.append({"article": detail, "source_report_article": True})
-        if source_articles:
-            return _registry_report_markdown(report_date, source_report.path.name, source_report.sha256,
-                source_articles, approved_versions=True, include_top_source=True)
+        return _registry_report_markdown(report_date, source_report.path.name, source_report.sha256,
+            [{**entry, "source_report_article": True} for entry in articles],
+            approved_versions=True, include_top_source=True)
     return _registry_report_markdown(report_date, report["filename"], report["report_sha256"], articles)
 
 
@@ -1053,7 +1063,8 @@ def _registry_pages_read(
                     if not report:
                         continue
                     appearance = next((item for item in article.get("appearances", [])
-                        if item.get("report_date") == report.get("report_date") and item.get("ordinal") == row.get("ordinal")), {})
+                        if item.get("report_date") == report.get("report_date") and item.get("ordinal") == row.get("ordinal")
+                        and item.get("version_id") == row.get("version_id")), {})
                     by_date[report["report_date"]].append({"article": article, "appearance": appearance})
                     report_identities[report["report_date"]] = (report["filename"], report["report_sha256"])
             for report_date, items in by_date.items():

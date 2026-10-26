@@ -221,7 +221,7 @@ REQUIRED_TABLE_COLUMNS["pdf_source_coverage"] = {
     "coverage_id", "document_sha256", "coverage_json", "occurrence_bindings_json", "published_baselines_json", "recorded_at",
 }
 V26_TABLES = frozenset(REQUIRED_TABLE_COLUMNS)
-SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26)
+SUPPORTED_SCHEMA_VERSIONS = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27)
 
 
 def _required_tables(version: int) -> frozenset[str]:

@@ -10,6 +10,7 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -26,7 +27,7 @@ from climate_monitor.run_ledger import (
     validate_report_identity,
 )
 
-from .audit import _stable_id
+from .acquisition import _article_identity
 from .annotations import (
     annotation_catalog_fingerprint,
     load_article_annotations_catalog,
@@ -452,7 +453,7 @@ def _validate_artifact(
         )
 
 
-def _target_identities(report: ParsedReport) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _target_identities(report: ParsedReport, *, connection) -> tuple[tuple[str, ...], tuple[str, ...]]:
     article_ids: list[str] = []
     eligible_ids: list[str] = []
     seen: set[str] = set()
@@ -460,7 +461,7 @@ def _target_identities(report: ParsedReport) -> tuple[tuple[str, ...], tuple[str
         normalized = canonical_url(article.url)
         if not normalized:
             continue
-        article_id = _stable_id("article", normalized)
+        article_id = _article_identity(connection, {"canonical_url": normalized})
         if article_id in seen:
             continue
         seen.add(article_id)
@@ -695,29 +696,35 @@ def _preflight(
     plan = _safe_update_plan(
         source_dir_path, database_path, target_date, allow_offcycle=allow_offcycle
     )
-    article_ids, eligible_ids = _target_identities(report)
-    metadata_path = (
-        _absolute_path(metadata_dir, label="article metadata")
-        if metadata_dir is not None
-        else repository_root / "article_metadata"
-    )
-    if fallback_decisions is None:
-        annotation_status, annotations, current_metadata_fingerprint = (
-            load_article_annotations_catalog(metadata_path)
-        )
-        fallback_decisions = _target_fallback_decisions(
-            report,
-            metadata_path,
-            annotation_catalog=(annotation_status, annotations),
-        )
-        metadata_fingerprint = current_metadata_fingerprint
-    elif (
-        metadata_fingerprint is None
-        or annotation_catalog_fingerprint(metadata_path) != metadata_fingerprint
-    ):
-        raise RegistryLockError(
-            "weekly registry article metadata changed before candidate promotion"
-        )
+    try:
+        with closing(sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)) as connection:
+            connection.execute("BEGIN")
+            article_ids, eligible_ids = _target_identities(report, connection=connection)
+            metadata_path = (
+                _absolute_path(metadata_dir, label="article metadata")
+                if metadata_dir is not None
+                else repository_root / "article_metadata"
+            )
+            if fallback_decisions is None:
+                annotation_status, annotations, current_metadata_fingerprint = (
+                    load_article_annotations_catalog(metadata_path)
+                )
+                fallback_decisions = _target_fallback_decisions(
+                    report,
+                    metadata_path,
+                    connection=connection,
+                    annotation_catalog=(annotation_status, annotations),
+                )
+                metadata_fingerprint = current_metadata_fingerprint
+            elif (
+                metadata_fingerprint is None
+                or annotation_catalog_fingerprint(metadata_path) != metadata_fingerprint
+            ):
+                raise RegistryLockError(
+                    "weekly registry article metadata changed before candidate promotion"
+                )
+    except (sqlite3.DatabaseError, ValueError) as exc:
+        raise WeeklyPreflightError("weekly registry preflight failed: article identity resolution is invalid") from exc
     new_ids, missing_ids = _dry_plan_articles(
         database_path,
         article_ids=article_ids,
@@ -754,6 +761,7 @@ def _target_fallback_decisions(
     report: ParsedReport,
     metadata_dir: Path | None,
     *,
+    connection,
     annotation_catalog: tuple[str, dict[str, Any]] | None = None,
 ) -> dict[str, FallbackDecision]:
     output: dict[str, FallbackDecision] = {}
@@ -764,7 +772,7 @@ def _target_fallback_decisions(
         normalized = canonical_url(article.url)
         if not normalized:
             continue
-        article_id = _stable_id("article", normalized)
+        article_id = _article_identity(connection, {"canonical_url": normalized})
         output.setdefault(
             article_id,
             select_fallback_bundle(
@@ -1134,7 +1142,7 @@ def _validate_candidate(candidate: Path, preflight: _Preflight) -> None:
                 normalized = canonical_url(article.url)
                 if not normalized:
                     continue
-                article_id = _stable_id("article", normalized)
+                article_id = _article_identity(connection, {"canonical_url": normalized})
                 expected_appearances.setdefault(
                     article_id,
                     (
@@ -1253,6 +1261,7 @@ def _validate_candidate(candidate: Path, preflight: _Preflight) -> None:
         RegistryBuildError,
         sqlite3.DatabaseError,
         OSError,
+        ValueError,
     ) as exc:
         raise WeeklyValidationError(
             "weekly registry validation failed: candidate is invalid"

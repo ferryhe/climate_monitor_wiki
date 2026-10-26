@@ -398,7 +398,7 @@ def _check_state(checks: list[dict[str, Any]]) -> dict[str, Any]:
         else current[-1]["access_status"] if current else "unchecked",
         "verification_status": status, "collection_status": "collected" if status == "verified" else "pending",
         "checked_at": max((check["checked_at"] for check in current), default=None), "checks": checks,
-        "collected_candidate": verified["website_candidate"] if status == "verified" else None,
+        "collected_candidate": verified.get("website_candidate") if status == "verified" else None,
         "verified_information": verified.get("verified_information") if status == "verified" else None,
         "canonical_event_id": verified.get("canonical_event_id") if status == "verified" else None}
 

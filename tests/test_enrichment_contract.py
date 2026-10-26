@@ -18,7 +18,7 @@ from verified_fixtures import seed_verified_articles
 CONTENT_SCOPE = "complete_article_content_update"
 
 
-def _native_contract_review(database, tmp_path, monkeypatch, *, mutation=None):
+def _native_contract_review(database, tmp_path, monkeypatch, *, mutation=None, identity="good"):
     from climate_registry.acquisition_review import claim_review
     from climate_registry.publication import prepare_review, review_candidates
     monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
@@ -40,7 +40,7 @@ def _native_contract_review(database, tmp_path, monkeypatch, *, mutation=None):
     conclusions = {item["candidate_sha256"]: {"candidate_sha256": item["candidate_sha256"], "status": "pass",
         "reason": "Complete source, content, summary and date evidence inspected in this exact candidate.",
         "enrichment_contract_sha256": item["enrichment_contract_sha256"]} for item in packet["candidates"]}
-    target = next(item for item in packet["candidates"] if item["entity_id"] == "good")
+    target = next(item for item in packet["candidates"] if item["entity_id"] == identity)
     if mutation and mutation != "source_actor":
         conclusions[target["candidate_sha256"]][mutation] = "0" * 64
     return review_candidates(root, claim["token"], conclusions)

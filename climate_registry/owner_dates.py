@@ -138,7 +138,8 @@ def _append_activity_rows(view, entry, manifest, proof):
             for key in ("activity_dates_evidence", "activity_dates_verification"):
                 display.pop(key, None)
             events = _activity_events(view)
-            display.update(activity_dates=events, is_activity=bool(events))
+            from .identity import linked_article_body
+            display.update(activity_dates=events, is_activity=bool(events) and not linked_article_body(view))
             return
     source_rows = {table: [row for row in tables.get(table, [])
         if json.loads(row.get("evidence_json") or "{}").get("authority") != "human_override"]
@@ -182,7 +183,8 @@ def _append_activity_rows(view, entry, manifest, proof):
     if not appended:
         raise ValueError("activity date source has no exact inherited article owner")
     events = _activity_events(view)
-    display.update(activity_dates=events, is_activity=bool(events))
+    from .identity import linked_article_body
+    display.update(activity_dates=events, is_activity=bool(events) and not linked_article_body(view))
     if manual:
         evidence = {"authority": "human_override", "instruction_reference": manifest["authorization_reference"]}
         decision = {"schema_version": MANUAL_AUTHORIZATION, "actor": manifest["actor"],
@@ -690,8 +692,23 @@ def applicable_manual_dates(snapshot, decisions):
         version = rows[0].get("current_content_version_id")
     if "tables" not in snapshot:
         version = snapshot.get("content_version_id") or (snapshot.get("content") or {}).get("content_version_id")
+    mappings = [snapshot["identity_mapping"]] if snapshot.get("identity_mapping") else []
+    if not mappings and snapshot.get("approved_identity_history"):
+        from .identity import OVERLAY as IDENTITY, verdict, public_view
+        for reference in snapshot["approved_identity_history"]:
+            previous = reference["snapshot"]
+            if (previous["entity_kind"], previous["entity_id"]) != (snapshot.get("entity_kind"), snapshot.get("entity_id")):
+                continue
+            result = verdict(previous, reference["reviews"])
+            if IDENTITY in result:
+                mappings.append(public_view(previous, result)["identity_mapping"])
+    from .identity import _body
+    body = _body(snapshot)
+    mapped = {row["authorization_id"] for mapping in mappings for row in mapping.get("date_authorization_mappings", [])
+        if row.get("target_body") == body and body.get("content_version_id") == version}
     return {field: value for field, value in decisions.items()
-        if value["scope"] == "record" or version and value.get("content_version_id") == version}
+        if value["scope"] == "record" or version and (value.get("content_version_id") == version
+            or value.get("authorization_id") in mapped)}
 
 
 def carry_manual_dates(snapshot, decisions):
@@ -711,7 +728,8 @@ def carry_manual_dates(snapshot, decisions):
                         if row["observation_id"] not in existing_ids)
                     rows.extend(deepcopy(decision["activity_observations"].get(table, [])))
             events = _activity_events(snapshot)
-            display.update(activity_dates=events, is_activity=bool(events))
+            from .identity import linked_article_body
+            display.update(activity_dates=events, is_activity=bool(events) and not linked_article_body(snapshot))
             if field not in active:
                 display.pop("activity_dates_evidence", None)
                 display.pop("activity_dates_verification", None)

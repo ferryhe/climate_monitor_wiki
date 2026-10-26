@@ -83,7 +83,7 @@ def test_public_pdf_pages_construct_only_selected_articles(tmp_path, monkeypatch
     # Legacy runtime reads use the catalog before constructing occurrence/check payloads.
     runtime = RegistryReader(database, repository_root=tmp_path / "application", public=False)
     catalog = runtime.pdf_report_module_catalog(document)
-    assert catalog == [("article", f"https://example.org/pdf-{i}") for i in range(7)]
+    assert catalog == [("article", f"pdf_article:pdf-{i}") for i in range(7)]
     selected = runtime.pdf_report(document, module_keys=set(catalog[5:]))
     assert [row["article_id"] for row in selected["articles"]] == ["pdf-5", "pdf-6"]
     assert runtime.pdf_report(document, module_keys=set())["articles"] == []

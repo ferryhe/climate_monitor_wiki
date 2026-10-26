@@ -86,6 +86,20 @@ def _editorial_manifest(database, *, kind="article", identity="good", occurrence
     return manifest
 
 
+def _approve_exact_pdf_alias(database, tmp_path, *, identity="pdf-good", target="good", occurrence="occurrence"):
+    """Establish same-object authority through retained captures and a new exact PASS."""
+    from test_verified_publication import _check, _approve_all
+    from test_identity_relations import _merge_identity
+    import climate_registry.information_checks as checks
+    # The later owner capture in these fixtures is dated 15 October.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(checks, "_now", lambda: "2026-10-01T00:00:00Z")
+        _check(database, tmp_path, ids={"core:"+target, occurrence},
+            body="Title good. Summary good. Title a. Summary a. Original PDF title. Original PDF observation. Same climate report landing and download.")
+    _approve_all(database)
+    return _merge_identity(database,tmp_path,[("pdf_article",identity)],identity=target)
+
+
 def _seed_native_article_report_context(database, tmp_path, monkeypatch):
     """Provide real schema-23 report and annotation inputs for JSON round-trip checks."""
     from climate_registry.reports import parse_historical_report
@@ -188,7 +202,7 @@ def test_owner_correction_requires_distinct_new_candidate_review_and_projects_ev
         check(reader)
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT * FROM article_versions").fetchall() == original
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 26
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 27
         assert db.execute("SELECT count(*) FROM registry_reviews WHERE status='pass'").fetchone()[0] == 1
         projected = public_connection(db)
         try:
@@ -215,7 +229,7 @@ def test_native_article_report_json_roundtrip_survives_ingest_and_independent_re
     database = _database(tmp_path)
     _seed_native_article_report_context(database, tmp_path, monkeypatch)
     with sqlite3.connect(database) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 26
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 27
         current = snapshot_entity(db, "article", "good")
     assert current["report_fallbacks"]["2026-09-14"]["articles"]
     assert current["fallback_annotations"]["https://example.org/good"]["categories"] == ("Physical Risk", "Insurance Risk")
@@ -753,6 +767,7 @@ def test_owner_linked_core_and_three_reports_keep_unchecked_copies_metadata_only
             db.execute("INSERT INTO pdf_intake_article_occurrences VALUES(?,?,?,?,?,'2026-09-14',NULL,?,?,?)",
                 ("copy-"+str(index), "pdf-good", document, index+3, "https://example.org/good", 'd'*64, 'c'*64, json.dumps(raw)))
         originals = db.execute("SELECT occurrence_json FROM pdf_intake_article_occurrences ORDER BY occurrence_id").fetchall()
+    _approve_exact_pdf_alias(database,tmp_path)
     manifest = _manifest(database, kind="pdf_article", identity="pdf-good", occurrence="occurrence")
     assert manifest["plan"]["entity_kind"] == "article" and len(manifest["plan"]["targets"]) == 4
     result = _ingest(database, tmp_path, manifest)
@@ -933,11 +948,16 @@ def test_native_owner_meeting_keeps_supported_facts_and_truthful_provenance(tmp_
     assert static.static_snapshot["wiki_pages"]["registry-meetings.md"] == markdown
 
 
-def _owner_article_with_private_metadata(tmp_path, source, final_url=None, *, report_appearance=False, occurrence_id="occurrence"):
+def _owner_article_with_private_metadata(tmp_path, source, final_url=None, *, report_appearance=False, occurrence_id="occurrence", native_body=False):
     from test_registry_publication import _pdf
     database = _database(tmp_path)
     with sqlite3.connect(database) as db:
         db.execute("INSERT INTO article_enrichments(enrichment_id,article_id,article_version_id,status,summary,categories_json,keywords_json,language,generator_kind,generator_name,generator_version,generated_at) VALUES('e-good','good','v-good','complete','PRIVATE original enrichment summary','[\"PRIVATE category\"]','[\"PRIVATE keyword\"]','en','manual','PRIVATE generator','v1','2026-09-01T00:00:00Z')")
+        if native_body:
+            text="Title good. Summary good. Title a. Summary a. Original PDF title. Original PDF observation. Same climate report landing and download."
+            body_sha=hashlib.sha256(text.encode()).hexdigest()
+            db.execute("INSERT INTO article_content_versions VALUES('native-owner-body','good',?,?,?,'text/markdown',NULL,'fixture','v1','2026-09-01T00:00:00Z')",(body_sha,text,body_sha))
+            db.execute("UPDATE articles SET current_content_version_id='native-owner-body',display_policy='full_markdown' WHERE article_id='good'")
         if source != "native":
             _pdf(db, identity="pdf-good", url="https://example.org/"+("good" if source == "linked" else "pdf-only"),
                 occurrence_id=occurrence_id, verified=False)
@@ -947,6 +967,8 @@ def _owner_article_with_private_metadata(tmp_path, source, final_url=None, *, re
             db.execute("INSERT INTO discoveries VALUES ('review-discovery','review-report',1,'Pillar A','A','good','v-good','https://example.org/good','Title good','Summary good',1,NULL)")
             db.execute("INSERT INTO report_appearances(report_id,article_id,version_id,discovery_id,section,pillar,ordinal,disposition) VALUES ('review-report','good','v-good','review-discovery','Pillar A','A',1,'new')")
         originals = {table: db.execute("SELECT * FROM "+table).fetchall() for table in ("article_enrichments", "pdf_intake_articles", "pdf_intake_article_occurrences")}
+    if source == "linked":
+        _approve_exact_pdf_alias(database,tmp_path,occurrence=occurrence_id)
     fields = {"title": "Climate risk findings", "summary": "Flood exposure increased in the study region.", "publication_date": "2026-10-02"}
     manifest = _manifest(database, kind="article" if source == "native" else "pdf_article",
         identity="good" if source == "native" else "pdf-good", occurrence="core:good" if source == "native" else occurrence_id,
@@ -1380,6 +1402,13 @@ def test_owner_projection_clears_unreviewed_metadata_and_preserves_dates_across_
     assert "PRIVATE" not in json.dumps(public_wiki_pages(database))
     live_range = _range_source(reader, "2026-10-02", "2026-10-02")
     assert "PRIVATE" not in json.dumps(live_range)
+    assert "/evidence/source.pdf" not in json.dumps(live_range)
+    if source == "linked":
+        observation,=live_range["articles"][0]["source_observations"]
+        assert observation["observation_id"] == "occurrence"
+        assert observation["document_sha256"] == "f"*64 and observation["page"] == 2
+        assert observation["filename"] == "source.pdf"
+        assert observation["source_observations"] == [{"filename":"source.pdf","observed_at":"2026-08-01T00:00:00Z"}]
     if source != "pdf":
         assert [item["article_id"] for item in live_range["articles"]] == ["good"]
     assert _range_source(static, "2026-10-02", "2026-10-02")["articles"] == live_range["articles"]

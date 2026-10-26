@@ -630,9 +630,17 @@ def test_authorized_date_selection_retains_activated_web_main_facts(tmp_path, da
     assert article["categories"] == ["Physical risk"]
     assert article["keywords"] == ["resilience"]
     citation_kinds = {item["kind"] for item in article["citations"]}
-    assert citation_kinds == (
-        {"url", "pdf_page"} if date_source.endswith("_pdf") else {"url"}
-    )
+    assert citation_kinds == {"url"}  # Same URL is not a reviewed cross-entity relation.
+    if date_source.endswith("_pdf"):
+        update=next(item for item in snapshot["pdf_source_updates"] if item["observation_id"] == occurrence["occurrence_id"])
+        assert update["core_article_id"] is None
+        assert {item["kind"] for item in update["citations"]} == {"pdf_page"}
+        citation,=update["citations"]
+        assert citation["document_sha256"] == occurrence["source_document_sha256"] and citation["page"] == occurrence["page"]
+        assert citation["filename"] == "approved-date-update.pdf"
+        assert update["record_reference"] is None or update["record_reference"]["entity_kind"] == "pdf_article"
+        assert not update["categories"]  # Unlinked PDF cannot borrow approved Web metadata.
+
     selected = article["provenance"]["publication_date"]["selected"]
     assert selected == {
         "date": "2026-09-20",
