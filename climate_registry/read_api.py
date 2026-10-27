@@ -1540,7 +1540,7 @@ class RegistryReader:
             occurrence_owners=_materialized_pdf_occurrence_owners(connection)
             for article_row in connection.execute("""SELECT * FROM pdf_intake_articles a WHERE EXISTS (
                 SELECT 1 FROM pdf_intake_article_occurrences o WHERE o.article_id=a.article_id AND o.source_document_sha256=?)""", (document_sha256,)):
-                payload = self._pdf_article_payload(connection, article_row, allowed_occurrence_ids=allowed_occurrence_ids, occurrence_owners=occurrence_owners)
+                payload = self._pdf_article_payload(connection, article_row, allowed_occurrence_ids=allowed_occurrence_ids, occurrence_owners=occurrence_owners, public_source_connection=getattr(self, "_snapshot_source_connection", None))
                 occurrences = deduplicate_pdf_occurrences([value for value in payload["occurrences"]
                     if value.get("source_document_sha256") == document_sha256])
                 if occurrences:
@@ -2194,7 +2194,7 @@ class RegistryReader:
 
     @classmethod
     def _pdf_article_payload(cls, connection: sqlite3.Connection, row: sqlite3.Row,
-        *, allowed_occurrence_ids: set[str] | None = None, occurrence_owners=None) -> dict[str, Any]:
+        *, allowed_occurrence_ids: set[str] | None = None, occurrence_owners=None, public_source_connection=None) -> dict[str, Any]:
         canonical_url = row["canonical_url"]
         core_article_id = (
             row["core_article_id"] if cls._has_pdf_article_links(connection) else row["article_id"]
@@ -2269,7 +2269,9 @@ class RegistryReader:
             display = occurrences[0].get("verified_primary_display") or {}
             payload.update(metadata_only=True, summary=None, title=display.get("title") or payload.get("title"),
                 verified_primary_reference=occurrences[0].get("verified_primary_reference"))
-        _pdf_owner_source_reference(payload,occurrences,snapshot)
+        if not cls._keeps_frozen_legacy_date_summary(public_source_connection, snapshot,
+                public=bool(connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone())):
+            _pdf_owner_source_reference(payload,occurrences,snapshot)
         if snapshot is not None:
             from .article_dates import content_date_projection
             payload.update(content_date_projection(payload, date_snapshot))
@@ -2368,7 +2370,7 @@ class RegistryReader:
             items = []
             occurrence_owners=_materialized_pdf_occurrence_owners(connection)
             for row in rows:
-                item = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids, occurrence_owners=occurrence_owners)
+                item = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids, occurrence_owners=occurrence_owners, public_source_connection=getattr(self, "_snapshot_source_connection", None))
                 if not item["occurrences"]:
                     continue
                 items.append(item)
@@ -2442,7 +2444,8 @@ class RegistryReader:
             if row is None:
                 raise RegistryNotFoundError("article not found")
             payload = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids,
-                occurrence_owners=_materialized_pdf_occurrence_owners(connection))
+                occurrence_owners=_materialized_pdf_occurrence_owners(connection),
+                public_source_connection=getattr(self, "_snapshot_source_connection", None))
             if allowed_occurrence_ids is not None and not payload["occurrences"]:
                 raise RegistryNotFoundError("article not found")
             return payload
@@ -3808,6 +3811,39 @@ class RegistryReader:
         except ArticleDateImportError as exc:
             raise RegistryContractError("invalid article date evidence") from exc
 
+    @staticmethod
+    def _keeps_frozen_legacy_date_summary(connection, snapshot, *, public=False, review_context=None):
+        """A legacy date PASS cannot reselect a different PDF summary downstream."""
+        if not public or connection is None or not snapshot or snapshot.get("entity_kind") != "pdf_article":
+            return False
+        from .owner_dates import OVERLAY, LEGACY_BASELINE_PROJECTION, _date_fields, _nondate
+        from .acquisition_review import digest
+        from .verification import evaluate_snapshot
+        row = connection.execute("""SELECT c.snapshot_json,c.candidate_sha256 FROM registry_publication p JOIN registry_candidates c
+            ON c.candidate_sha256=p.published_candidate_sha256 WHERE p.entity_kind=? AND p.entity_id=?
+            AND p.is_visible=1""", (snapshot["entity_kind"], snapshot["entity_id"])).fetchone()
+        if row is None:
+            return False
+        frozen, sha = json.loads(row[0]), row[1]
+        if digest(frozen) != sha:
+            raise RegistryContractError("retained date candidate hash differs")
+        reviews = [dict(zip(("review_id", "candidate_sha256", "status", "reviewed_at", "receipt_json"), value)) for value in connection.execute(
+            "SELECT * FROM registry_reviews WHERE candidate_sha256=? AND status='pass'", (sha,))]
+        if review_context is not None and snapshot.get("_approved_candidate_sha256") == digest(review_context[0]):
+            candidate, proposed_reviews = review_context
+            overlay = candidate.get(OVERLAY, {})
+            if (overlay.get("baseline_candidate_sha256") != sha
+                    or any(review not in reviews for review in overlay.get("manifest", {}).get("plan", {}).get("baseline_reviews", []))
+                    or (candidate.get("entity_kind"), candidate.get("entity_id")) != (snapshot["entity_kind"], snapshot["entity_id"])):
+                return False
+            frozen, sha, reviews = candidate, digest(candidate), proposed_reviews
+        if snapshot.get("_approved_candidate_sha256", sha) != sha or OVERLAY not in frozen:
+            return False
+        verdict = evaluate_snapshot(frozen, reviews=reviews)
+        plan = frozen[OVERLAY]["manifest"]["plan"]
+        return (verdict["eligible"] and verdict.get("_date_summary_projection") == LEGACY_BASELINE_PROJECTION
+            and digest(_nondate(snapshot, _date_fields(plan))) == plan["nondate_scope_sha256"])
+
     def _pdf_article_from_snapshot(self, snapshot: dict[str, Any], *, allowed_occurrence_ids=None) -> dict[str, Any]:
         tables = snapshot.get("tables", {})
         row = next((item for item in tables.get("pdf_intake_articles", []) if item.get("article_id") == snapshot["entity_id"]), None)
@@ -3907,7 +3943,10 @@ class RegistryReader:
             for field, proof in (bundle or {}).get("date_evidence", {}).items():
                 payload[field] = proof["value"]
                 payload[field + "_evidence"] = proof
-        _pdf_owner_source_reference(payload,occurrences,snapshot)
+        connection = getattr(self, "_snapshot_source_connection", None) or getattr(self, "_snapshot_connection", None)
+        if not self._keeps_frozen_legacy_date_summary(connection, snapshot, public=getattr(self, "public", False),
+                review_context=getattr(self, "_date_review_context", None)):
+            _pdf_owner_source_reference(payload,occurrences,snapshot)
         self._apply_reviewed_date_fields(payload, date_snapshot)
         payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or self._published_candidate_sha(snapshot)
         reference_id = (tables["articles"][0]["article_id"]

@@ -20,6 +20,8 @@ ACTIVITY_SCOPE = "article_activity_dates_only"
 DATE_PUBLIC_FIELDS = {"publication_date", "updated_date", "revision_date"}
 DATE_SEMANTICS = "typed-article-dates.v2"
 MANUAL_AUTHORIZATION = "human-article-date-authorization.v1"
+BASELINE_PROJECTION = "registry-date-baseline.current.v1"
+LEGACY_BASELINE_PROJECTION = "registry-date-baseline.pre-g3.v1"
 
 
 def _event_row(row):
@@ -227,8 +229,26 @@ def _base(snapshot):
     return base, overlay
 
 
-def _baseline_view(base, reviews):
+def _legacy_projection_scope(base):
+    """Only the old article/date contract may use the historical wire interpretation."""
+    if (base.get("schema_version") != "registry-public-candidate.v1"
+            or base.get("entity_kind") not in {"article", "pdf_article"}
+            or any(key in base for key in ("enrichment_scope", "identity_correction", "identity_mapping", "approved_identity_history"))
+            or any(key in base.get("derived_display", {}) for key in ("content_update", "manual_date_overrides"))):
+        return False
+    if OVERLAY in base:
+        previous, overlay = _base(base)
+        return (overlay["manifest"]["plan"].get("scope") == "article_publication_date_only"
+            and not overlay["manifest"].get("manual_authorization") and _legacy_projection_scope(previous))
+    return True
+
+
+def _baseline_view(base, reviews, *, projection_profile=BASELINE_PROJECTION):
     from .verification import evaluate_snapshot, permitted_view
+    if projection_profile not in {BASELINE_PROJECTION, LEGACY_BASELINE_PROJECTION}:
+        raise ValueError("unsupported date baseline projection version")
+    if projection_profile == LEGACY_BASELINE_PROJECTION and not _legacy_projection_scope(base):
+        raise ValueError("legacy date projection cannot interpret this scope")
     sha = digest(base)
     if not reviews or any(row.get("candidate_sha256") != sha or row.get("status") not in {"pass", "accepted_legacy"}
             for row in reviews):
@@ -237,7 +257,8 @@ def _baseline_view(base, reviews):
         receipt = json.loads(row["receipt_json"])
         if row["review_id"] not in {digest([sha, row["status"], receipt]), digest([sha, receipt])}:
             raise ValueError("date-only baseline approval receipt hash differs")
-    verdict = evaluate_snapshot(base, reviews=reviews)
+    verdict = evaluate_snapshot(base, reviews=reviews,
+        projection_profile=LEGACY_BASELINE_PROJECTION if projection_profile == LEGACY_BASELINE_PROJECTION else None)
     view = permitted_view(base, verdict)
     if not verdict["eligible"] or view is None:
         raise ValueError("date-only baseline has no approved factual projection")
@@ -289,6 +310,7 @@ def date_plan(connection, plan, *, fields=None, activity_dates_only=False):
     scope = ACTIVITY_SCOPE if activity_dates_only else "article_publication_date_only" if legacy else DATE_FIELDS_SCOPE
     plan = {**plan, "targets": base["information_targets"], "scope": scope,
         "date_semantics": DATE_SEMANTICS,
+        "baseline_projection_version": BASELINE_PROJECTION,
         "baseline_candidate_sha256": sha, "baseline_public_projection_sha256": digest(view),
         "nondate_scope_sha256": digest(_nondate(view, selected_fields)), "baseline_reviews": reviews}
     if not legacy:
@@ -308,7 +330,9 @@ def validate_date_manifest(manifest):
     if not isinstance(manifest, dict) or not isinstance(manifest.get("plan"), dict):
         raise ValueError("article date check and plan must be objects")
     plan = manifest["plan"]
-    if (plan.get("schema_version") != PLAN_VERSION or plan.get("scope") not in {"article_publication_date_only", DATE_FIELDS_SCOPE, ACTIVITY_SCOPE}
+    if "baseline_projection_version" in plan and plan["baseline_projection_version"] != BASELINE_PROJECTION:
+        raise ValueError("unsupported date baseline projection version")
+    if (manifest.get("schema_version") != DATE_CHECK_VERSION or plan.get("schema_version") != PLAN_VERSION or plan.get("scope") not in {"article_publication_date_only", DATE_FIELDS_SCOPE, ACTIVITY_SCOPE}
             or plan.get("entity_kind") not in {"article", "pdf_article"} or "taxonomy" in manifest):
         raise ValueError("unsupported article date owner scope")
     fields = _date_fields(plan)
@@ -350,7 +374,25 @@ def _frozen_scope(snapshot):
             or (plan["entity_kind"], plan["entity_id"]) != (base["entity_kind"], base["entity_id"])
             or plan["targets"] != base["information_targets"]):
         raise ValueError("date-only baseline identity or approved source binding differs")
-    view, verdict = _baseline_view(base, plan["baseline_reviews"])
+    profiles = [BASELINE_PROJECTION]
+    if ("baseline_projection_version" not in plan and plan["scope"] == "article_publication_date_only"
+            and set(plan) <= {"schema_version", "registry_database", "entity_kind", "entity_id", "expected_state", "source_snapshot_sha256",
+                "targets", "scope", "date_semantics", "baseline_candidate_sha256", "baseline_public_projection_sha256", "nondate_scope_sha256", "baseline_reviews"}
+            and plan.get("date_semantics") in {None, DATE_SEMANTICS}
+            and not manifest.get("manual_authorization") and _legacy_projection_scope(base)):
+        profiles.append(LEGACY_BASELINE_PROJECTION)
+    for profile in profiles:
+        try:
+            view, verdict = _baseline_view(base, plan["baseline_reviews"], projection_profile=profile)
+        except ValueError:
+            if profile == profiles[-1]:
+                raise
+            continue
+        if (digest(view) == plan["baseline_public_projection_sha256"]
+                and digest(_nondate(view, fields)) == plan["nondate_scope_sha256"]):
+            break
+    else:
+        raise ValueError("date-only inherited public or non-date scope hash differs")
     if "baseline_content_version_id" in plan and plan["baseline_content_version_id"] != next(
             (row.get("current_content_version_id") for row in view.get("tables", {}).get("articles", [])
                 if row.get("article_id") == view["entity_id"]), None):
@@ -373,7 +415,9 @@ def _frozen_scope(snapshot):
             or hashlib.sha256(encoded.encode()).hexdigest() != run["input_sha256"]
             or target not in base["information_targets"]):
         raise ValueError("date-only frozen run or attempt differs")
-    return view, verdict, overlay
+    summary_profile = (LEGACY_BASELINE_PROJECTION if profile == LEGACY_BASELINE_PROJECTION
+        else verdict.get("_date_summary_projection"))
+    return view, {**verdict, "_date_baseline_projection": profile, "_date_summary_projection": summary_profile}, overlay
 
 
 def _run(manifest):
@@ -905,7 +949,7 @@ def approve_date_check(connection, database, snapshot, receipt, apply):
     view = date_public_view(snapshot, verdict)
     baseline, _, _ = _frozen_scope(snapshot)
     _same_public_dtos(connection, database, baseline, view,
-        date_fields=_date_fields(snapshot[OVERLAY]["manifest"]["plan"]))
+        date_fields=_date_fields(snapshot[OVERLAY]["manifest"]["plan"]), review_context=(snapshot, [proof]))
     if existing:
         return {"status": "no-op", "review_id": review_id}
     if not apply:
@@ -914,10 +958,12 @@ def approve_date_check(connection, database, snapshot, receipt, apply):
     return {"status": "approved", "review_id": review_id, "candidate_sha256": sha}
 
 
-def _same_public_dtos(connection, database, baseline, view, *, date_fields=("publication_date",)):
+def _same_public_dtos(connection, database, baseline, view, *, date_fields=("publication_date",), review_context=None):
     """A reader-derived non-date change aborts the same publication transaction."""
     from .read_api import RegistryReader
     reader = RegistryReader(database, repository_root=Path(__file__).resolve().parents[1])
+    # The exact child receipt is not stored until this DTO guard has passed.
+    reader._date_review_context = review_context
 
     fields = date_fields
     date_keys = {key for field in fields for key in (field, field + "_evidence", field + "_verification")}
