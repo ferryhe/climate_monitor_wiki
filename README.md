@@ -267,6 +267,11 @@ the article library; approved knowledge indexing does not require a new report
 or a GitHub merge. The scheduler and deployment edges below require separate
 live verification.
 
+[Read-only publication acceptance](docs/publication-acceptance.md) checks the
+canonical approved subset separately from display/API, Wiki/export, actual RAG
+and Chat observations. It never synchronizes or activates those consumers;
+missing current evidence remains unverified.
+
 ```mermaid
 flowchart LR
     A["web_listening sites"] --> R

@@ -187,6 +187,13 @@ def _parser() -> argparse.ArgumentParser:
     validation.add_argument("--database", required=True, type=Path)
     validation.add_argument("--input", required=True, type=Path)
     validation.add_argument("--scope", required=True, choices=["complete_article_content_update", "initial_article_content"])
+    acceptance = subcommands.add_parser("accept-publication", help="Read-only exact Registry and separate consumer-content acceptance")
+    acceptance.add_argument("--database", required=True, type=Path)
+    acceptance.add_argument("--selection", type=Path)
+    acceptance.add_argument("--captures", type=Path)
+    acceptance.add_argument("--runtime-dir", type=Path)
+    acceptance.add_argument("--public-export", type=Path)
+    acceptance.add_argument("--report", required=True, type=Path)
     return parser
 
 
@@ -223,7 +230,11 @@ def _weekly_failure(args: argparse.Namespace, *, kind: str, message: str) -> dic
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
-        if args.command == "enrichment-capabilities":
+        if args.command == "accept-publication":
+            from .acceptance import write_acceptance_report
+            result = write_acceptance_report(args.database, args.report, selection_path=args.selection,
+                captures_path=args.captures, runtime_dir=args.runtime_dir, public_export=args.public_export)
+        elif args.command == "enrichment-capabilities":
             from .enrichment_contract import capability_matrix
             result = capability_matrix()
         elif args.command == "inspect-enrichment-contract":
@@ -343,7 +354,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 backup_dir=args.backup_dir,
                 lock_file=args.lock_file,
             )
-        if args.command == "weekly-sync" and result.get("status") == "no-op":
+        if args.command == "accept-publication":
+            code = 0 if result.get("status") == "pass" else 1
+        elif args.command == "weekly-sync" and result.get("status") == "no-op":
             code = WEEKLY_NO_OP_EXIT
         else:
             code = 5 if result.get("status") == "partial" else 0
