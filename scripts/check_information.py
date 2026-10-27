@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import sqlite3
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
@@ -15,6 +17,61 @@ if str(ROOT) not in sys.path:
 
 from climate_registry.information_checks import run_checks
 from climate_delivery.io import transaction_lock, atomic_write_json
+
+
+def _latest_authoring_binding(database, root):
+    """Use a real completed acquisition's frozen runtime, never ambient credentials."""
+    if not root:
+        raise ValueError("g7_acquisition_runtime_directory_not_configured")
+    candidates = []
+    with sqlite3.connect(database) as connection:
+        for base in Path(root).glob("*/binding.json"):
+            attempts = [(int(match[1]), path) for path in base.parent.glob("attempt-*.json")
+                if (match := re.fullmatch(r"attempt-(\d+)\.json", path.name))]
+            path = max(attempts)[1] if attempts else base
+            binding = json.loads(path.read_text(encoding="utf-8"))
+            if Path(binding.get("registry_database", "")).resolve() != Path(database).resolve():
+                continue
+            batch = connection.execute("SELECT completed_at FROM acquisition_batches WHERE batch_id=?", (binding.get("acquisition_batch_id"),)).fetchone()
+            if batch and batch[0] and binding.get("run_id") == base.parent.name:
+                candidates.append((binding.get("created_at", ""), binding.get("attempt", 0), path))
+    if not candidates:
+        raise ValueError("g7_no_completed_acquisition_runtime_for_registry")
+    return max(candidates)[2]
+
+
+def _runtime_identity(path, binding):
+    from climate_monitor.hermes_identity import load_snapshot, require_effective_identity, SNAPSHOT
+    source = "climate-acquisition-" + binding["run_id"]
+    payload = load_snapshot(path.parent, binding.get("hermes_snapshot"))
+    if payload["source"] != source:
+        raise ValueError("g7_frozen_runtime_source_mismatch")
+    return require_effective_identity(path.parent / SNAPSHOT, source)
+
+
+def _author_options(args):
+    from scripts.run_meeting_extraction import _extractor
+    from climate_registry.publication import resolve_database
+    from climate_registry.acquisition_review import digest
+    path = args.authoring_binding
+    if path is None and (args.resume or args.retry):
+        from climate_registry.information_checks import _check_run_input, KINDS
+        with sqlite3.connect(args.database) as connection:
+            frozen = _check_run_input(connection, KINDS[args.kind], args.resume or args.retry, args.database)
+        retained = frozen.get("content_author", {})
+        if not retained:
+            return {}  # Legacy continuations never acquire a new ambient author.
+        if not retained.get("binding_path"):
+            raise ValueError("g7_resume_has_no_frozen_author_runtime; start_a_fresh_run")
+        path = Path(retained["binding_path"])
+    path = (path or _latest_authoring_binding(args.database, os.getenv("CLIMATE_ACQUISITION_RUN_DIR"))).resolve(strict=True)
+    binding = json.loads(path.read_text(encoding="utf-8"))
+    resolve_database(args.database, frozen=binding["registry_database"])
+    identity = _runtime_identity(path, binding)
+    reference = {"binding_path": str(path), "binding_sha256": digest(binding),
+        "hermes_snapshot": binding["hermes_snapshot"], **identity}
+    return {"author": _extractor("", "", path, purpose="content-enrichment", acquisition_sha256=digest(binding)),
+        "author_provider": identity["provider"], "author_model": identity["model"], "author_binding": reference}
 
 
 def run_daily_checks(argv: list[str], *, result_dir: Path) -> int:
@@ -59,6 +116,7 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
     parser.add_argument("--retry-after-minutes", type=int, default=60, help="Backoff for unchanged failed scheduled targets")
     parser.add_argument("--incremental", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--data-root", type=Path, default=os.getenv("WEB_LISTENING_DATA_ROOT"))
+    parser.add_argument("--authoring-binding", type=Path, help="Use this frozen Hermes acquisition runtime for pending G7 content generation")
     parser.add_argument("--result", type=Path, help="Save machine-readable run summary")
     parser.add_argument("--scheduled", action="store_true", help="Run a bounded incremental batch every five minutes")
     parser.add_argument("--occurrence", help=argparse.SUPPRESS)
@@ -109,7 +167,21 @@ def main(argv: list[str] | None = None, *, _admitted_occurrence: str | None = No
             checkpoint["completed_count"] += 1
             atomic_write_json(args.result, checkpoint)
     # Fetch and TypeSafe run outside the intake-writer lock; DB writes keep their short lock.
-    result = run_checks(args.database.resolve(), kind=args.kind, backup_dir=args.backup_dir.resolve(),
+    author_options = {}
+    if args.authoring_binding or args.occurrence or args.resume or args.retry:
+        try:
+            author_options = _author_options(args)
+        except (ValueError, KeyError, OSError, sqlite3.Error) as exc:
+            result = {"kind": args.kind, "status": "not_configured", "business_status": "blocked",
+                "content_enrichment": [{"status": "held", "reason": str(exc) if isinstance(exc, ValueError) else "g7_frozen_runtime_or_identity_unavailable"}],
+                "last_actual_outcome": last_actual}
+            if args.resume or args.retry:
+                result["blocked_run_id"] = args.resume or args.retry
+            if args.result:
+                atomic_write_json(args.result, result)
+            print(json.dumps(result), flush=True)
+            return 2
+    result = run_checks(args.database.resolve(), kind=args.kind, backup_dir=args.backup_dir.resolve(), **author_options,
         occurrence_ids=set(args.occurrence_id) if args.occurrence_id else None,
         resume_run_id=args.resume, retry_run_id=args.retry, limit=args.limit, reverify_all=args.reverify_all,
         incremental=args.incremental, retry_after_minutes=args.retry_after_minutes,

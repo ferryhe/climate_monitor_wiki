@@ -473,6 +473,8 @@ def test_daily_wrapper_preserves_frozen_run_after_mid_batch_writer_lock(tmp_path
     from types import SimpleNamespace
     from datetime import timedelta
     database = _database(tmp_path)
+    # This schema20 lock/recovery fixture predates G7; current-runtime admission is tested separately.
+    monkeypatch.setattr(cli, "_author_options", lambda args: {})
     clock = [datetime(2026, 10, 17, 17, 30, tzinfo=timezone.utc)]
     monkeypatch.setattr(cli, "datetime", SimpleNamespace(now=lambda *_: clock[0]))
     monkeypatch.setattr(checks, "_now", lambda: clock[0].isoformat())

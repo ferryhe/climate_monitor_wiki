@@ -503,11 +503,15 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, en
             snapshot = prior
     if previous and "derived_display" not in snapshot and OVERLAY not in snapshot:
         old = json.loads(previous[0])
+        if old.get("content_authoring"):
+            from .content_enrichment import bind_current_body
+            bind_current_body(snapshot)
         display = old.pop("derived_display", None)
         def business_rows(value):
             value=json.loads(json.dumps(value))
             value.pop("enrichment_scope",None)
             value.pop("information_targets",None)
+            value.pop("content_authoring",None)
             for prefix in ("article","meeting"):
                 value["tables"].pop(prefix+"_check_attempts",None)
                 value["dependencies"].pop(prefix+"_check_runs",None)
@@ -519,6 +523,8 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, en
         same_semantics = corrected and digest(_category_correction_inputs(old)) == digest(_category_correction_inputs(snapshot))
         if display and (not corrected or same_semantics) and digest(business_rows(old)) == digest(business_rows(snapshot)):
             snapshot["derived_display"] = display
+            if "content_authoring" in old:
+                snapshot["content_authoring"] = old["content_authoring"]
             if "enrichment_scope" in old and "enrichment_scope" not in snapshot:
                 snapshot["enrichment_scope"] = old["enrichment_scope"]
         elif same_semantics:
@@ -721,6 +727,15 @@ def information_ready(connection, snapshot, *, information_groups=None):
         try:
             packet = json.loads(attempt["packet_json"])
             timestamp(attempt["checked_at"])
+            generated = packet.get("content_enrichment")
+            if generated:
+                if generated["status"] == "held":
+                    return False
+                if generated["status"] == "generated" and snapshot.get("content_authoring") != generated["record"]:
+                    return False
+                if generated["status"] == "no-op":
+                    from .content_enrichment import validate_noop
+                    validate_noop(connection, frozen_target, generated)
             if (_sha(packet)!=attempt["packet_sha256"] or packet.get("checked_at")!=attempt["checked_at"]
                     or attempt["source_revision_sha256"]!=target["source_revision_sha256"]
                     or any(packet.get(key)!=value for key,value in frozen_target.items())
@@ -970,7 +985,7 @@ def prepare_review(database, root):
             return packet  # The native owner finishes its exact immutable packet.
     with _writer(database) as connection:
         preparation = _prepare_entities(connection, root.parent)
-        ready = {item["candidate_sha256"] for item in preparation["ready"] if item.get("stage") != "approved"}
+        ready = {item["candidate_sha256"] for item in preparation["ready"] if item.get("stage") not in {"approved", "no_change"}}
         candidates = []
         for row in connection.execute("""SELECT c.* FROM registry_publication p JOIN registry_candidates c
             ON c.candidate_sha256=p.latest_candidate_sha256

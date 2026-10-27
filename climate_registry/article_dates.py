@@ -183,11 +183,65 @@ CONTENT_DATE_FIELDS = {"content_date", "content_date_basis", "content_date_label
     "revision_date_evidence", "revision_date_verification", "publication_date_verification", "content_update_candidate_sha256", "content_version_id"}
 
 
+def labelled_source_dates(value):
+    """Reuse the existing labelled date grammar; return literal spans, not inferred date facts."""
+    from climate_monitor.pdf_intake import _MONTH
+    from .owner_checks import _dates
+    date_value = rf"(?:\d{{4}}-\d{{2}}(?:-\d{{2}})?|\d{{1,2}}[ \t]+{_MONTH}[ \t]+\d{{4}}|{_MONTH}[ \t]+(?:\d{{1,2}},?[ \t]+)?\d{{4}}|\d{{4}})"
+    pattern = rf"(?im)\b(?P<label>last[ \t]+updated|updated|published|posted|revised|revision[ \t]+date)[ \t]*:[ \t]*(?P<date>{date_value})(?:(?![\w-])|(?<=\d{{4}}-\d{{2}}-\d{{2}})(?=T\d{{2}}:))"
+    selected = []
+    for match in re.finditer(pattern, value):
+        try:
+            parsed = _dates(match["date"])
+        except (ValueError, TypeError):
+            parsed = {}
+        label = re.sub(r"[ \t]+", " ", match["label"].casefold())
+        kind = "updated" if label in {"updated", "last updated"} else "revision" if label in {"revised", "revision date"} else "published"
+        end = match.end()
+        if parsed.get("start_date") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", match["date"]):
+            # Only the adjacent ISO clock is metadata; the proof keeps its literal day.
+            clock = re.match(r"T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?(?![\w:])", value[end:], re.I)
+            if clock:
+                end += clock.end()
+        selected.append({"start":match.start(),"end":end,"label":match["label"],"text":match["date"],
+            "date_kind":kind,"valid":bool(parsed.get("start_date")),"source_date_precision":parsed.get("date_precision", "unknown")})
+    return selected
+
+
 def _body_text(value):
-    # Ignore Markdown presentation and whitespace; a new fetch hash alone proves no substantive change.
-    value = re.sub(r"(?im)\b(?:last\s+updated|updated|published|posted|revised|revision\s+date)\s*:\s*[^\n]*", "", value)
+    # Ignore presentation, while keeping numeric signs and comparisons in the source facts.
+    from html import unescape
+    value = re.sub(r"<((?:https?://|mailto:)[^<>\s]+)>", r"\1", value)
+    # Inline wrappers do not create whitespace between a source sign/decimal and its number.
+    from .capture import _MarkdownHTMLParser
+    block_tags = _MarkdownHTMLParser._blocks | {"br"}
+    value = unescape(re.sub(r"</?([A-Za-z][A-Za-z0-9:-]*)(?:\s[^<>]*?)?\s*/?>",
+        lambda match: " " if match[1].casefold() in block_tags else "", value))
+    # Resolve one inner layer before adjoining units; code contents stay literal.
+    paired = re.compile(r"([`*~]+)(.+?)\1|(?<!\w)(_+)(.+?)\3(?!\w)", re.S)
+    def visible_inline(match):
+        content = match[2] or match[4]
+        if "`" in (match[1] or match[3]):
+            return content
+        return paired.sub(lambda inner: inner[2] or inner[4], content)
+    value = paired.sub(visible_inline, value)
+    value = re.sub(r"(?m)^[ \t]*(?:>[ \t]*)+(?=[^\d\s+\-−±.=<>≤≥]|$)", "", value)
+    # Remove only the already recognized label/date span, keeping same-line source corrections.
+    for match in reversed(labelled_source_dates(value)):
+        if not match["valid"]:
+            continue
+        value = value[:match["start"]] + value[match["end"]:]
     value = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", value)
-    return " ".join(re.findall(r"\w+", value.casefold()))
+    from unicodedata import category
+    currency = re.escape("".join(sorted({"$"} | {char for char in value if category(char) == "Sc"})))
+    units = currency + "%‰‱٪％"
+    value = value.casefold()
+    # Prefix words remain literal; their spelling does not decide whether the scalar has a sign.
+    scalar = rf"(?:[^\W\d_]+\s*)?(?:[{currency}]\s*)?(?:\d*\.\d+|\d+)"
+    horizontal = r"[^\S\r\n\v\f\x85\u2028\u2029]"
+    # A numeric list item and a paragraph negative can flatten to the same spaced prefix.
+    tokens = re.finditer(rf"(?P<leading_minus>(?m:^{horizontal}*-{horizontal}+))(?={scalar})|[{units}]|[<>≤≥]=?|[+\-−±](?=\s*{scalar})|\d*\.\d+|\w+", value)
+    return " ".join("[leading-spaced-minus]" if match.lastgroup else match[0] for match in tokens)
 
 
 def validate_content_date_evidence(field, proof, *, article, current, version):
@@ -218,7 +272,7 @@ def validate_content_update(snapshot):
     bundle = snapshot.get("derived_display", {}).get("content_update")
     if bundle is None:
         return None
-    if not isinstance(bundle, dict) or bundle.get("schema_version") != "article-content-update.v1":
+    if not isinstance(bundle, dict) or bundle.get("schema_version") not in {"article-content-update.v1", "article-content-update.source-explanation.v2"}:
         raise ValueError("unsupported content update bundle")
     tables = snapshot.get("tables", {})
     articles = tables.get("articles", [])
@@ -229,10 +283,21 @@ def validate_content_update(snapshot):
         if row.get("article_id") == article.get("article_id")}
     current = rows.get(version)
     previous = rows.get(bundle.get("previous_content_version_id"))
-    if (not current or not previous or current == previous or bundle.get("content_version_id") != version
+    source_only = bundle["schema_version"] == "article-content-update.source-explanation.v2"
+    if source_only:
+        baseline = bundle.get("previous_publication", {})
+        if (previous or bundle.get("previous_content_version_id") is not None or bundle.get("previous_body_sha256") is not None
+                or baseline.get("body_status") != "unavailable" or baseline.get("differences_status") != "unconfirmed"
+                or not isinstance(baseline.get("summary"), str) or not baseline["summary"].strip()
+                or baseline.get("summary_sha256") != hashlib.sha256(baseline["summary"].encode()).hexdigest()
+                or not re.fullmatch(r"[0-9a-f]{64}", str(baseline.get("candidate_sha256", "")))
+                or not isinstance(baseline.get("limitation"), str) or not baseline["limitation"].strip()
+                or bundle.get("change_evidence", {}).get("basis") != "source_explanation"):
+            raise ValueError("source explanation requires an exact published summary and explicit unavailable prior body/unconfirmed differences")
+    if (not current or (not source_only and (not previous or current == previous)) or bundle.get("content_version_id") != version
             or bundle.get("body_sha256") != hashlib.sha256(current["markdown_content"].encode()).hexdigest()
-            or bundle.get("previous_body_sha256") != hashlib.sha256(previous["markdown_content"].encode()).hexdigest()
-            or _body_text(current["markdown_content"]) == _body_text(previous["markdown_content"])):
+            or not source_only and (bundle.get("previous_body_sha256") != hashlib.sha256(previous["markdown_content"].encode()).hexdigest()
+                or _body_text(current["markdown_content"]) == _body_text(previous["markdown_content"]))):
         raise ValueError("content update must bind distinct retained substantive bodies for this article")
     summary = bundle.get("summary")
     if (not isinstance(summary, str) or not summary.strip() or bundle.get("summary_content_version_id") != version
@@ -258,6 +323,22 @@ def validate_content_update(snapshot):
             raise ValueError("source update explanation must be retained in the current captured body")
     else:
         raise ValueError("change note needs a retained body comparison or source explanation")
+    if "items" in evidence:
+        items = evidence["items"]
+        if not isinstance(items, list) or not items:
+            raise ValueError("itemized changes need literal evidence for every item")
+        for item in items:
+            if not isinstance(item, dict) or not item.get("note") or item["note"] not in bundle["change_note"]:
+                raise ValueError("each change item must appear in the separate update note")
+            if item.get("basis") == "body_comparison" and not source_only:
+                old, new = item.get("previous_excerpt"), item.get("current_excerpt")
+                if not old or old not in previous["markdown_content"] or not new or new not in current["markdown_content"] or _body_text(old) == _body_text(new):
+                    raise ValueError("each change item needs different literal previous/current evidence")
+            elif item.get("basis") == "source_explanation":
+                if not item.get("text") or item["text"] not in current["markdown_content"]:
+                    raise ValueError("each change item needs a literal current source explanation")
+            else:
+                raise ValueError("unsupported itemized change basis")
     fetches = [row for row in tables.get("article_fetches", [])
         if row.get("article_id") == article.get("article_id") and row.get("content_version_id") == version
         and row.get("fetch_status") == "success" and 200 <= (row.get("http_status") or 0) <= 299]
@@ -347,7 +428,16 @@ def validate_exported_content_update(record):
             raise ValueError("dynamic content date requires a complete approved content package")
         return None
     version = record.get("content_version_id") or (record.get("content") or {}).get("content_version_id")
-    if (not isinstance(bundle, dict) or bundle.get("schema_version") != "article-content-update.v1"
+    source_only = isinstance(bundle, dict) and bundle.get("schema_version") == "article-content-update.source-explanation.v2"
+    if source_only:
+        baseline = bundle.get("previous_publication", {})
+        if (bundle.get("previous_content_version_id") is not None or bundle.get("previous_body_sha256") is not None
+                or baseline.get("body_status") != "unavailable" or baseline.get("differences_status") != "unconfirmed"
+                or not baseline.get("summary") or baseline.get("summary_sha256") != hashlib.sha256(baseline["summary"].encode()).hexdigest()
+                or not re.fullmatch(r"[0-9a-f]{64}", str(baseline.get("candidate_sha256", ""))) or not baseline.get("limitation")
+                or bundle.get("change_evidence", {}).get("basis") != "source_explanation"):
+            raise ValueError("static source explanation lacks its exact unavailable-body baseline")
+    if (not isinstance(bundle, dict) or bundle.get("schema_version") not in {"article-content-update.v1", "article-content-update.source-explanation.v2"}
             or not version or bundle.get("content_version_id") != version
             or bundle.get("summary_content_version_id") != version or bundle.get("summary_support") != "complete"
             or bundle.get("summary") != record.get("summary") or not bundle.get("summary")
@@ -356,9 +446,9 @@ def validate_exported_content_update(record):
             or record.get("content_update_candidate_sha256") != record["published_candidate_sha256"]
             or not bundle.get("change_note") or not isinstance(bundle.get("date_evidence"), dict)
             or bundle.get("change_evidence", {}).get("basis") not in {"body_comparison", "source_explanation"}
-            or not bundle.get("previous_content_version_id") or bundle["previous_content_version_id"] == version
+            or not source_only and (not bundle.get("previous_content_version_id") or bundle["previous_content_version_id"] == version)
             or any(not isinstance(bundle.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", bundle[key])
-                for key in ("body_sha256", "previous_body_sha256"))):
+                for key in (("body_sha256",) if source_only else ("body_sha256", "previous_body_sha256")))):
         raise ValueError("static content update is incomplete, stale or not bound to its current approved version")
     _collection_timestamp(bundle.get("first_observed_at"))
     expected = content_date_projection(record)

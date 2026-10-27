@@ -154,10 +154,12 @@ def information_targets(connection, kind: str) -> list[dict[str, Any]]:
                     LEFT JOIN acquisition_items a ON a.content_version_id=c.content_version_id AND a.selection_status='selected'
                     WHERE c.article_id=? AND (c.content_version_id=? OR a.acquisition_item_id IS NOT NULL)
                     ORDER BY c.content_version_id""", (article["article_id"],article["current_content_version_id"]))
+                from .content_enrichment import VERSION as AUTHORING_VERSION
+                # G7 output remains candidate evidence, never an upstream input to its own T1 check.
                 enrichments = rows("""SELECT enrichment_id,summary,categories_json,keywords_json FROM article_enrichments
-                    WHERE status='complete' AND ((content_version_id=? AND ? IS NOT NULL)
+                    WHERE status='complete' AND generator_version!=? AND ((content_version_id=? AND ? IS NOT NULL)
                     OR (content_version_id IS NULL AND article_id=? AND article_version_id=?)) ORDER BY enrichment_id""",
-                    (article["current_content_version_id"],article["current_content_version_id"],article["article_id"],article["current_version_id"]))
+                    (AUTHORING_VERSION,article["current_content_version_id"],article["current_content_version_id"],article["article_id"],article["current_version_id"]))
                 acquisition = rows("""SELECT acquisition_item_id,batch_id,content_version_id,raw_url,title,summary,publication_date,
                     publication_date_evidence_json,date_status,selection_status,processing_status,discovery_kind,discovery_ref
                     FROM acquisition_items WHERE article_id=? AND selection_status='selected' ORDER BY rowid""",(article["article_id"],))
@@ -307,7 +309,7 @@ def typesafe_verify(kind: str, fields: dict[str, Any], body: str) -> dict[str, A
     return result
 
 
-def evaluate(target: dict[str, Any], kind: str, record: dict[str, Any], verifier: Callable) -> dict[str, Any]:
+def evaluate(target: dict[str, Any], kind: str, record: dict[str, Any], verifier: Callable, *, author=None, author_provider="", author_model="") -> dict[str, Any]:
     packet = {"schema_version": CHECK_VERSION, **target, "checked_at": _now(),
         "access_status": "unavailable", "verification_status": "unchecked", "reader": record,
         "comparisons": {}, "website_candidate": None, "canonical_event_id": None, "error": None}
@@ -338,6 +340,13 @@ def evaluate(target: dict[str, Any], kind: str, record: dict[str, Any], verifier
         else:
             packet["verification_status"] = "verified"
         if kind == "meetings":
+            if author is not None:
+                from .content_enrichment import generate_dates
+                try:
+                    generated, event = generate_dates(target, record, author, provider=author_provider, model=author_model)
+                    packet.update(content_enrichment=generated, website_candidate=event)
+                except (ValueError, KeyError, TypeError, RuntimeError, OSError) as exc:
+                    packet.update(content_enrichment={"status": "held", "reason": str(exc)}, website_candidate=None)
             candidate = packet.get("website_candidate")
             if candidate is None:
                 packet["verification_status"] = "partial" if packet["verification_status"] == "verified" else packet["verification_status"]
@@ -361,7 +370,7 @@ def evaluate(target: dict[str, Any], kind: str, record: dict[str, Any], verifier
             if ((target["fields"].get("date_precision") in {None, "unknown"} or not target["fields"].get("start_date"))
                 and not (candidate and candidate.get("event_type") == "deadline" and candidate.get("deadline_date"))):
                 packet["verification_status"] = "partial" if packet["verification_status"] == "verified" else packet["verification_status"]
-        elif packet["verification_status"] == "verified":
+        elif packet["verification_status"] == "verified" and author is None:
             try:
                 packet["verified_information"] = {
                     **deterministic_enrichment(body),
@@ -617,17 +626,50 @@ def _terminal_attempt(connection, prefix, row):
     return bool(run and run[0] in {"complete", "partial"} and run[1] > 0 and run[1] == run[2] and run[3])
 
 
-def _currently_verified_targets(connection, prefix: str, targets: list[dict[str, Any]]) -> set[tuple[str, str]]:
+def _generation_complete(connection, packet, *, require_author=False):
+    generated = packet.get("content_enrichment")
+    if not generated:
+        return not require_author
+    if generated["status"] == "held":
+        return False
+    if generated["status"] == "no-op":
+        from .content_enrichment import validate_noop
+        try:
+            validate_noop(connection, packet, generated)
+        except (ValueError, KeyError, TypeError):
+            return False
+        return True
+    if generated["status"] != "generated":
+        return True
+    from .enrichment_contract import validate_content_baselines
+    record = generated["record"]
+    row = connection.execute("SELECT c.candidate_sha256,c.snapshot_json FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.latest_candidate_sha256 WHERE p.entity_kind='article' AND p.entity_id=?", (record["request"]["entity_id"],)).fetchone()
+    if not row:
+        return False
+    snapshot = json.loads(row[1])
+    if snapshot.get("content_authoring") != record:
+        return False
+    from climate_monitor.taxonomy import load_article_taxonomy
+    if record["request"]["taxonomy"]["sha256"] != load_article_taxonomy().sha256:
+        return False
+    try:
+        validate_content_baselines(connection, snapshot, row[0])
+    except (ValueError, KeyError, TypeError):
+        return False
+    return True
+
+
+def _currently_verified_targets(connection, prefix: str, targets: list[dict[str, Any]], *, require_author=False) -> set[tuple[str, str]]:
     """Skip only the exact source version and fields successfully checked."""
     latest = _latest_target_attempts(connection, prefix, targets)
     return {key for target in targets
         if (row := latest.get(key := (target["occurrence_id"], target["source_url"]))) is not None
         and row.get("verification_status") == "verified"
         and (packet := _exact_attempt(target, row)) is not None
-        and packet.get("verification_status") == "verified"}
+        and packet.get("verification_status") == "verified" and _generation_complete(connection, packet, require_author=require_author)}
 
 
-def _incremental_targets(connection, prefix, targets, *, now, retry_after_minutes):
+def _incremental_targets(connection, prefix, targets, *, now, retry_after_minutes, require_author=False):
     latest = _latest_target_attempts(connection, prefix, targets)
     ready = []
     for target in targets:
@@ -635,7 +677,7 @@ def _incremental_targets(connection, prefix, targets, *, now, retry_after_minute
         packet = _exact_attempt(target, row)
         if packet is not None:
             terminal = _terminal_attempt(connection, prefix, row)
-            if terminal and packet.get("verification_status") == "verified" and not packet.get("enrichment_error"):
+            if terminal and packet.get("verification_status") == "verified" and not packet.get("enrichment_error") and _generation_complete(connection, packet, require_author=require_author):
                 continue
             checked = datetime.fromisoformat(row["checked_at"].replace("Z", "+00:00"))
             if terminal and now < checked + timedelta(minutes=retry_after_minutes):
@@ -668,9 +710,16 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
     reverify_all: bool = False, incremental: bool = False, retry_after_minutes: int = 60,
     clock: Callable[[], datetime] | None = None,
     data_root: Path | None = None, verifier: Callable = typesafe_verify, fetcher: Callable | None = None,
-    progress: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+    progress: Callable[[dict[str, Any]], None] | None = None,
+    author: Callable | None = None, author_provider: str = "", author_model: str = "", author_binding: dict | None = None) -> dict[str, Any]:
     """One terminal attempt per record/URL. Retry creates new immutable attempts."""
     prefix = KINDS.get(kind)
+    if author is not None and not all(isinstance(value, str) and value.strip() for value in (author_provider, author_model)):
+        raise ValueError("content author requires actual provider and model identity")
+    if (author is None and author_binding is not None or author_binding is not None and
+            any(author_binding.get(key, expected) != expected for key, expected in (("provider", author_provider), ("model", author_model)))):
+        raise ValueError("content author runtime and effective provider/model differ")
+    author_identity = ({"provider": author_provider, "model": author_model, **(author_binding or {})} if author is not None else None)
     if (prefix is None or (resume_run_id and retry_run_id) or (limit is not None and limit < 1)
             or retry_after_minutes < 1 or (incremental and (reverify_all or retry_run_id))
             or (reverify_all and (resume_run_id or retry_run_id))):
@@ -681,6 +730,8 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
     if resume_run_id or retry_run_id:
         with _writer(database) as connection:
             original = _check_run_input(connection, prefix, resume_run_id or retry_run_id, database)
+        if original.get("content_author") != author_identity:
+            raise ValueError("g7_frozen_author_runtime_changed; start_a_fresh_run_without_reusing_progress")
     prepare_database(database, backup_dir)
     if resume_run_id:
         run_id = resume_run_id
@@ -695,21 +746,47 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
         with _writer(database) as connection:
             if incremental:
                 targets = _incremental_targets(connection, prefix, targets,
-                    now=(clock or (lambda: datetime.now(timezone.utc)))(), retry_after_minutes=retry_after_minutes)
+                    now=(clock or (lambda: datetime.now(timezone.utc)))(), retry_after_minutes=retry_after_minutes, require_author=author is not None)
                 # Freeze a complete small run; T10 need not wait for the corpus.
                 targets = targets[:limit or 10]
             elif not reverify_all:
-                verified = _currently_verified_targets(connection, prefix, targets)
+                verified = _currently_verified_targets(connection, prefix, targets, require_author=author is not None)
                 targets = [target for target in targets
                     if (target["occurrence_id"], target["source_url"]) not in verified]
             frozen = {"schema_version": CHECK_VERSION, "kind": kind, "targets": targets, "retry_of": retry_run_id,
-                "registry_database": str(database)}
+                "registry_database": str(database), **({"content_author": author_identity} if author_identity is not None else {})}
             encoded = _json(frozen)
             connection.execute(f"INSERT INTO {prefix}_check_runs(run_id,input_json,input_sha256,created_at,status,item_count) VALUES(?,?,?,?,?,?)",
                 (run_id, encoded, hashlib.sha256(encoded.encode()).hexdigest(), _now(), "pending", len(targets)))
     with _writer(database) as connection:
         connection.execute(f"UPDATE {prefix}_check_runs SET status='running',completed_at=NULL WHERE run_id=?", (run_id,))
-        done = {(attempt_identity(row,prefix),row["source_url"]) for row in connection.execute(f"SELECT * FROM {prefix}_check_attempts WHERE run_id=?", (run_id,))}
+        attempts = [dict(row) for row in connection.execute(f"SELECT * FROM {prefix}_check_attempts WHERE run_id=?", (run_id,))]
+        done = {(attempt_identity(row,prefix),row["source_url"]) for row in attempts}
+    article_author = author
+    if kind == "articles" and author is not None:
+        from .content_enrichment import VERSION as AUTHORING_VERSION, PROMPT
+        from .acquisition_review import digest
+        responses = {}
+        target_index = {(target["occurrence_id"],target["source_url"]):target for target in targets}
+        # Resume the same exact response even if an interruption preceded candidate staging.
+        for attempt in attempts:
+            target = target_index.get((attempt_identity(attempt,prefix),attempt["source_url"]))
+            packet = _exact_attempt(target,attempt) if target else None
+            record = ((packet or {}).get("content_enrichment") or {}).get("record")
+            if (not record or record.get("schema_version") != AUTHORING_VERSION
+                    or record.get("provider") != author_provider or record.get("model") != author_model
+                    or record.get("runtime_binding") != author_identity
+                    or record.get("prompt_sha256") != hashlib.sha256(PROMPT.encode()).hexdigest()):
+                continue
+            inference = record.get("editorial_inference")
+            request = inference["request"] if inference else record["request"]
+            response = inference["response"] if inference else record["output"]
+            responses.setdefault(_sha({**request,"request_sha256":digest(request),"prompt":PROMPT}),deepcopy(response))
+        def article_author(request):
+            key = _sha(request)
+            if key not in responses:
+                responses[key] = deepcopy(author(request))
+            return deepcopy(responses[key])
     count = 0
     if progress:
         progress({"run_id": run_id, "kind": kind, "status": "pending", "item_count": len(targets), "completed_count": len(done)})
@@ -726,7 +803,19 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
                     record = _reusable_reader(connection, prefix, target)
             record = record or (fetcher(target["occurrence_id"], target["source_url"]) if fetcher else
                 fetch_article_content(target["occurrence_id"], target["source_url"], data_root=data_root))
-            packet = evaluate(target, kind, record, verifier)
+            pdf_ready = True
+            if author is not None and target["entity_kind"] == "pdf_meeting":
+                from .content_enrichment import _pdf_handoff
+                with sqlite3.connect(database) as read:
+                    pdf_ready = _pdf_handoff(read, target)
+            packet = evaluate(target, kind, record, verifier, author=author if pdf_ready else None,
+                author_provider=author_provider, author_model=author_model)
+            if not pdf_ready:
+                packet.update(content_enrichment={"status": "held", "reason": "pdf_source_coverage_exact_occurrence_handoff_missing"}, verification_status="partial")
+            if author is not None and kind == "articles":
+                from .content_enrichment import generate
+                with sqlite3.connect(database) as read:
+                    packet["content_enrichment"] = generate(read, target, article_author, provider=author_provider, model=author_model, reader=record, runtime_binding=author_identity)
         except Exception as exc:
             packet = {"schema_version": CHECK_VERSION, **target, "checked_at": _now(), "access_status": "failed",
                 "verification_status": "unchecked", "reader": {}, "comparisons": {}, "website_candidate": None,
@@ -825,11 +914,46 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
     with _writer(database) as connection:
         row = connection.execute(f"SELECT item_count,completed_count FROM {prefix}_check_runs WHERE run_id=?", (run_id,)).fetchone()
         failures = connection.execute(f"SELECT count(*) FROM {prefix}_check_attempts WHERE run_id=? AND verification_status!='verified'", (run_id,)).fetchone()[0]
-        enrichment_failures = sum(bool(json.loads(value[0]).get("enrichment_error")) for value in connection.execute(
-            f"SELECT packet_json FROM {prefix}_check_attempts WHERE run_id=?", (run_id,)))
+        packets = [json.loads(value[0]) for value in connection.execute(
+            f"SELECT packet_json FROM {prefix}_check_attempts WHERE run_id=? ORDER BY rowid", (run_id,))]
+        enrichment_failures = sum(bool(packet.get("enrichment_error")) for packet in packets)
+        enrichment_outcomes = []
+        target_index = {(target["occurrence_id"], target["source_url"]): target for target in targets}
+        for packet in packets:
+            if not packet.get("content_enrichment"):
+                continue
+            from .content_enrichment import stage
+            target = target_index[(packet["occurrence_id"], packet["source_url"])]
+            connection.execute("SAVEPOINT g7_candidate")
+            try:
+                outcome = stage(connection, target, packet["content_enrichment"], generated_at=packet["checked_at"])
+            except (ValueError, KeyError, TypeError) as exc:
+                connection.execute("ROLLBACK TO g7_candidate")
+                outcome = {"status": "held", "reason": str(exc)}
+            finally:
+                connection.execute("RELEASE g7_candidate")
+            enrichment_outcomes.append({"occurrence_id": target["occurrence_id"], "source_url": target["source_url"], **outcome})
+        enrichment_failures += sum(item["status"] == "held" for item in enrichment_outcomes)
         status = "pending" if row[1] < row[0] else "partial" if failures or enrichment_failures else "complete"
         connection.execute(f"UPDATE {prefix}_check_runs SET status=?,completed_at=? WHERE run_id=?", (status, _now() if row[0] == row[1] else None, run_id))
         from .publication import stage_entities
-        stage_entities(connection)
+        finalized = set(stage_entities(connection))
+        for outcome in enrichment_outcomes:
+            if outcome.get("status") != "pending_review" or not outcome.get("candidate_sha256"):
+                continue
+            final = connection.execute("""SELECT current.candidate_sha256,old.snapshot_json,current.snapshot_json
+                FROM registry_candidates old JOIN registry_publication p
+                  ON p.entity_kind=old.entity_kind AND p.entity_id=old.entity_id
+                JOIN registry_candidates current ON current.candidate_sha256=p.latest_candidate_sha256
+                WHERE old.candidate_sha256=?""", (outcome["candidate_sha256"],)).fetchone()
+            if not final or final[0] not in finalized:
+                raise ValueError("finalized_g7_candidate_missing_from_terminal_staging")
+            old, current = json.loads(final[1]), json.loads(final[2])
+            if any(old.get(key) != current.get(key) for key in ("content_authoring", "derived_display")):
+                raise ValueError("finalized_g7_candidate_content_binding_changed")
+            from .enrichment_contract import validate_content_baselines
+            validate_content_baselines(connection, current, final[0])
+            outcome["candidate_sha256"] = final[0]
     return {"run_id": run_id, "kind": kind, "status": status, "item_count": row[0], "completed_count": row[1],
-        "unverified_count": failures, "enrichment_failed_count": enrichment_failures}
+        "unverified_count": failures, "enrichment_failed_count": enrichment_failures,
+        **({"content_enrichment": enrichment_outcomes} if author is not None else {})}

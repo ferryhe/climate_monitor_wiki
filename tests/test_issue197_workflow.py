@@ -590,6 +590,8 @@ def test_exact_sender_retains_recipients_and_never_retries_unknown(tmp_path, mon
 
 def test_daily_checks_dedupe_each_kind_without_cross_approving_reports(tmp_path, monkeypatch):
     from scripts import check_information
+    # Scheduling is isolated from the real G7 runtime, as from the mocked T1 worker below.
+    monkeypatch.setattr(check_information, "_author_options", lambda args: {})
     at = datetime(2026, 10, 6, 9, tzinfo=timezone.utc)
     monkeypatch.setattr(check_information, "datetime", SimpleNamespace(now=lambda _tz: at))
     calls = []
@@ -881,6 +883,7 @@ def test_verified_pdf_material_is_rendered_and_only_current_version_archived(tmp
 def test_daily_wrapper_keeps_admitted_occurrence_after_slow_first_phase(tmp_path, monkeypatch, article_status):
     import io, sys
     from scripts import check_information
+    monkeypatch.setattr(check_information, "_author_options", lambda args: {})
     from climate_registry import pdf_pipeline
     import climate_monitor.article_content_adapter as adapter
     clock = [datetime(2026,10,6,17,30,tzinfo=timezone.utc)]

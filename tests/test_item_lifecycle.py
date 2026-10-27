@@ -1241,7 +1241,22 @@ def test_owner_context_needs_exact_prepared_input_not_same_entity_history(tmp_pa
     assert set(retained(root)) == {input_sha}  # Approval did not register its new SHA or rewrite the ledger.
 
 
+def _owner_dependency_check_clock(monkeypatch):
+    # Source checks precede this fixture's 22:59 capture / 23:00 owner receipt, in call order.
+    from datetime import datetime, timedelta, timezone
+    from climate_registry import information_checks
+    import verified_fixtures
+    current = datetime(2026, 10, 26, 22, 58, tzinfo=timezone.utc)
+    def next_time():
+        nonlocal current
+        current += timedelta(microseconds=1)
+        return current.isoformat()
+    monkeypatch.setattr(information_checks, "_now", next_time)
+    monkeypatch.setattr(verified_fixtures, "_now", next_time)
+
+
 def test_owner_meeting_approval_rechecks_unselected_required_article_and_keeps_same_body_exception(tmp_path, monkeypatch):
+    _owner_dependency_check_clock(monkeypatch)
     from climate_registry.owner_checks import approve_owner_check
     from test_issue197_workflow import _native_meeting_material_fixture
     from test_owner_checks import _manifest, _review
@@ -1297,6 +1312,7 @@ def test_owner_meeting_approval_rechecks_unselected_required_article_and_keeps_s
 
 @pytest.mark.parametrize("check_undisputed", [False, True])
 def test_g1_date_publication_does_not_release_dates_from_disputed_new_article_body(tmp_path, monkeypatch, check_undisputed):
+    _owner_dependency_check_clock(monkeypatch)
     import hashlib
     from climate_registry.enrichment_contract import CONTENT_SCOPE
     from climate_monitor.meetings import process_batch
