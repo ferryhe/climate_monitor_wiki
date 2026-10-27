@@ -1984,13 +1984,16 @@ def test_pdf_first_write_binding_survives_failed_imported_status_save(tmp_path,m
     all_files=lambda:{str(p):p.read_bytes() for root in (queue,runtime) for p in root.rglob("*") if p.is_file()}
     before_files=all_files()
     operations=[lambda:wrong.process(queued["batch_id"])]
-    operations.append(wrong.process_next if historical_missing_binding in {"processing","queued"} else lambda:retry_pdf_batch(queue,queued["batch_id"]))
+    if historical_missing_binding not in {"processing", "queued"}:
+        operations.append(wrong.process_next if not historical_missing_binding else lambda:retry_pdf_batch(queue,queued["batch_id"]))
     for operation in operations:
         with pytest.raises(ValueError,match="no frozen Registry binding" if historical_missing_binding else "frozen task binding"):operation()
         assert path.read_bytes()==before and database.read_bytes()==before_a and other.read_bytes()==before_b
         assert all_files()==before_files
     if historical_missing_binding in {"processing","queued"}:
         assert retry_pdf_batch(queue,queued["batch_id"])["stage"]==historical_missing_binding  # Read-only, not a retryable failure.
+        assert wrong.process_next() is None  # Skip the stale item and continue to the empty publication poll.
+        assert all_files()==before_files and database.read_bytes()==before_a and other.read_bytes()==before_b
     elif historical_missing_binding:
         assert wrong.process_next() is None  # Unbound historical failures still require an explicit retry.
     else:
@@ -2030,6 +2033,88 @@ def test_unstarted_pdf_queue_can_choose_current_database_and_old_unbound_audit_s
     for operation in (lambda:writer.process(queued["batch_id"]),lambda:retry_pdf_batch(queue,queued["batch_id"])):
         with pytest.raises(ValueError,match="no frozen Registry binding"):operation()
         assert path.read_bytes()==before and other.read_bytes()==before_b
+
+
+@pytest.mark.skipif(os.name == "nt", reason="current acquisition fixtures require POSIX fcntl")
+def test_unbound_historical_pdf_does_not_starve_current_web_activation(tmp_path, monkeypatch):
+    from climate_delivery.io import atomic_write_json
+    from climate_registry.acquisition import store_acquisition_batch, freeze_acquisition_for_report
+    from climate_registry.pdf_pipeline import PdfIntakePipeline
+    from climate_registry.web_ingest_pipeline import enqueue_web_activation
+    from test_issue112_acquisition import _batch, _item
+
+    database = tmp_path / "registry.sqlite3"
+    with sqlite3.connect(database) as connection:
+        apply_migrations(connection)
+    queue, runtime, application = (tmp_path / name for name in ("queue", "runtime", "application"))
+    for directory in (queue, runtime, application):
+        directory.mkdir()
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.delenv("CLIMATE_ACQUISITION_RUN_DIR", raising=False)
+
+    old_batch_id = "a" * 64
+    old_status = {
+        "batch_id": old_batch_id, "stage": "processing", "imported": True,
+        "attempts": 1, "created_at": "2026-01-01T00:00:00Z",
+        "error": "interrupted historical import",
+        "failure_history": [{"attempt": 1, "reason": "interrupted historical import"}],
+    }
+    old_status_path = queue / old_batch_id / "status.json"
+    old_status_path.parent.mkdir()
+    atomic_write_json(old_status_path, old_status)
+    old_status_bytes = old_status_path.read_bytes()
+
+    payload = _batch([_item(published_date=None)])
+    store_acquisition_batch(database, payload)
+    frozen = freeze_acquisition_for_report(
+        database, payload["batch_id"], report_date=payload["report_date"]
+    )
+    web_status = enqueue_web_activation(
+        queue, database, payload["batch_id"],
+        frozen_payload_sha256=digest(frozen), repository_root=application,
+    )
+    writer = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime, lambda generation: None,
+        repository_root=application,
+    )
+
+    result = writer.process_next()
+
+    assert result["batch_id"] == web_status["batch_id"]
+    assert result["stage"] == "pending_review"
+    assert old_status_path.read_bytes() == old_status_bytes
+    assert json.loads(old_status_path.read_text(encoding="utf-8"))["failure_history"] == (
+        old_status["failure_history"]
+    )
+
+
+def test_unbound_historical_pdf_does_not_block_publication_poll(tmp_path, monkeypatch):
+    from climate_delivery.io import atomic_write_json
+    from climate_registry.pdf_pipeline import PdfIntakePipeline
+
+    database = tmp_path / "registry.sqlite3"
+    with sqlite3.connect(database) as connection:
+        apply_migrations(connection)
+    queue, runtime, application = (tmp_path / name for name in ("queue", "runtime", "application"))
+    for directory in (queue, runtime, application):
+        directory.mkdir()
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    old_batch_id = "b" * 64
+    status_path = queue / old_batch_id / "status.json"
+    status_path.parent.mkdir()
+    atomic_write_json(status_path, {
+        "batch_id": old_batch_id, "stage": "processing", "imported": True,
+        "attempts": 1, "created_at": "2026-01-01T00:00:00Z",
+        "error": "interrupted historical import",
+    })
+    expected = {"batch_id": "public-registry", "stage": "polled"}
+    writer = PdfIntakePipeline(
+        queue, database, tmp_path / "backups", runtime, lambda generation: None,
+        repository_root=application,
+    )
+    monkeypatch.setattr(writer, "refresh_publication", lambda: expected)
+
+    assert writer.process_next() == expected
 
 
 def test_manual_migration_cannot_approve_a_later_automated_change(tmp_path):
