@@ -806,6 +806,14 @@ def test_registry_activate_reports_this_native_packet_truthfully(tmp_path,monkey
     result=json.loads(capsys.readouterr().out)
     assert result["status"]==expected and result["approved_count"]==approved and result["published_count"]==published
     assert result["reviewed_count"]==2 and result["queued_count"]==0 and not list(queue.rglob("*"))
+    from climate_registry.publication import public_revision
+    assert result["public_revision"] == public_revision(database)
+    assert result["downstream_sync_status"] == "not_checked"
+    assert len(result["approved_candidates"]) == approved
+    with sqlite3.connect(database) as db:
+        for item in result["approved_candidates"]:
+            assert db.execute("SELECT candidate_sha256,status FROM registry_reviews WHERE review_id=?", (item["review_id"],)).fetchone() == (item["candidate_sha256"], "pass")
+            assert db.execute("SELECT published_candidate_sha256,is_visible FROM registry_publication WHERE entity_kind=? AND entity_id=?", (item["entity_kind"], item["entity_id"])).fetchone() == (item["candidate_sha256"], item["is_visible"])
     assert code==int(approved==0) and database.read_bytes()==before and (root/"packet.json").read_bytes()==packet_before
 
 
@@ -824,6 +832,9 @@ def test_registry_activate_does_not_reuse_a_prior_round_approval(tmp_path,monkey
     assert main(["activate","--kind","acquisition","--root",str(runs),"--target","registry-review","--queue-dir",str(queue)])==1
     result=json.loads(capsys.readouterr().out)
     assert result["status"]=="pending_review" and result["approved_count"]==result["published_count"]==0
+    assert result["approved_candidates"] == []
+    from climate_registry.publication import public_revision
+    assert result["public_revision"] == public_revision(database)
 
 
 def _actual_chat_activation(monkeypatch, database, application, queue, runtime):

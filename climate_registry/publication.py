@@ -1075,23 +1075,26 @@ def review_activation_status(root, *, database=None):
     result = {"status": "pending_review" if candidates else "no_approved_candidates",
         "candidate_count": len(candidates), "reviewed_count": 0, "approved_count": 0,
         "published_count": 0, "needs_correction_count": 0, "rejected_count": 0,
-        "pending_count": len(candidates), "queued_count": 0}
+        "pending_count": len(candidates), "queued_count": 0,
+        "approved_candidates": [], "public_revision": None,
+        "downstream_sync_status": "not_checked"}
     claim_path = root / "claim.json"
-    if not claim_path.is_file():
-        return result
-    claim = json.loads(claim_path.read_text(encoding="utf-8"))
-    if claim.get("packet_sha256") != digest(packet):
-        return result
+    claim = json.loads(claim_path.read_text(encoding="utf-8")) if claim_path.is_file() else {}
     review_ids = set()
-    for path in (root / "receipts").glob("*.json"):
-        receipt = json.loads(path.read_text(encoding="utf-8"))
-        if (receipt.get("claim") or {}).get("token") == claim["token"]:
-            review_ids.update(receipt.get("reviews", []))
+    if claim.get("packet_sha256") == digest(packet):
+        for path in (root / "receipts").glob("*.json"):
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            if (receipt.get("claim") or {}).get("token") == claim["token"]:
+                review_ids.update(receipt.get("reviews", []))
     reviewed = {}
     with sqlite3.connect(f"{selected.as_uri()}?mode=ro", uri=True) as connection:
-        for review_id in review_ids:
+        # The handoff revision and candidate approvals must describe one read snapshot.
+        connection.execute("BEGIN")
+        result["public_revision"] = public_revision(selected, connection=connection)
+        for review_id in sorted(review_ids):
             row = connection.execute("""SELECT r.candidate_sha256,r.status,r.receipt_json,
-                p.latest_candidate_sha256,p.published_candidate_sha256,p.is_visible
+                p.latest_candidate_sha256,p.published_candidate_sha256,p.is_visible,
+                c.entity_kind,c.entity_id,r.review_id
                 FROM registry_reviews r JOIN registry_candidates c ON c.candidate_sha256=r.candidate_sha256
                 JOIN registry_publication p ON p.entity_kind=c.entity_kind AND p.entity_id=c.entity_id
                 WHERE r.review_id=?""", (review_id,)).fetchone()
@@ -1106,6 +1109,8 @@ def review_activation_status(root, *, database=None):
         if row[1] == "pass" and row[3] == sha and row[4] == sha:
             result["approved_count"] += 1
             result["published_count"] += int(bool(row[5]))
+            result["approved_candidates"].append({"entity_kind": row[6], "entity_id": row[7],
+                "candidate_sha256": sha, "review_id": row[8], "is_visible": bool(row[5])})
         elif row[1] in {"needs_correction", "rejected"}:
             result[row[1] + "_count"] += 1
         else:
