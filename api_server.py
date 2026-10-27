@@ -12,6 +12,7 @@ import sqlite3
 import tempfile
 import threading
 from contextlib import asynccontextmanager, contextmanager, nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
@@ -1866,7 +1867,10 @@ async def console_pdf_intake_import(
     if preview_digest != _pdf_intake_bundle_digest(bundle):
         raise HTTPException(status_code=422, detail="Parsed PDF details do not match the preview.")
     try:
-        return enqueue_pdf_batch(queue[0], bundle, repository_root=ROOT)
+        return enqueue_pdf_batch(queue[0], bundle, repository_root=ROOT, authorization={
+            "actor_id": str(user.id), "actor": user.email, "confirmed_at": datetime.now(timezone.utc).isoformat(),
+            "scope": "pdf_coverage_and_pending_content", "preview_digest": preview_digest,
+        })
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=f"PDF batch was not queued: {exc}") from exc
 
@@ -1912,6 +1916,20 @@ def console_retry_pdf_intake_batch(batch_id: str, user: ConsolePrincipal) -> dic
         raise HTTPException(status_code=404, detail="PDF batch was not found.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Invalid PDF batch status.") from exc
+
+
+@app.post("/api/manage/pdf-intake/batches/{batch_id}/author/resume", include_in_schema=False)
+def console_resume_pdf_author(batch_id: str, user: ConsolePrincipal) -> dict[str, Any]:
+    queue = _pdf_intake_queue()
+    if queue[0] is None:
+        raise HTTPException(status_code=503, detail=queue[1])
+    from climate_registry.pdf_author import request_resume
+    try:
+        return request_resume(queue[0], batch_id, actor_id=str(user.id), actor=user.email)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="PDF batch was not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/manage/config", include_in_schema=False)

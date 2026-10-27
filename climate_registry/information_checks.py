@@ -26,6 +26,7 @@ from climate_monitor.meetings import (
 from .persistent import _backup_connection, _backup_name, _exclusive_database_lock
 from .schema import apply_migrations
 from .capture import deterministic_enrichment, GENERATOR_NAME, GENERATOR_VERSION
+from .errors import AuthoringInterrupted
 
 CHECK_VERSION = "information-check.v2"
 DATE_ONLY_CHECK_VERSION = "owner-agent-publication-date-check.v1"
@@ -381,6 +382,8 @@ def evaluate(target: dict[str, Any], kind: str, record: dict[str, Any], verifier
                 }
             except Exception as exc:
                 packet["enrichment_error"] = getattr(exc, "code", type(exc).__name__)
+    except AuthoringInterrupted:
+        raise
     except Exception as exc:
         packet["error"] = str(exc)[:240] if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__
         if packet["verification_status"] != "conflict":
@@ -816,6 +819,8 @@ def run_checks(database: Path, *, kind: str, backup_dir: Path, occurrence_ids: s
                 from .content_enrichment import generate
                 with sqlite3.connect(database) as read:
                     packet["content_enrichment"] = generate(read, target, article_author, provider=author_provider, model=author_model, reader=record, runtime_binding=author_identity)
+        except AuthoringInterrupted:
+            raise  # No terminal attempt exists; the same run resumes its unchecked target.
         except Exception as exc:
             packet = {"schema_version": CHECK_VERSION, **target, "checked_at": _now(), "access_status": "failed",
                 "verification_status": "unchecked", "reader": {}, "comparisons": {}, "website_candidate": None,

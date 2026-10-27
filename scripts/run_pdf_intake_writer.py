@@ -57,7 +57,11 @@ def main() -> int:
     args = parser.parse_args()
     pipeline = _pipeline()
     while True:
+        from climate_registry.pdf_author import advance
+        # Dispatch/reconcile outside intake-writer; children own their model waits.
+        advance(pipeline)
         result = pipeline.process_next()
+        advance(pipeline)
         if result is not None:
             print(f"{result['batch_id']} {result['stage']}", flush=True)
         if args.once:

@@ -856,6 +856,125 @@ preserves the old active generation and does not establish a successful refresh.
 All intake operations share a process-released transaction lock, so a terminated
 writer does not leave an occupied lock that blocks recovery after restart.
 
+#### PDF author dispatch, status and resume (G9)
+
+The existing `scripts.run_pdf_intake_writer` loop now scans confirmed PDF batches
+before and after its ordinary intake tick. It starts short-lived
+`climate_registry.pdf_author work` children, with at most four live dispatches.
+No model call runs in the API or while holding `intake-writer`. This is a
+PDF-specific adapter, not an acquisition kind, another permanent writer, reviewer
+launcher or scheduler. Enabling the import compose override alone does **not**
+provision a Hermes installation, profile, credentials or compatible reader runtime.
+The existing frozen Hermes execution helper must be usable in the writer's actual
+environment. Missing runtime/profile/input prerequisites remain technical holds
+with a one-minute retry backoff; they never establish author-started.
+
+Only an authenticated, confirmed import grants `pdf_coverage_and_pending_content`
+scope. Its queue record retains the real console principal ID, email, confirmation
+time and validated preview digest. Preview creates no author handoff. A historical
+batch without that authorization remains held until the operator confirms the
+same exact PDF through the existing preview/import flow; this appends the missing
+authorization without importing duplicate source facts. The first author dispatch
+freezes the same external Registry binding used by the intake writer.
+
+There are two independent readiness facts. `bundle_ready` means the saved bundle
+digest, embedded original PDF SHA, actual page count/text/regions and coverage
+evidence replay from readable original bytes. `source_persisted` additionally
+requires the actual Registry original bytes and real occurrence mappings. An
+`imported` flag alone is insufficient. Coverage can run at the first readiness
+point. Source-dependent T1/G7 work uses only actual persisted targets, G4-confirmed
+canonical links and the existing exact-occurrence coverage handoff. Missing links,
+complete bodies or unsupported scope remain item-level `held` with a next owner;
+independent ready items continue. A new PDF is a new source artifact, not evidence
+of a new canonical article or a substantive content change.
+
+Authenticated API I/O:
+
+| Request | Result |
+| --- | --- |
+| `POST /api/manage/pdf-intake/import` with the existing confirmed preview binding | Durable batch and authorization; `queued` is not author-started |
+| `GET /api/manage/pdf-intake/batches/{batch_id}` (or the batch list) | Separate intake milestones and `author` readiness, current/historical handoffs, held reasons, dispatch PID/start identity, validated Hermes sessions/actors and next owner |
+| `POST /api/manage/pdf-intake/batches/{batch_id}/author/resume` | `resume_requested`, batch ID and `next_owner=existing_intake_writer`; records the requesting principal, then the existing loop reconciles before retrying |
+
+The existing `/retry` route retries intake/projection failures; author resume is
+separate. Neither response claims that a model has started. Runtime handoffs live
+under `<queue>/<batch>/author/<handoff_id>/`. `handoff_id` is a local immutable
+binding digest, **not** a fabricated Hermes task ID. `dispatch.json` identifies the
+real child process by PID, Linux start ticks and boot ID. `runtime.json` names the
+actual frozen Hermes snapshot/source/profile. `calls/*/` retains exact requests,
+dispatch intents, raw stdout/stderr, process starts, failures and validated
+receipts with the actual quiet-mode session ID and observed provider/model.
+`state.json` retains heartbeat, real T1 `check_run_id`, output digest and next
+owner. `output.json` is a pending author result, never an approval receipt.
+Status reads revalidate task/bundle/source/prompt and saved session/output proof.
+Only validated session/actor and readable exact output establish `author_started`;
+queued/imported, a PID, a packet or a locally assigned handoff ID cannot do so.
+The profile reference means the existing helper's frozen default configuration;
+the adapter does not invent a named Hermes profile or substitute ambient settings.
+
+The following implemented CLI reads or resumes an **existing** exact handoff; it
+does not require copying files or manually starting an agent after confirmation:
+
+```bash
+python -m climate_registry.pdf_author status --task /external/queue/BATCH/author/HANDOFF
+python -m climate_registry.pdf_author resume --task /external/queue/BATCH/author/HANDOFF
+```
+
+`status` returns the frozen binding plus checked state, dispatch and actual
+session receipts. `resume` rechecks the same claim/runtime/output and returns the
+current state; it can attach to existing progress rather than dispatching again.
+The absolute directory must already exist and match the stored queue/batch binding.
+`work` is the existing writer's internal child entrypoint, not a separate service.
+
+Dispatch claims are inherited by both the short-lived worker and its real Hermes
+child. A lost creation response therefore cannot authorize another concurrent
+author. On restart the adapter first checks the claim, exact process identity and
+saved output. A completed response with a lost callback is parsed and bound again,
+and a T1 run committed before its callback is recovered from its frozen author
+binding in the Registry. An intent without a living claim or valid result is
+retained as a failed attempt; the next retry first validates the runtime and keeps
+the failed attempt's lineage. Existing Hermes auth rules still apply: a hard kill
+during an unsealed OAuth/auth mutation requires a new valid frozen runtime, and
+the adapter reports that technical block rather than bypassing the seal or
+blindly repeating the request. No automatic credential repair is supplied here.
+
+A temporary inference interruption leaves the real T1 run resumable, without
+inserting a terminal source-check attempt. Its run ID and completed counters are
+retained even on the worker's exception path. A `partial`/failed T1 result is an
+author `held` state, never author completion. Resume continues an unfinished
+frozen run; an actually terminal failed run uses the existing T1 retry contract,
+with a new real check-run ID and the old run retained in its predecessor lineage.
+Already committed attempts and valid saved model responses are reused.
+
+Coverage judgments append through the existing intake writer and leave the
+submitted bundle unchanged. Model output cannot nominate its own coverage author:
+the adapter attaches the verified actual provider/model and native session ID to
+each persisted coverage revision. The separate handoff ID only locates its bound
+request and receipt. Source/content version, prompt, code or scope changes
+create a successor handoff with explicit lineage.
+Coverage successors freeze the existing Registry reader's current coverage ledger,
+its actual coverage IDs and read time, including every retained revision and
+`previous_revision_id`; they do not start again from the uploaded preview's empty
+review chain. The existing writer still rejects an append if another writer
+advanced that chain after the task read it. The old result remains held, and a
+linked successor rereads the actual ledger before another author attempt. The
+submitted bundle remains byte-for-byte unchanged.
+Across batches, coverage predecessors require the same real document SHA;
+content predecessors may additionally follow an already confirmed canonical
+Article/meeting in the same Registry. These references retain old batch,
+document, occurrence and content versions without merging source facts or guessing
+identity from URLs. Early published observations
+retain both the actual published and latest candidate SHA at the same read time;
+they are observations, not approval baselines. G7 still rereads its distinct
+content-comparison and approval-inheritance baselines before staging. Manual date overrides and
+published-read times do not enter the dispatch key; pure date operations do not
+restart PDF authors. Existing G7 generation/staging rechecks content comparison
+and approval inheritance baselines and preserves applicable manual instructions.
+Its output remains a candidate for G10; author completion neither launches an
+independent reviewer nor approves, publishes or activates Chat. Full production
+author-to-display execution remains a G12b verification step; local fixtures,
+task creation and packet files do not prove it.
+
 #### Single Registry publication migration
 
 Before enabling any writer on schema 19, rehearse and run the one-time migration:
