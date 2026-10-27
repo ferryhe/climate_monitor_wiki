@@ -588,7 +588,7 @@ def owner_packet(snapshot, target, row, packet):
     return outcome
 
 
-def public_owner_verification(snapshot, target, row, packet, reviews):
+def public_owner_verification(snapshot, target, row, packet, reviews, *, legacy_date_projection=False):
     outcome = owner_packet(snapshot, target, row, packet)
     candidate = snapshot.get("_approved_candidate_sha256") or digest(snapshot)
     capture = packet["owner_observation"]["capture"]
@@ -632,6 +632,10 @@ def public_owner_verification(snapshot, target, row, packet, reviews):
             if outcome["verification_status"] != "verified":
                 return "owner_public_scope_unsupported", None
             verified = {**verification, "reviewer": receipt["actor"], "review_id": review["review_id"]}
+            if legacy_date_projection and "publication_date_evidence" in verified:
+                # Historical occurrence_json hashes include this nested insertion order.
+                proof = verified.pop("publication_date_evidence")
+                verified["publication_date_evidence"] = proof
             return None, verified
     return "owner_independent_review_missing", verification
 

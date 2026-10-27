@@ -236,8 +236,11 @@ def _manual_public_facts(snapshot, target, row, packet, reviews):
         "audit_limitations": ["evidence_original_not_recovered"]}
 
 
-def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_binding=None):
+def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_binding=None, projection_profile=None):
     """Only evidence frozen in this exact version can establish its public facts."""
+    from .owner_dates import LEGACY_BASELINE_PROJECTION, _legacy_projection_scope
+    if projection_profile is not None and (projection_profile != LEGACY_BASELINE_PROJECTION or not _legacy_projection_scope(snapshot)):
+        raise ValueError("unsupported legacy date projection scope")
     from .identity import OVERLAY as IDENTITY, is_identity_scope, verdict as identity_verdict
     if is_identity_scope(snapshot):
         return identity_verdict(snapshot, reviews)
@@ -269,7 +272,8 @@ def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_bind
                     reason, manual = _manual_public_facts(snapshot, target, row, packet, reviews)
                 elif packet.get("schema_version") in {"owner-agent-information-check.v1", "owner-agent-information-check.v2"}:
                     from .owner_checks import public_owner_verification
-                    reason, owner = public_owner_verification(snapshot, target, row, packet, reviews)
+                    reason, owner = public_owner_verification(snapshot, target, row, packet, reviews,
+                        legacy_date_projection=projection_profile == LEGACY_BASELINE_PROJECTION)
                 elif row["source_revision_sha256"] != target["source_revision_sha256"] or packet.get("fields") != target["fields"]:
                     reason = "stale_revision"
                 elif packet.get("source_revision_sha256") != row["source_revision_sha256"] or packet.get("occurrence_id") != identity or packet.get("source_url") != target["source_url"]:
@@ -340,7 +344,8 @@ def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_bind
             or aliases.get((item["entity_kind"],item["entity_id"])) == key
             or item["entity_kind"] == "pdf_article" and item["entity_id"] in linked_pdfs]
     native = [r for r in primary_sources if r["entity_kind"] in {"article", "meeting"}]
-    owners = [item for item in primary_sources if snapshot["entity_kind"] == "article" and item.get("owner_agent_verification")]
+    owners = [item for item in primary_sources if snapshot["entity_kind"] == "article" and item.get("owner_agent_verification")
+        and projection_profile != LEGACY_BASELINE_PROJECTION]
     if owners:
         from .acquisition_review import timestamp
         primary = max(owners,key=lambda item:(timestamp(item["owner_agent_verification"]["checked_at"]),item["occurrence_id"]))
