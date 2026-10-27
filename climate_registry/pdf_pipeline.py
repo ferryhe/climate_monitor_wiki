@@ -1003,6 +1003,13 @@ class PdfIntakePipeline:
             except (OSError, json.JSONDecodeError):
                 continue
             if status.get("registry_database") or status.get("stage") in resumable or status.get("stage") == "pending_review":
+                if not status.get("registry_database") and not (
+                    status.get("stage") == "queued"
+                    and not status.get("imported")
+                    and status.get("attempts", 0) == 0
+                ):
+                    # Preserve invalid historical work as-is; it must not block other queue items.
+                    continue
                 _validate_pdf_binding(status, self.database)
             ready_review = False
             if status.get("stage") == "pending_review":
