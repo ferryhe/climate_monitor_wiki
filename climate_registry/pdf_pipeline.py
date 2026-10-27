@@ -613,9 +613,10 @@ class PdfIntakePipeline:
 
     def _process_unlocked(self, batch_id: str) -> dict[str, Any]:
         status = read_pdf_batch(self.queue_dir, batch_id)
-        if status.get("chat_ready"):
+        if status.get("chat_ready") and status.get("stage") != "pending_review":
             return status
         _validate_pdf_binding(status, self.database)
+        retry_requested = status.get("stage") in {"queued", "failed"} and bool(status.get("imported"))
         attempt = int(status.get("attempts", 0)) + 1
         status = self._save(
             batch_id,
@@ -655,7 +656,8 @@ class PdfIntakePipeline:
             calendar_ids = _stored_calendar_ids(self.database, bundle)
 
             from .publication import public_revision, prepare_review
-            if public_revision(self.database) is not None:
+            revision = public_revision(self.database)
+            if revision is not None:
                 with sqlite3.connect(f"{self.database.resolve().as_uri()}?mode=ro", uri=True) as connection:
                     pending_ids = _pending_pdf_entities(connection, document_sha256)
                 if pending_ids:
@@ -663,8 +665,26 @@ class PdfIntakePipeline:
                     review_root = Path(review_dir) / "registry-review" if review_dir else None
                     if review_root:
                         prepare_review(self.database, review_root)
-                    return self._save(batch_id, status, stage="pending_review", indexed=False, chat_ready=False,
-                        pending_review_count=len(pending_ids), review_root=str(review_root) if review_root else None)
+                    status.update(review_root=str(review_root) if review_root else None)
+                # Batch review progress does not gate the complete approved public snapshot.
+                result = self._refresh_publication_unlocked(retry=retry_requested)
+                active_generation, active = self._active_projection()
+                manifest = load_projection_manifest(active_generation, active)
+                scope = (occurrence_ids & set((manifest or {}).get("pdf_occurrence_ids", []))) | (
+                    calendar_ids & set((manifest or {}).get("pdf_calendar_occurrence_ids", [])))
+                synced = (active or {}).get("public_registry_revision") == revision
+                ready = synced and (bool(scope) or not pending_ids)
+                prepared = (result or {}).get("prepared_generation")
+                metadata = active if synced else prepared or {}
+                return self._save(batch_id, status,
+                    stage="pending_review" if pending_ids else "chat_ready" if ready else "failed",
+                    source_batch_complete=not pending_ids, pending_review_count=len(pending_ids),
+                    target_public_registry_revision=revision,
+                    indexed=bool(metadata), chat_ready=ready,
+                    public_registry_revision=metadata.get("public_registry_revision") if synced else None,
+                    generation_id=metadata.get("generation_id"), manifest_sha256=metadata.get("manifest_sha256"),
+                    prepared_generation=prepared,
+                    error=(result or {}).get("error"))
             generation = None
             source_registry_sha256 = _file_sha256(self.database)
             if status.get("indexed") and status.get(
@@ -881,6 +901,13 @@ class PdfIntakePipeline:
         snapshot = self.runtime_wiki_dir / "registry-snapshots" / f"{generation_id}.sqlite3"
         digest = _snapshot_registry(self.database, snapshot)
         revision = public_revision(snapshot)
+        if revision is not None:
+            from .read_api import RegistryReader
+            reader = RegistryReader(snapshot, repository_root=self.repository_root)
+            with reader.public_snapshot(direct=True):
+                pdf_ids = {row["occurrence_id"] for item in reader.pdf_articles_all(include_linked=True)
+                    for row in item["occurrences"]}
+                calendar_ids = {row["occurrence_id"] for row in reader.pdf_calendar_items_all()}
         web_items = list((manifest or {}).get("web_items", []))
         web_snapshot = _active_registry_snapshot(self.runtime_wiki_dir, metadata, "web", required=bool(web_items))
         generation.mkdir(parents=True)
@@ -912,35 +939,58 @@ class PdfIntakePipeline:
             return {"batch_id": "public-registry", "stage": "failed", "status": "failed", "chat_ready": False,
                 "error": type(exc).__name__, "observed_at": _now()}
 
-    def _refresh_publication_unlocked(self) -> dict[str, Any] | None:
+    def _refresh_publication_unlocked(self, *, retry: bool = False) -> dict[str, Any] | None:
         revision = public_revision(self.database)
         if revision is None:
             return None
-        _, active = self._active_projection()
-        if active is None:
-            with _read_only_connection(self.database) as connection:
-                if not connection.execute("SELECT 1 FROM registry_publication WHERE published_candidate_sha256 IS NOT NULL LIMIT 1").fetchone():
-                    return None
-        active_revision = (active or {}).get("public_registry_revision")
-        if active_revision == revision:
-            return None
         receipt = self.queue_dir / "public-refresh.json"
         previous = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
-        if previous.get("public_registry_revision") == revision and previous.get("retry_after") and _now() < previous["retry_after"]:
-            return None
+        last_confirmed = previous.get("active_generation") or previous.get("last_confirmed_generation")
         try:
-            result = self._refresh_checks_unlocked("public-" + revision)
+            _, active = self._active_projection()
+            last_confirmed = active or last_confirmed
+            if (active or {}).get("public_registry_revision") == revision:
+                prepared = previous.get("prepared_generation") or {}
+                if (previous.get("chat_ready") or prepared.get("generation_id") != active["generation_id"]
+                        or previous.get("public_registry_revision") != revision):
+                    return None
+                # Chat switched before a crash/lost receipt; record it without replaying reload.
+                result = {"status": "chat_ready", "generation_id": active["generation_id"]}
+            else:
+                if active is None:
+                    with _read_only_connection(self.database) as connection:
+                        if not connection.execute("SELECT 1 FROM registry_publication WHERE published_candidate_sha256 IS NOT NULL LIMIT 1").fetchone():
+                            return None
+                if not retry and previous.get("public_registry_revision") == revision and previous.get("retry_after") and _now() < previous["retry_after"]:
+                    return None
+                result = self._refresh_checks_unlocked("public-" + revision)
+                _, active = self._active_projection()
             result.update(batch_id="public-registry", stage="chat_ready", chat_ready=True,
-                public_registry_revision=self._active_projection()[1]["public_registry_revision"], observed_at=_now())
+                public_registry_revision=active["public_registry_revision"], observed_at=_now(),
+                active_generation=active, active_generation_verified=True)
         except Exception as exc:
             from datetime import timedelta
             result = {"batch_id": "public-registry", "stage": "failed", "status": "failed", "chat_ready": False,
                 "public_registry_revision": revision, "error": type(exc).__name__, "observed_at": _now(),
                 "retry_after": (datetime.fromisoformat(_now()) + timedelta(seconds=60)).isoformat()}
+            try:
+                _, actual = self._active_projection()
+                result.update(active_generation=actual, active_generation_verified=True)
+            except Exception:
+                result.update(active_generation=None, active_generation_verified=False)
+            result["last_confirmed_generation"] = last_confirmed
         # The old active pointer remains authoritative until reload acknowledges this generation.
         current = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
         if current.get("prepared_generation"):
             result["prepared_generation"] = current["prepared_generation"]
+            actual = result.get("active_generation") or {}
+            if (not result["chat_ready"] and result.get("active_generation_verified")
+                    and actual.get("public_registry_revision") == revision
+                    and actual.get("generation_id") == current["prepared_generation"].get("generation_id")):
+                result = {"batch_id": "public-registry", "stage": "chat_ready", "status": "chat_ready", "chat_ready": True,
+                    "generation_id": actual["generation_id"], "public_registry_revision": revision,
+                    "active_generation": actual, "active_generation_verified": True, "observed_at": _now(),
+                    "prepared_generation": current["prepared_generation"]}
         atomic_write_json(receipt, result)
         return result
 
@@ -958,6 +1008,14 @@ class PdfIntakePipeline:
             if status.get("stage") == "pending_review":
                 with sqlite3.connect(f"{self.database.resolve().as_uri()}?mode=ro", uri=True) as connection:
                     ready_review = not _pending_pdf_entities(connection, status["document_sha256"])
+                revision = public_revision(self.database)
+                try:
+                    _, active = self._active_projection()
+                except (OSError, RuntimeError):
+                    return self.refresh_publication()
+                ready_review = ready_review or revision != status.get("target_public_registry_revision") or (
+                    (active or {}).get("public_registry_revision") == revision
+                    and status.get("public_registry_revision") != revision)
             if status.get("stage") in resumable or ready_review:
                 candidates.append({**status, "projection_kind": "pdf"})
         for status_path in sorted((self.queue_dir / "web").glob("*/status.json")):
