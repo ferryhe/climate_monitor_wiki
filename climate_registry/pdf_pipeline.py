@@ -82,6 +82,7 @@ def enqueue_pdf_batch(
     bundle: dict[str, Any],
     *,
     repository_root: Path,
+    authorization: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Durably enqueue one already parsed PDF without touching the Registry."""
     queue = _external(queue_dir, repository_root)
@@ -95,30 +96,38 @@ def enqueue_pdf_batch(
     batch = queue / batch_id
     batch.mkdir(exist_ok=True)
     bundle_path, status_path = batch / "bundle.json", batch / "status.json"
-    if not bundle_path.exists():
-        atomic_write_json(bundle_path, bundle)
-    if status_path.exists():
-        return read_pdf_batch(queue, batch_id)
+    with transaction_lock(batch, "status", wait=True):
+        if not bundle_path.exists():
+            atomic_write_json(bundle_path, bundle)
+        if status_path.exists():
+            if authorization is not None:
+                status = read_pdf_batch(queue, batch_id)
+                if "author_authorization" not in status:
+                    status.pop("author", None)
+                    atomic_write_json(status_path, {**status, "author_authorization": authorization})
+            return read_pdf_batch(queue, batch_id)
 
-    now = _now()
-    status = {
-        "batch_id": batch_id,
-        "stage": "queued",
-        "imported": False,
-        "indexed": False,
-        "chat_ready": False,
-        "error": None,
-        "failure_history": [],
-        "attempts": 0,
-        "document_sha256": documents[0]["source"]["sha256"],
-        "created_at": now,
-        "updated_at": now,
-    }
-    if "source_coverage" in bundle:
-        from climate_monitor.pdf_intake import source_coverage_status
-        status["source_coverage"] = source_coverage_status(bundle["source_coverage"])
-    atomic_write_json(status_path, status)
-    return status
+        now = _now()
+        status = {
+            "batch_id": batch_id,
+            "stage": "queued",
+            "imported": False,
+            "indexed": False,
+            "chat_ready": False,
+            "error": None,
+            "failure_history": [],
+            "attempts": 0,
+            "document_sha256": documents[0]["source"]["sha256"],
+            "created_at": now,
+            "updated_at": now,
+        }
+        if authorization is not None:
+            status["author_authorization"] = authorization
+        if "source_coverage" in bundle:
+            from climate_monitor.pdf_intake import source_coverage_status
+            status["source_coverage"] = source_coverage_status(bundle["source_coverage"])
+        atomic_write_json(status_path, status)
+        return status
 
 
 def read_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
@@ -132,7 +141,25 @@ def read_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
         raise FileNotFoundError("PDF batch was not found") from exc
     if not isinstance(value, dict) or value.get("batch_id") != batch_id:
         raise ValueError("invalid PDF batch status")
+    author_path = _batch_dir(queue_dir, batch_id) / "author" / "status.json"
+    if author_path.is_file():
+        from .pdf_author import read_status
+        value["author"] = read_status(queue_dir, batch_id)
     return value
+
+
+def _save_pdf_batch_status(queue_dir: Path, batch_id: str, status: dict[str, Any], **changes: Any) -> dict[str, Any]:
+    with transaction_lock(_batch_dir(queue_dir, batch_id), "status", wait=True):
+        current = read_pdf_batch(queue_dir, batch_id)
+        status.pop("author", None)
+        status.update(changes, updated_at=_now())
+        # Confirmation may finish while the writer owns an older intake snapshot.
+        if "author_authorization" in current:
+            status["author_authorization"] = current["author_authorization"]
+        else:
+            status.pop("author_authorization", None)
+        atomic_write_json(_batch_dir(queue_dir, batch_id) / "status.json", status)
+        return status
 
 
 def list_pdf_batches(queue_dir: Path) -> dict[str, Any]:
@@ -193,9 +220,7 @@ def retry_pdf_batch(queue_dir: Path, batch_id: str) -> dict[str, Any]:
             ):
                 history.append(failure)
             status["failure_history"] = history
-        status.update(stage="queued", error=None, updated_at=_now())
-        atomic_write_json(_batch_dir(queue_dir, batch_id) / "status.json", status)
-        return status
+        return _save_pdf_batch_status(queue_dir, batch_id, status, stage="queued", error=None)
 
 
 def load_active_projection(
@@ -497,9 +522,7 @@ class PdfIntakePipeline:
             raise RuntimeError("Chat reload did not activate the requested PDF Wiki projection")
 
     def _save(self, batch_id: str, status: dict[str, Any], **changes: Any) -> dict[str, Any]:
-        status.update(changes, updated_at=_now())
-        atomic_write_json(_batch_dir(self.queue_dir, batch_id) / "status.json", status)
-        return status
+        return _save_pdf_batch_status(self.queue_dir, batch_id, status, **changes)
 
     def _build_generation(
         self,
@@ -563,6 +586,30 @@ class PdfIntakePipeline:
     def process(self, batch_id: str) -> dict[str, Any]:
         with transaction_lock(self.queue_dir, "intake-writer"):
             return self._process_unlocked(batch_id)
+
+    def bind_author_database(self, batch_id: str) -> None:
+        with transaction_lock(self.queue_dir, "intake-writer"):
+            status = read_pdf_batch(self.queue_dir, batch_id)
+            _validate_pdf_binding(status, self.database)
+            if not status.get("registry_database"):
+                self._save(batch_id, status, registry_database=str(self.database.resolve()))
+
+    def persist_author_coverage(self, batch_id: str, task_id: str, bundle: dict[str, Any]) -> None:
+        """The existing intake writer owns coverage writes, never the model process."""
+        with transaction_lock(self.queue_dir, "intake-writer"):
+            status = read_pdf_batch(self.queue_dir, batch_id)
+            _validate_pdf_binding(status, self.database)
+            if task_id in status.get("author_coverage_tasks", []):
+                return
+            # The adapter validated the unchanged original bundle and its appended judgments.
+            for article in bundle.get("articles", []):
+                for occurrence in article.get("occurrences", []):
+                    occurrence["management_batch_id"] = batch_id
+            persist_pdf_intake(self.database, self.backup_dir, bundle)
+            from climate_monitor.pdf_intake import source_coverage_status
+            self._save(batch_id, status, imported=True, registry_database=str(self.database),
+                source_coverage=source_coverage_status(bundle["source_coverage"]),
+                author_coverage_tasks=[*status.get("author_coverage_tasks", []), task_id])
 
     def _process_unlocked(self, batch_id: str) -> dict[str, Any]:
         status = read_pdf_batch(self.queue_dir, batch_id)

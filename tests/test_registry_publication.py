@@ -2102,12 +2102,14 @@ def test_writer_reload_rejects_unbounded_or_invalid_wait_before_request(monkeypa
     with pytest.raises(ValueError): entry._reload_chat("expected")
 
 
-def test_writer_pending_review_obeys_poll_interval(monkeypatch):
+def test_writer_pending_review_obeys_poll_interval(monkeypatch,tmp_path):
     from scripts import run_pdf_intake_writer as entry
     from types import SimpleNamespace
     import sys
     monkeypatch.setattr(sys,"argv",["writer","--poll-seconds","0.2"])
-    monkeypatch.setattr(entry,"_pipeline",lambda:SimpleNamespace(process_next=lambda:{"batch_id":"pending","stage":"pending_review","chat_ready":False}))
+    queue=tmp_path/"queue";queue.mkdir()
+    monkeypatch.setattr(entry,"_pipeline",lambda:SimpleNamespace(queue_dir=queue,database=tmp_path/"registry.sqlite3",
+        process_next=lambda:{"batch_id":"pending","stage":"pending_review","chat_ready":False}))
     pauses=[]
     def pause(seconds):
         pauses.append(seconds)

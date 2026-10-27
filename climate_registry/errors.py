@@ -12,3 +12,7 @@ class RegistryBuildError(RegistryError):
 
 class RegistryLockError(RegistryError):
     """Raised when a persistent registry update is already in progress."""
+
+
+class AuthoringInterrupted(RegistryError):
+    """Inference stopped before a terminal source judgment; resume its frozen run."""
