@@ -723,7 +723,7 @@ def test_public_candidates_include_only_visible_exact_approved_versions(tmp_path
     assert {item["article_id"] for item in reader.articles()["items"]} == {"a"}
 
 
-def _approve_native_packet(database,root,hermes,session,*,statuses=None):
+def _approve_native_packet(database,root,hermes,session,*,statuses=None,entity_ids=None):
     from climate_registry.publication import prepare_review,review_candidates
     from climate_registry.acquisition_review import claim_review
     _complete_fixture_information(database)
@@ -738,7 +738,7 @@ def _approve_native_packet(database,root,hermes,session,*,statuses=None):
             db.execute("INSERT INTO messages(session_id,role,tool_calls) VALUES(?,'assistant',?)",(session,json.dumps([{"id":call,"function":{"name":"read_file","arguments":json.dumps({"path":path})}}])))
             db.execute("INSERT INTO messages(session_id,role,tool_call_id,content) VALUES(?,'tool',?,?)",(session,call,Path(path).read_text(encoding="utf-8")))
     claim=claim_review(root,packet,session_id=session,execution_id=session,hermes_database=hermes,reviewer="native-test")
-    return review_candidates(root,claim["token"],{item["candidate_sha256"]:{"candidate_sha256":item["candidate_sha256"],"status":(statuses or {}).get(item["entity_id"],"pass"),"reason":"Actual full snapshot review conclusion"} for item in packet["candidates"]})
+    return review_candidates(root,claim["token"],{item["candidate_sha256"]:{"candidate_sha256":item["candidate_sha256"],"status":(statuses or {}).get(item["entity_id"],"pass"),"reason":"Actual full snapshot review conclusion"} for item in packet["candidates"] if entity_ids is None or item["entity_id"] in entity_ids})
 
 
 @pytest.mark.skipif(os.name == "nt", reason="governed acquisition fixtures require POSIX fcntl")
@@ -857,6 +857,125 @@ def _actual_chat_activation(monkeypatch, database, application, queue, runtime):
     return responder, reload
 
 
+@pytest.mark.skipif(os.name == "nt", reason="real PDF writer and Chat activation require POSIX locking")
+@pytest.mark.parametrize("existing_held", [False, True])
+def test_pdf_approved_subset_activates_while_batch_waits_and_release_is_incremental(tmp_path, monkeypatch, existing_held):
+    from reportlab.pdfgen.canvas import Canvas
+    from climate_monitor.pdf_intake import import_pdf_reports
+    from climate_registry import pdf_pipeline as pipeline
+    from climate_registry.publication import public_revision, export_public_snapshot
+    from agentic_wiki.chat_evidence import EvidenceTurn
+    source = tmp_path / "mixed.pdf"
+    canvas = Canvas(str(source))
+    canvas.drawString(50, 760, "Climate Risk Outlook"); canvas.showPage()
+    for identity in ("independent", "held"):
+        canvas.drawString(50, 760, "UPDATES")
+        canvas.drawString(50, 740, identity + " climate insurance study")
+        canvas.drawString(50, 720, "REPORT COVERAGE")
+        canvas.drawString(50, 700, identity + " transition insurance evidence and scenarios.")
+        canvas.linkURL("https://pdf.example/" + identity, (48, 738, 360, 754), relative=0)
+        canvas.showPage()
+    canvas.save()
+    bundle = import_pdf_reports([source])
+    assert len(bundle["articles"]) == 2
+    ids = {item["canonical_url"].rsplit("/", 1)[-1]: item["article_id"] for item in bundle["articles"]}
+    occurrences = {item["article_id"]: {row["occurrence_id"] for row in item["occurrences"]} for item in bundle["articles"]}
+    database = tmp_path / "registry.sqlite3"
+    with sqlite3.connect(database) as db: apply_migrations(db)
+    application = tmp_path / "application"; application.mkdir()
+    queue, runtime, runs = (tmp_path / name for name in ("queue", "runtime", "runs"))
+    for directory in (queue, runtime, runs): directory.mkdir()
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setenv("CLIMATE_ACQUISITION_RUN_DIR", str(runs))
+    queued = pipeline.enqueue_pdf_batch(queue, bundle, repository_root=application)
+    responder, reload = _actual_chat_activation(monkeypatch, database, application, queue, runtime)
+    reloads = []
+    def activate(generation):
+        reload(generation); reloads.append(generation)
+    def writer(callback=activate):
+        return pipeline.PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, callback, repository_root=application)
+    assert writer().process_next()["stage"] == "pending_review"
+    held_sha = None
+    if existing_held:
+        _approve_native_packet(database, runs / "registry-review", tmp_path / "prior-hermes.sqlite3", "cron_prior",
+            entity_ids={ids["held"]})
+        with sqlite3.connect(database) as db:
+            held_sha = db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_id=?", (ids["held"],)).fetchone()[0]
+            snapshot = snapshot_entity(db, "pdf_article", ids["held"])
+            snapshot["derived_display"] = {"summary": "PRIVATE held replacement summary"}
+            stage_snapshot(db, snapshot)
+    _approve_native_packet(database, runs / "registry-review", tmp_path / "subset-hermes.sqlite3", "cron_subset",
+        statuses={ids["held"]: "needs_correction"})
+    revision = public_revision(database)
+    subset = writer().process(queued["batch_id"])
+    assert subset["stage"] == "pending_review" and subset["chat_ready"] and subset["indexed"], subset
+    assert subset["pending_review_count"] == 1 and subset["source_batch_complete"] is False
+    assert subset["public_registry_revision"] == revision == responder.kb.public_registry_revision
+    active_path, active = writer()._active_projection()
+    manifest = pipeline.load_projection_manifest(active_path, active)
+    expected = occurrences[ids["independent"]] | (occurrences[ids["held"]] if existing_held else set())
+    assert set(manifest["pdf_occurrence_ids"]) == expected
+    assert subset["generation_id"] == active["generation_id"] and subset["manifest_sha256"] == active["manifest_sha256"]
+    assert pipeline.approved_projection_snapshot(runtime, active, database=database) is not None
+    assert "PRIVATE" not in "\n".join(doc.markdown for doc in responder.kb.documents)
+    reader = _reader(database, tmp_path)
+    assert {item["article_id"] for item in reader.pdf_articles_all(include_linked=True)} == ({ids["independent"], ids["held"]} if existing_held else {ids["independent"]})
+    if existing_held:
+        assert reader.pdf_article(ids["held"])["published_candidate_sha256"] == held_sha
+    else:
+        with pytest.raises(RegistryNotFoundError): reader.pdf_article(ids["held"])
+    report = reader.pdf_report(bundle["documents"][0]["source"]["sha256"])
+    assert {item["article_id"] for item in report["articles"]} == ({ids["independent"], ids["held"]} if existing_held else {ids["independent"]})
+    assert "PRIVATE" not in json.dumps(report)
+    exported = tmp_path / "public.json"; export_public_snapshot(database, exported)
+    assert "PRIVATE" not in exported.read_text(encoding="utf-8")
+    import api_server
+    from fastapi.testclient import TestClient
+    client = TestClient(api_server.app)
+    assert client.get("/api/registry/pdf-intake/articles/" + ids["independent"]).status_code == 200
+    assert client.get("/api/registry/pdf-intake/articles/" + ids["held"]).status_code == (200 if existing_held else 404)
+    evidence = EvidenceTurn(responder.chat_evidence, "insurance", "", []).reader()
+    assert evidence.pdf_article(ids["independent"])["article_id"] == ids["independent"]
+    with sqlite3.connect(database) as db:
+        imported = db.execute("SELECT count(*) FROM pdf_intake_article_occurrences").fetchone()[0]
+        reviews = db.execute("SELECT count(*) FROM registry_reviews").fetchone()[0]
+        independent_sha = db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_id=?", (ids["independent"],)).fetchone()[0]
+    monkeypatch.setattr(pipeline, "persist_pdf_intake", lambda *args: pytest.fail("retry reimported approved PDF"))
+    pointer = (queue / "active.json").read_bytes()
+    assert writer().process(queued["batch_id"])["generation_id"] == subset["generation_id"]
+    assert writer().process_next() is None
+    assert (queue / "active.json").read_bytes() == pointer and len(reloads) == 1
+    inaccessible = writer()
+    def cannot_observe(): raise OSError("actual generation is unavailable")
+    monkeypatch.setattr(inaccessible, "_active_projection", cannot_observe)
+    uncertain = inaccessible.process_next()
+    assert uncertain["active_generation_verified"] is False and not uncertain["chat_ready"]
+    assert writer().process_next()["generation_id"] == subset["generation_id"]
+    assert (queue / "active.json").read_bytes() == pointer and len(reloads) == 1
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM registry_reviews").fetchone()[0] == reviews
+        # A revised held candidate still cannot create a new public revision.
+        snapshot = snapshot_entity(db, "pdf_article", ids["held"])
+        snapshot["derived_display"] = {"summary": "PRIVATE revised held candidate"}
+        stage_snapshot(db, snapshot)
+    assert public_revision(database) == revision and writer().process_next() is None
+    # Releasing the held entity uses the native review primitive and only adds its approved scope.
+    _approve_native_packet(database, runs / "registry-review", tmp_path / "release-hermes.sqlite3", "cron_release")
+    released = writer().process_next()
+    assert released["stage"] == "chat_ready" and released["source_batch_complete"] is True
+    assert released["pending_review_count"] == 0 and released["chat_ready"]
+    assert released["public_registry_revision"] == public_revision(database) != revision
+    active_path, active = writer()._active_projection()
+    manifest = pipeline.load_projection_manifest(active_path, active)
+    assert set(manifest["pdf_occurrence_ids"]) == set().union(*occurrences.values())
+    assert released["generation_id"] != subset["generation_id"] and len(reloads) == 2
+    assert responder.kb.public_registry_revision == released["public_registry_revision"]
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM pdf_intake_article_occurrences").fetchone()[0] == imported
+        assert db.execute("SELECT published_candidate_sha256 FROM registry_publication WHERE entity_id=?", (ids["independent"],)).fetchone()[0] == independent_sha
+    assert writer().process_next() is None
+
+
 def _assert_queued_chat_stays_activated(writer, responder, database, queue):
     from climate_registry.publication import public_revision
     active = (queue / "active.json").read_bytes()
@@ -908,6 +1027,51 @@ def test_new_web_and_search_writer_wait_for_native_approval(tmp_path,monkeypatch
     assert _reader(database,tmp_path).articles()["pagination"]["total"] == 1
     assert any("Evidence" in page.read_text(encoding="utf-8") for page in (runtime/"generations"/ready["generation_id"]).glob("article-*.md"))
     _assert_queued_chat_stays_activated(writer, responder, database, queue)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="governed acquisition fixtures require POSIX fcntl")
+@pytest.mark.parametrize("source_kind", ["site", "search"])
+def test_pending_web_batch_already_uses_shared_approved_revision_refresh(tmp_path, monkeypatch, source_kind):
+    from test_issue112_acquisition import _batch, _item
+    from climate_registry.acquisition import store_acquisition_batch, freeze_acquisition_for_report
+    from climate_registry.web_ingest_pipeline import enqueue_web_activation
+    from climate_registry.pdf_pipeline import PdfIntakePipeline
+    from climate_registry.publication import public_revision
+    database = tmp_path / "registry.sqlite3"
+    with sqlite3.connect(database) as db: apply_migrations(db)
+    application = tmp_path / "application"; application.mkdir()
+    queue, runtime, runs = (tmp_path / name for name in ("queue", "runtime", "runs"))
+    for directory in (queue, runtime, runs): directory.mkdir()
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    monkeypatch.setenv("CLIMATE_ACQUISITION_RUN_DIR", str(runs))
+    items = [_item(url="https://example.org/" + identity, discovery_kind=source_kind,
+        discovery_ref="result-1" if source_kind == "search" else "site-1",
+        discovery_search_ref="search-1" if source_kind == "search" else None) for identity in ("independent", "held")]
+    payload = _batch(items)
+    store_acquisition_batch(database, payload)
+    frozen = freeze_acquisition_for_report(database, payload["batch_id"], report_date=payload["report_date"])
+    enqueue_web_activation(queue, database, payload["batch_id"], frozen_payload_sha256=digest(frozen), repository_root=application)
+    responder, reload = _actual_chat_activation(monkeypatch, database, application, queue, runtime)
+    writer = PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, reload, repository_root=application)
+    assert writer.process_next()["stage"] == "pending_review"
+    with sqlite3.connect(database) as db:
+        held = db.execute("SELECT article_id FROM acquisition_items WHERE raw_url='https://example.org/held'").fetchone()[0]
+    _approve_native_packet(database, runs / "registry-review", tmp_path / "hermes.sqlite3", "cron_web_subset",
+        statuses={held: "needs_correction"})
+    ready = writer.process_next()
+    assert ready["batch_id"] == "public-registry" and ready["chat_ready"]
+    assert responder.kb.public_registry_revision == public_revision(database) == ready["public_registry_revision"]
+    approved, = _reader(database, tmp_path).articles()["items"]
+    assert approved["article_id"] != held
+    assert "article-" + approved["article_id"] + ".md" in {doc.file for doc in responder.kb.documents}
+    assert "article-" + held + ".md" not in {doc.file for doc in responder.kb.documents}
+    import api_server
+    from fastapi.testclient import TestClient
+    client = TestClient(api_server.app)
+    assert client.get("/api/registry/articles/" + approved["article_id"]).status_code == 200
+    assert client.get("/api/registry/articles/" + held).status_code == 404
+    assert client.get("/wiki/article-" + approved["article_id"] + ".md").status_code == 200
+    assert writer.process_next() is None
 
 
 @pytest.mark.skipif(os.name == "nt", reason="governed acquisition fixtures require POSIX fcntl")
@@ -1297,6 +1461,43 @@ def test_public_refresh_prepared_generation_survives_restart_and_invalidates_cha
         writer().process_next()
 
 
+@pytest.mark.parametrize("interruption", [TimeoutError, SystemExit])
+def test_public_refresh_records_actual_switch_after_lost_confirmation_without_replay(tmp_path, monkeypatch, interruption):
+    from climate_registry import pdf_pipeline as pipeline
+    from climate_delivery.io import atomic_write_json
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db): _approve(db, sha, {"basis": "approved recovery fixture"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    def acknowledge(generation):
+        atomic_write_json(queue / "active.json", json.loads((queue / "pending.json").read_text()))
+    def writer(callback=acknowledge):
+        return pipeline.PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, callback, repository_root=application)
+    assert writer().process_next()["chat_ready"]
+    set_visibility(database, "article", "a", False)
+    def lose_confirmation(generation):
+        acknowledge(generation)
+        raise interruption("confirmation lost after the actual Chat switch")
+    if interruption is SystemExit:
+        with pytest.raises(SystemExit): writer(lose_confirmation).process_next()
+        prepared = json.loads((queue / "public-refresh.json").read_text())["prepared_generation"]
+        monkeypatch.setattr(pipeline, "_snapshot_registry", lambda *args: pytest.fail("reconciliation rebuilt a switched generation"))
+        recovered = writer(lambda generation: pytest.fail("reconciliation replayed a switched generation")).process_next()
+        assert recovered["chat_ready"] and recovered["generation_id"] == prepared["generation_id"]
+    else:
+        recovered = writer(lose_confirmation).process_next()
+        assert recovered["chat_ready"]
+    active = json.loads((queue / "active.json").read_text())
+    receipt = json.loads((queue / "public-refresh.json").read_text())
+    assert receipt["chat_ready"] and receipt["generation_id"] == active["generation_id"]
+    assert receipt["active_generation"]["generation_id"] == active["generation_id"]
+    assert receipt["active_generation_verified"] is True
+    assert writer().process_next() is None
+
+
 @pytest.mark.skipif(os.name != "posix", reason="real process death and flock are POSIX contracts")
 @pytest.mark.parametrize("exit_mode", ["exit", "kill"])
 def test_public_refresh_recovers_prepared_generation_after_real_process_death(tmp_path, monkeypatch, exit_mode):
@@ -1339,6 +1540,60 @@ raise AssertionError('reload interruption was not reached')
     resumed = writer().process_next()
     assert resumed["chat_ready"] and resumed["generation_id"] == prepared["generation_id"]
     assert {str(path): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == files
+
+
+@pytest.mark.parametrize("unreadable", [False, True, "transient"])
+def test_public_refresh_distinguishes_old_active_from_unverified_switch(tmp_path, monkeypatch, unreadable):
+    from climate_registry import pdf_pipeline as pipeline
+    from climate_delivery.io import atomic_write_json
+    database = _database(tmp_path, version=24)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db): _approve(db, sha, {"basis": "approved confirmation fixture"}, status="accepted_legacy")
+    monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+    application = tmp_path / "application"; application.mkdir()
+    queue = tmp_path / "queue"; queue.mkdir()
+    runtime = tmp_path / "runtime"; runtime.mkdir()
+    def acknowledge(generation):
+        atomic_write_json(queue / "active.json", json.loads((queue / "pending.json").read_text()))
+    writer = pipeline.PdfIntakePipeline(queue, database, tmp_path / "backups", runtime, acknowledge, repository_root=application)
+    assert writer.process_next()["chat_ready"]
+    old = json.loads((queue / "active.json").read_text())
+    set_visibility(database, "article", "a", False)
+    observe = writer._active_projection
+    inaccessible = [False]
+    def actual():
+        if inaccessible[0]:
+            if unreadable == "transient": inaccessible[0] = False
+            raise OSError("actual generation is temporarily unreadable")
+        return observe()
+    monkeypatch.setattr(writer, "_active_projection", actual)
+    def uncertain(generation):
+        if unreadable:
+            acknowledge(generation)
+            inaccessible[0] = True
+        raise TimeoutError("reload confirmation unavailable")
+    writer.reload_chat = uncertain
+    failed = writer.process_next()
+    if unreadable == "transient":
+        assert failed["chat_ready"] and failed["active_generation_verified"]
+        assert failed["generation_id"] == failed["prepared_generation"]["generation_id"]
+        writer.reload_chat = lambda generation: pytest.fail("a confirmed switch was replayed")
+        assert writer.process_next() is None
+        return
+    assert not failed["chat_ready"] and failed["stage"] == "failed"
+    assert failed["active_generation_verified"] is (not unreadable)
+    assert failed["last_confirmed_generation"]["generation_id"] == old["generation_id"]
+    if unreadable:
+        assert failed["active_generation"] is None
+    else:
+        assert failed["active_generation"]["generation_id"] == old["generation_id"]
+    inaccessible[0] = False
+    if unreadable:
+        writer.reload_chat = lambda generation: pytest.fail("unknown outcome replayed an already switched target")
+        recovered = writer.process_next()
+        assert recovered["chat_ready"] and recovered["generation_id"] == failed["prepared_generation"]["generation_id"]
+    else:
+        assert json.loads((queue / "active.json").read_text()) == old
 
 
 @pytest.mark.skipif(os.name != "posix", reason="cross-process flock is a POSIX contract")
@@ -1641,7 +1896,7 @@ def test_new_pdf_writer_waits_for_native_review_and_then_resumes(tmp_path,monkey
     _assert_queued_chat_stays_activated(writer, responder, database, queue)
 
 
-@pytest.mark.parametrize("retry",[False,True])
+@pytest.mark.parametrize("retry",[False,True,"direct"])
 def test_imported_pdf_continuation_rejects_another_database_without_mutation(tmp_path,monkeypatch,retry):
     import gc
     from test_issue176_chat_ready_pipeline import _setup,_ack_activation
@@ -1684,9 +1939,9 @@ def test_imported_pdf_continuation_rejects_another_database_without_mutation(tmp
         assert database.read_bytes()==before_a and other.read_bytes()==before_b
         assert files()==before
     monkeypatch.setenv("CLIMATE_REGISTRY_DB",str(database))
-    if retry:assert retry_pdf_batch(queue,queued["batch_id"])["stage"]=="queued"
+    if retry is True:assert retry_pdf_batch(queue,queued["batch_id"])["stage"]=="queued"
     same=PdfIntakePipeline(queue,database,tmp_path/"backups",runtime,_ack_activation(queue),repository_root=application)
-    assert same.process_next()["chat_ready"]
+    assert (same.process(queued["batch_id"]) if retry == "direct" else same.process_next())["chat_ready"]
 
 
 @pytest.mark.parametrize("historical_missing_binding",[False,"processing","failed","queued"])
