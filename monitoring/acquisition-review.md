@@ -68,8 +68,22 @@ cron. T5 reviews generated report PDFs downstream, not intake PDFs.
 When peek selects `target=registry-review`, claim and submit with the same
 acquisition commands. Read each `snapshot_path` or supplied `snapshot_view.path`
 in full. The snapshot includes exact body, enrichment, source identity, dates,
-categories and metadata. Submit conclusions keyed by candidate SHA, each with
-`candidate_sha256`, `status` and `reason`. The automatic final checks verify the
+categories and metadata. Read the packet's complete frozen `enrichment_contract`
+alongside that snapshot: source/read evidence, full new body and summary,
+each supported update note, dates and their precision, taxonomy bindings,
+`content_comparison_baseline` and `approval_inheritance_baseline`. Check that
+the candidate, body, summary, update note and date evidence describe the same
+version. Keep unknown comparisons explicitly unknown. An explicit owner date
+override retains its authority and reason; do not request source-date verification
+or repeat owner approval for that date. New agent-authored summary/update notes
+still need this independent full-content review.
+
+Submit conclusions keyed by candidate SHA, each with `candidate_sha256`, `status`
+and `reason`. For an enrichment scope other than `publication_date_only`, also
+return the exact supplied `enrichment_contract_sha256` unchanged, confirming that
+the complete frozen contract was reviewed. The existing `publication_date_only`
+exception retains its narrow date scope and inherited approved content; it does
+not require G7/G9 or a new source-fact review. The automatic final checks verify the
 native session/read evidence and recheck the current candidate SHA under the
 shared database lock before changing its public pointer. No generated receipt
 can stand in for an actual native review.
@@ -79,6 +93,16 @@ approved items can publish. An existing approved version remains readable during
 later improvement. `is_visible=false` excludes that canonical identity across
 all public consumers. The existing writer regenerates the same approved
 projection after publication; historical sources and archived reports are fixed.
+
+After submission, use the existing acquisition `activate` command with
+`--target registry-review`. Its `approved_candidates` identifies only this
+packet's successful current approvals; `public_revision` binds those results to
+one exact Registry snapshot for G1/G5. A missing approval, old PASS or pending
+candidate cannot authorize new public content. `downstream_sync_status=not_checked`
+does not prove G5 completion. A display-refresh failure rolls back Registry
+approval; after successful approval, retry downstream failures through the
+existing writer without replaying approval. Recheck the current revision before
+consuming the handoff if other publication work has since completed.
 
 
 T10 approval does not substitute for effective source-bound T1 verification.
