@@ -86,12 +86,18 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
                 (entity_ids.get(kind, ()) if isinstance(entity_ids, dict) else entity_ids)}
             from .identity import selected_entities
             selected = selected_entities(all_views, selected)
+            selected |= {key for key, view in all_views.items() if
+                (view.get("_publication_reference", {}).get("entity_kind"),
+                 view.get("_publication_reference", {}).get("entity_id")) in selected}
         return {key: value for key, value in all_views.items()
-            if key in visible and key[0] in kinds and (selected is None or key in selected)}
+            if ((value.get("_publication_reference", {}).get("entity_kind", key[0]),
+                 value.get("_publication_reference", {}).get("entity_id", key[1])) in visible)
+            and key[0] in kinds and (selected is None or key in selected)}
     if not kinds:
         return {}
-    params = list(kinds)
-    where = "p.entity_kind IN (" + ",".join("?" for _ in kinds) + ")"
+    query_kinds = tuple(sorted(set(kinds) | ({"article"} if apply_policy and "pdf_article" in kinds else set())))
+    params = list(query_kinds)
+    where = "p.entity_kind IN (" + ",".join("?" for _ in query_kinds) + ")"
     if entity_ids is not None:
         if isinstance(entity_ids, dict):
             filters = []
@@ -100,6 +106,10 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
                 if values:
                     filters.append("(p.entity_kind=? AND p.entity_id IN (" + ",".join("?" for _ in values) + "))")
                     params.extend((kind, *values))
+            pdf_ids = tuple(sorted(set(entity_ids.get("pdf_article", ())))) if apply_policy and "pdf_article" in kinds else ()
+            if pdf_ids:
+                filters.append("(p.entity_kind='article' AND EXISTS (SELECT 1 FROM json_each(c.snapshot_json,'$.tables.pdf_intake_articles') pdf WHERE json_extract(pdf.value,'$.article_id') IN (" + ",".join("?" for _ in pdf_ids) + ")))" )
+                params.extend(pdf_ids)
             if not filters:
                 return {}
             where += " AND (" + " OR ".join(filters) + ")"
@@ -124,11 +134,14 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
         WHERE {where} ORDER BY p.entity_kind,p.entity_id""", params)
     snapshots = {}
     visibility = {}
+    published_entities = set()
     candidate_bindings = {}
     strings = {}
     for row in rows:
         key = (row[0], row[1])
         visibility[key] = bool(row[2])
+        if row[3] is not None:
+            published_entities.add(key)
         if (not row[2] and not include_hidden) or row[3] is None:
             continue
         if row[4] != row[3] or row[5] != row[0] or row[6] != row[1] or not row[8]:
@@ -150,6 +163,11 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
         candidate_bindings[key] = row[3]
         snapshots[key] = snapshot
 
+    if apply_policy:
+        from .verification import evaluate_snapshot, canonical_target, permitted_view, review_context
+        reviews = review_context(connection)
+        verdicts = {key: evaluate_snapshot(value, reviews=reviews.get(candidate_bindings[key], ()), packet_cache=packet_cache,
+            candidate_binding=candidate_bindings.get(key)) for key, value in snapshots.items()}
     # Alias identity is frozen in the approved candidate dependencies. Current
     # business rows can already contain a later, unapproved association.
     for key, snapshot in list(snapshots.items()):
@@ -188,6 +206,7 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
             owners = [
                 value for owner_key, value in snapshots.items()
                 if owner_key[0] == ("article" if key[0] == "pdf_article" else "meeting")
+                and not (apply_policy and verdicts[owner_key].get("_legacy_pdf_primary"))
                 and observed <= {
                     row.get("occurrence_id")
                     for row in value.get("tables", {}).get(table, [])
@@ -205,9 +224,6 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
         if observed <= canonical_observed:
             del snapshots[key]
     if apply_policy:
-        from .verification import evaluate_snapshot, canonical_target, permitted_view, review_context
-        reviews = review_context(connection)
-        verdicts = {key: evaluate_snapshot(value, reviews=reviews.get(candidate_bindings[key], ()), packet_cache=packet_cache, candidate_binding=candidate_bindings.get(key)) for key, value in snapshots.items()}
         permitted = {}
         for key, snapshot in snapshots.items():
             target = canonical_target(snapshot)
@@ -218,9 +234,14 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
             target_verdict = verdicts.get(target) or (evaluate_snapshot(target_snapshot, reviews=reviews.get(digest(target_snapshot), ()), packet_cache=packet_cache, candidate_binding=digest(target_snapshot)) if target_snapshot else None)
             view = permitted_view(snapshot, verdicts[key], target_snapshot, target_verdict)
             if view is not None:
-                permitted[key] = view
+                public_key = (view["entity_kind"], view["entity_id"])
+                if view.get("_publication_reference") and public_key in published_entities:
+                    continue  # A real PDF publication/hold supersedes the retained Article-scope projection.
+                if public_key in permitted:
+                    raise ValueError("published source scope has multiple public owners")
+                permitted[public_key] = view
         from .identity import reconcile_approved_views
-        return reconcile_approved_views(permitted)
+        return {key: view for key, view in reconcile_approved_views(permitted).items() if key[0] in kinds}
     return snapshots
 
 
@@ -912,12 +933,14 @@ def public_connection(source):
         has_identity = source.execute("""SELECT 1 FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
             WHERE json_type(c.snapshot_json,'$.identity_correction')='object'
                 OR json_type(c.snapshot_json,'$.approved_identity_history')='array' LIMIT 1""").fetchone()
-        approved_views = published_snapshots(source, tuple(ENTITY_TABLES)) if has_identity else None
+        needs_pdf_ownership = any(verdict.get("_legacy_pdf_primary") for verdict in verdicts.values())
+        approved_views = published_snapshots(source, tuple(ENTITY_TABLES)) if has_identity or needs_pdf_ownership else None
+        approved_by_sha = {view["_approved_candidate_sha256"]: view for view in approved_views.values()} if approved_views is not None else None
         for sha, encoded in source.execute(selected_sql):
             snapshot = _load_snapshot_json(encoded, {})
             if digest(snapshot) != sha:
                 raise ValueError("published Registry snapshot hash differs")
-            if approved_views is not None and (snapshot["entity_kind"], snapshot["entity_id"]) not in approved_views:
+            if approved_by_sha is not None and sha not in approved_by_sha:
                 continue
             canonical = canonical_entity(source, snapshot["entity_kind"], snapshot["entity_id"])
             if canonical != (snapshot["entity_kind"], snapshot["entity_id"]):
@@ -932,7 +955,7 @@ def public_connection(source):
                     continue
             key = (snapshot["entity_kind"], snapshot["entity_id"])
             target = canonical_target(snapshot)
-            snapshot = approved_views.get(key) if approved_views is not None else permitted_view(snapshot, verdicts[key], references.get(target), verdicts.get(target))
+            snapshot = approved_by_sha.get(sha) if approved_by_sha is not None else permitted_view(snapshot, verdicts[key], references.get(target), verdicts.get(target))
             if snapshot is None:
                 continue
             projection.execute("INSERT INTO public_snapshot_metadata VALUES(?,?,?)", (snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot, ensure_ascii=False)))

@@ -701,6 +701,9 @@ class RegistryReader:
                 if requested_ids is not None:
                     from .identity import selected_entities
                     requested_ids = selected_entities(available, requested_ids)
+                    requested_ids |= {key for key, view in available.items() if
+                        (view.get("_publication_reference", {}).get("entity_kind"),
+                         view.get("_publication_reference", {}).get("entity_id")) in requested_ids}
                 cached = {identity: snapshot for identity, snapshot in available.items()
                     if identity[0] in kinds_key and (requested_ids is None or identity in requested_ids)}
                 self._approved_snapshot_cache[key] = cached
@@ -2265,6 +2268,8 @@ class RegistryReader:
             payload["published_candidate_sha256"] = snapshot.get("_approved_candidate_sha256") or digest(snapshot)
             payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"],
                 "candidate_sha256": payload["published_candidate_sha256"], "version_id": None}
+            if snapshot.get("_publication_reference"):
+                payload["record_reference"] = deepcopy(snapshot["_publication_reference"])
         if occurrences and all(item.get("metadata_only") for item in occurrences):
             display = occurrences[0].get("verified_primary_display") or {}
             payload.update(metadata_only=True, summary=None, title=display.get("title") or payload.get("title"),
@@ -3953,6 +3958,8 @@ class RegistryReader:
             if snapshot["entity_kind"] == "article" else row["article_id"])
         payload["record_reference"] = {"entity_kind": snapshot["entity_kind"], "entity_id": reference_id,
             "candidate_sha256": payload["published_candidate_sha256"], "version_id": None}
+        if snapshot.get("_publication_reference"):
+            payload["record_reference"] = deepcopy(snapshot["_publication_reference"])
         from .article_dates import content_date_projection
         payload.update(content_date_projection(payload, date_snapshot))
         owners=_projected_pdf_occurrence_owners(snapshot)
