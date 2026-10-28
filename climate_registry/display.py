@@ -12,7 +12,7 @@ from pathlib import Path
 from .list_projection import RegistryListProjection
 from .read_api import RegistryReader, RegistryContractError, RegistryNotFoundError, RegistryQueryError, _pagination, validate_page, validate_report_date, validate_article_id, filter_pdf_articles, _pdf_article_search_text
 
-FORMAT_VERSION = 6
+FORMAT_VERSION = 7
 
 
 def _json(value):

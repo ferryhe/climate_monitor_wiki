@@ -304,6 +304,9 @@ def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_bind
                             reason = "invalid_reader_evidence"
             except (ValueError, KeyError, TypeError):
                 reason = "invalid_check_packet"
+        if (reason == "owner_public_scope_unsupported" and target["entity_kind"] == "article"
+                and packet.get("public_fields") == {}):
+            result["_owner_empty_scope"] = True
         if manual:
             result["manual_verification"] = manual
         if owner:
@@ -356,9 +359,29 @@ def evaluate_snapshot(snapshot, *, reviews=(), packet_cache=None, candidate_bind
     missing_content = inherited_content_scope(snapshot) and not content
     return {"eligible": bool(primary) and not missing_content, "primary": primary, "observations": results,
         "reviewed_content": content, "article_owner_primary": primary if owners else None,
+        "_legacy_pdf_primary": _legacy_pdf_primary(snapshot, results) if not primary and not missing_content else None,
         "reviewed_summary": _reviewed_summary(snapshot, results, reviews),
         "reasons": (["inherited_content_approval_missing"] if missing_content else []) + (sorted({reason for r in results.values() for reason in r["reasons"]}) or ([] if primary else ["no_check"]))}
 
+
+def _legacy_pdf_primary(snapshot, observations):
+    """An exact empty native owner scope can retain its separately reviewed PDF facts."""
+    if (snapshot.get("schema_version") != "registry-public-candidate.v1" or snapshot.get("entity_kind") != "article"
+            or any(key in snapshot for key in ("enrichment_scope", "identity_correction", "identity_mapping", "approved_identity_history"))):
+        return None
+    native = [item for item in observations.values() if item["entity_kind"] == "article"]
+    pdf = [item for item in observations.values() if item["entity_kind"] == "pdf_article"]
+    if (len(native) != 1 or native[0]["entity_id"] != snapshot["entity_id"]
+            or not native[0].get("_owner_empty_scope") or set(native[0]["reasons"]) != {"owner_public_scope_unsupported"}
+            or not pdf or len(native) + len(pdf) != len(observations)
+            or any(not item["verified"] or not item.get("owner_agent_verification") for item in pdf)
+            or len({item["entity_id"] for item in pdf}) != 1
+            or len({item["owner_agent_verification"]["review_id"] for item in pdf}) != 1):
+        return None
+    parent = next((row for row in snapshot["tables"].get("pdf_intake_articles", []) if row["article_id"] == pdf[0]["entity_id"]), None)
+    if not parent or parent.get("core_article_id") or parent.get("confirmation_basis"):
+        return None
+    return pdf[0]
 
 ASSOCIATION_FIELDS = {"occurrence_id", "source_document_sha256", "source_filename", "source_document", "report_date",
     "page", "raw_url", "event_id", "article_id", "source_urls", "imported_at", "summary_basis"}
@@ -834,6 +857,24 @@ def canonical_target(snapshot):
 
 
 def permitted_view(snapshot, verdict, target_snapshot=None, target_verdict=None):
+    if verdict.get("_legacy_pdf_primary"):
+        from .publication import ARTICLE_TABLES
+        primary = verdict["_legacy_pdf_primary"]
+        original = {"entity_kind": snapshot["entity_kind"], "entity_id": snapshot["entity_id"],
+            "candidate_sha256": snapshot.get("_approved_candidate_sha256") or digest(snapshot), "version_id": None}
+        scoped = {**snapshot, "entity_kind": "pdf_article", "entity_id": primary["entity_id"],
+            "_approved_candidate_sha256": original["candidate_sha256"], "derived_display": {}}
+        view = public_snapshot_view(scoped, {**verdict, "eligible": True, "primary": primary,
+            "article_owner_primary": None, "reviewed_summary": None})
+        for table in ARTICLE_TABLES:
+            if table in view["tables"]:
+                view["tables"][table] = []
+        for table in ("pdf_intake_articles", "pdf_intake_article_occurrences", "pdf_article_date_observations"):
+            if table in view["tables"]:
+                view["tables"][table] = [row for row in view["tables"][table] if row["article_id"] == primary["entity_id"]]
+        view["information_targets"] = []
+        view["_publication_reference"] = original
+        return view
     if verdict["eligible"]:
         return public_snapshot_view(snapshot, verdict)
     if target_snapshot is None or not target_verdict or not target_verdict["eligible"]:
