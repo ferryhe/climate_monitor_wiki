@@ -58,6 +58,50 @@ def _registry_sidecars(database: Path) -> list[Path]:
         if Path(str(database) + suffix).exists()]
 
 
+def test_public_snapshot_reuses_alias_map_for_metadata_and_article_reads(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit fixture approval"}, status="accepted_legacy")
+    reader = _reader(database, tmp_path)
+    with reader.public_snapshot():
+        connection = reader._snapshot_connection
+        assert isinstance(connection, sqlite3.Connection)
+        assert connection.execute("PRAGMA query_only").fetchone()[0] == 1
+        assert "identity_aliases" not in vars(connection)
+        encoded = {row[0] for row in connection.execute("SELECT snapshot_json FROM public_snapshot_metadata")}
+        real_aliases, real_loads = publication._identity_aliases, publication.json.loads
+        counts = {"alias_builds": 0, "alias_loads": 0, "alias_bytes": 0}
+        alias_depth = 0
+
+        def aliases(connection):
+            nonlocal alias_depth
+            counts["alias_builds"] += 1
+            alias_depth += 1
+            try:
+                return real_aliases(connection)
+            finally:
+                alias_depth -= 1
+
+        def loads(value, *args, **kwargs):
+            if alias_depth and isinstance(value, str) and value in encoded:
+                counts["alias_loads"] += 1
+                counts["alias_bytes"] += len(value.encode("utf-8"))
+            return real_loads(value, *args, **kwargs)
+
+        monkeypatch.setattr(publication, "_identity_aliases", aliases)
+        monkeypatch.setattr(publication.json, "loads", loads)
+        first = publication.snapshot_metadata(connection, "article", "a")
+        assert publication.snapshot_metadata(connection, "article", "a") == first
+        article = reader.article("a")
+        assert article["article_id"] == "a" and article["title"] == "Title a"
+        assert counts["alias_builds"] == 1, counts
+        assert counts["alias_loads"] == len(encoded), counts
+        assert counts["alias_bytes"] == sum(len(value.encode("utf-8")) for value in encoded), counts
+
+
 def test_public_connection_streams_approved_snapshots_without_bulk_fetch(tmp_path, monkeypatch):
     import climate_registry.publication as publication
     import weakref
