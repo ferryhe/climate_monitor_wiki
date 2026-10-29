@@ -107,6 +107,35 @@ def test_public_projection_alias_reuse_never_crosses_approval_or_revocation(tmp_
             connection.close()
 
 
+def test_public_connection_builds_identity_alias_graph_once_per_projection(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+
+    database = _seed(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO articles(article_id,canonical_url,source_id,first_seen,last_seen) VALUES('third','https://example.org/third','s','2026-09-01','2026-09-01')")
+        db.execute("INSERT INTO article_versions VALUES('v-third','third','Title third','Title third','Summary third','f-third','report-title-summary','2026-09-01','2026-09-01')")
+        db.execute("UPDATE articles SET current_version_id='v-third' WHERE article_id='third'")
+    _check(database, tmp_path, ids={"core:third"}, body="Title third. Summary third. Same climate report landing and download.")
+    _approve_all(database)
+    _merge_identity(database, tmp_path, [("article", "unchecked")])
+    original = publication._identity_aliases
+    calls = []
+
+    def counted(connection):
+        calls.append(connection)
+        return original(connection)
+
+    monkeypatch.setattr(publication, "_identity_aliases", counted)
+    with sqlite3.connect(database) as source:
+        projection = public_connection(source)
+    try:
+        assert calls == [source]
+        assert [row[0] for row in projection.execute("SELECT article_id FROM articles ORDER BY article_id")] == ["good", "third"]
+        assert projection.execute("SELECT count(*) FROM public_snapshot_metadata").fetchone()[0] == 2
+    finally:
+        projection.close()
+
+
 def test_mapping_pending_is_private_and_approved_alias_keeps_old_ids_and_receipts(tmp_path):
     database = _seed(tmp_path)
     manifest = _manifest(database, [('article', 'unchecked')])
