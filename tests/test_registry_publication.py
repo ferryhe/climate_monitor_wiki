@@ -5206,3 +5206,60 @@ def test_snapshot_pdf_sources_keep_live_source_order_and_every_source():
         {"filename":"renamed.pdf","observed_at":"2026-09-01T00:00:00Z"}]
     assert [row["path"] for row in sources] == ["/private/source.pdf","/private/z-copy.pdf"]
     assert len(sources) == 2 and dependencies == original
+
+def test_materialized_pdf_occurrence_owners_are_cached_per_public_snapshot(tmp_path, monkeypatch):
+    from climate_registry import read_api
+    from climate_registry.acquisition_review import digest
+    from test_identity_relations import _approve as approve_identity, _identity_pdf_sources, _ingest, _manifest, _merge_identity, _seed
+
+    database = _seed(tmp_path)
+    _identity_pdf_sources(database)
+    _merge_identity(database, tmp_path, [("pdf_article", "pdf-first")], identity="good")
+    reader = _reader(database, tmp_path)
+    original = read_api._materialized_pdf_occurrence_owners
+    builds = []
+
+    def counted(connection):
+        builds.append(connection)
+        return original(connection)
+
+    monkeypatch.setattr(read_api, "_materialized_pdf_occurrence_owners", counted)
+    first_mapping = None
+    with reader.public_snapshot():
+        before = len(builds)
+        items = reader.pdf_articles_all(include_linked=True)
+        selected = next(item for item in items if item["article_id"] == "pdf-first")
+        detail = reader.pdf_article("pdf-first")
+        repeated_detail = reader.pdf_article("pdf-first")
+        mapping = detail.get("canonical_occurrence_mappings", {})
+        assert mapping == selected.get("canonical_occurrence_mappings", {})
+        assert repeated_detail.get("canonical_occurrence_mappings", {}) == mapping
+        assert mapping and set(mapping.values()) == {"good"}
+        assert [row["occurrence_id"] for row in detail["occurrences"]] == [
+            row["occurrence_id"] for row in selected["occurrences"]
+        ]
+        assert len(builds) - before == 1, builds
+        first_mapping = mapping
+    assert len(builds) == 1
+    assert not hasattr(reader, "_snapshot_pdf_occurrence_owners")
+
+    # Revoke the approved owner relation between snapshots. The next snapshot must
+    # rebuild from its own approved projection rather than retain the prior map.
+    current = reader.article("good")["identity_mapping"]
+    alias = next(item for item in current["aliases"] if item["source"]["entity_id"] == "pdf-first")
+    manifest = _manifest(database, [("pdf_article", "pdf-first")])
+    manifest["alias_operations"] = [{"action": "revoke", "alias_sha256": digest(alias), "evidence_ids": ["semantic-proof"]}]
+    approve_identity(database, tmp_path, _ingest(database, tmp_path, manifest))
+
+    with reader.public_snapshot():
+        before = len(builds)
+        items = reader.pdf_articles_all(include_linked=True)
+        selected = next(item for item in items if item["article_id"] == "pdf-first")
+        detail = reader.pdf_article("pdf-first")
+        mapping = detail.get("canonical_occurrence_mappings", {})
+        assert not mapping
+        assert selected.get("canonical_occurrence_mappings", {}) == mapping
+        assert mapping != first_mapping
+        assert len(builds) - before == 1, builds
+    assert len(builds) == 2
+    assert not hasattr(reader, "_snapshot_pdf_occurrence_owners")

@@ -598,6 +598,7 @@ class RegistryReader:
             with (nullcontext(source_connection) if source_connection is not None
                     else self._source_connection(manage_wal=manage_wal)) as connection:
                 self._snapshot_connection = connection
+                self._snapshot_pdf_occurrence_owners = None
                 self._snapshot_direct = True
                 self._approved_snapshot_cache = {}
                 self._approved_candidate_cache = {}
@@ -615,6 +616,7 @@ class RegistryReader:
                 try:
                     yield self
                 finally:
+                    del self._snapshot_pdf_occurrence_owners
                     del self._snapshot_connection
                     del self._snapshot_direct
                     del self._approved_snapshot_cache
@@ -636,6 +638,7 @@ class RegistryReader:
             return
         with self.connect() as connection:
             self._snapshot_connection = connection
+            self._snapshot_pdf_occurrence_owners = None
             self._pdf_document_cache, self._pdf_source_cache, self._pdf_check_packet_cache = {}, {}, {}
             self._legacy_acquisition_search_cache, self._legacy_acquisition_searches_loaded = {}, set()
             self._meeting_records_cache = {}
@@ -643,6 +646,7 @@ class RegistryReader:
                 yield self
             finally:
                 del self._meeting_records_cache
+                del self._snapshot_pdf_occurrence_owners
                 del self._snapshot_connection
                 del self._pdf_document_cache, self._pdf_source_cache, self._pdf_check_packet_cache
                 del self._legacy_acquisition_search_cache, self._legacy_acquisition_searches_loaded
@@ -675,6 +679,13 @@ class RegistryReader:
         finally:
             if connection is not None:
                 connection.close()
+
+    def _pdf_occurrence_owners(self, connection):
+        if not hasattr(self, "_snapshot_pdf_occurrence_owners"):
+            return _materialized_pdf_occurrence_owners(connection)
+        if self._snapshot_pdf_occurrence_owners is None:
+            self._snapshot_pdf_occurrence_owners = _materialized_pdf_occurrence_owners(connection)
+        return self._snapshot_pdf_occurrence_owners
 
     def _public_candidates(self, *kinds: str, entity_ids=None) -> dict[tuple[str, str], dict[str, Any]]:
         if not getattr(self, "_snapshot_direct", False):
@@ -1540,7 +1551,7 @@ class RegistryReader:
                 return dict(item, pdf_bytes=body)
             document = self._pdf_document_json(row["document_json"], document_sha256=document_sha256)
             articles = []
-            occurrence_owners=_materialized_pdf_occurrence_owners(connection)
+            occurrence_owners=self._pdf_occurrence_owners(connection)
             for article_row in connection.execute("""SELECT * FROM pdf_intake_articles a WHERE EXISTS (
                 SELECT 1 FROM pdf_intake_article_occurrences o WHERE o.article_id=a.article_id AND o.source_document_sha256=?)""", (document_sha256,)):
                 payload = self._pdf_article_payload(connection, article_row, allowed_occurrence_ids=allowed_occurrence_ids, occurrence_owners=occurrence_owners, public_source_connection=getattr(self, "_snapshot_source_connection", None))
@@ -2373,7 +2384,7 @@ class RegistryReader:
                 )
             ).fetchall()
             items = []
-            occurrence_owners=_materialized_pdf_occurrence_owners(connection)
+            occurrence_owners=self._pdf_occurrence_owners(connection)
             for row in rows:
                 item = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids, occurrence_owners=occurrence_owners, public_source_connection=getattr(self, "_snapshot_source_connection", None))
                 if not item["occurrences"]:
@@ -2449,7 +2460,7 @@ class RegistryReader:
             if row is None:
                 raise RegistryNotFoundError("article not found")
             payload = self._pdf_article_payload(connection, row, allowed_occurrence_ids=allowed_occurrence_ids,
-                occurrence_owners=_materialized_pdf_occurrence_owners(connection),
+                occurrence_owners=self._pdf_occurrence_owners(connection),
                 public_source_connection=getattr(self, "_snapshot_source_connection", None))
             if allowed_occurrence_ids is not None and not payload["occurrences"]:
                 raise RegistryNotFoundError("article not found")

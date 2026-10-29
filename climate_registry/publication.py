@@ -946,13 +946,15 @@ def public_connection(source):
         needs_pdf_ownership = any(verdict.get("_legacy_pdf_primary") for verdict in verdicts.values())
         approved_views = published_snapshots(source, tuple(ENTITY_TABLES)) if has_identity or needs_pdf_ownership else None
         approved_by_sha = {view["_approved_candidate_sha256"]: view for view in approved_views.values()} if approved_views is not None else None
+        identity_aliases = _identity_aliases(source)
         for sha, encoded in source.execute(selected_sql):
             snapshot = _load_snapshot_json(encoded, {})
             if digest(snapshot) != sha:
                 raise ValueError("published Registry snapshot hash differs")
             if approved_by_sha is not None and sha not in approved_by_sha:
                 continue
-            canonical = canonical_entity(source, snapshot["entity_kind"], snapshot["entity_id"])
+            canonical = canonical_entity(
+                source, snapshot["entity_kind"], snapshot["entity_id"], identity_aliases=identity_aliases)
             if canonical != (snapshot["entity_kind"], snapshot["entity_id"]):
                 state = source.execute("SELECT is_visible,published_candidate_sha256 FROM registry_publication WHERE entity_kind=? AND entity_id=?", canonical).fetchone()
                 # A pending raw alias cannot replace an older approved observation.
