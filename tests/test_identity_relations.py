@@ -47,6 +47,66 @@ def _approve(database, tmp_path, result):
     return approve_owner_check(database, receipt, lifecycle_root=tmp_path/'runs', queue_dir=tmp_path/'queue', backup_dir=tmp_path/'backups', apply=True)
 
 
+def test_public_projection_alias_reuse_never_crosses_approval_or_revocation(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+
+    database = _seed(tmp_path)
+    manifest = _manifest(database, [("article", "unchecked")])
+    manifest["aliases"] = [{"source": _scope(manifest["plan"]["participants"][1]),
+        "same_object": True, "evidence_ids": ["semantic-proof"]}]
+    staged = _ingest(database, tmp_path, manifest)
+    projections = []
+    builds = []
+    real_aliases = publication._identity_aliases
+
+    def aliases(connection):
+        if connection in projections:
+            builds.append(connection)
+        return real_aliases(connection)
+
+    def project():
+        with sqlite3.connect(database) as source:
+            connection = public_connection(source)
+        projections.append(connection)
+        return connection
+
+    def check(connection, expected):
+        for _ in range(2):
+            assert canonical_entity(connection, "article", "unchecked") == ("article", expected)
+            assert publication.snapshot_metadata(connection, "article", "unchecked")["entity_id"] == expected
+
+    monkeypatch.setattr(publication, "_identity_aliases", aliases)
+    try:
+        pending = project()
+        check(pending, "unchecked")
+        _approve(database, tmp_path, staged)
+        approved = project()
+        check(approved, "good")
+        check(pending, "unchecked")
+        alias = publication.snapshot_metadata(approved, "article", "good")["identity_mapping"]["aliases"][0]
+        revoke = _manifest(database, [("article", "unchecked")])
+        revoke["alias_operations"] = [{"action": "revoke", "alias_sha256": digest(alias), "evidence_ids": ["semantic-proof"]}]
+        _approve(database, tmp_path, _ingest(database, tmp_path, revoke))
+        revoked = project()
+        check(revoked, "unchecked")
+        check(approved, "good")
+        assert builds == projections
+        with sqlite3.connect(database) as source:
+            # Mutable writer/source connections always reload the current graph.
+            real = publication._identity_aliases
+            calls = []
+            def source_aliases(connection):
+                calls.append(connection)
+                return real(connection)
+            monkeypatch.setattr(publication, "_identity_aliases", source_aliases)
+            check_source = lambda: canonical_entity(source, "article", "unchecked")
+            assert check_source() == check_source() == ("article", "unchecked")
+            assert calls == [source, source]
+    finally:
+        for connection in projections:
+            connection.close()
+
+
 def test_mapping_pending_is_private_and_approved_alias_keeps_old_ids_and_receipts(tmp_path):
     database = _seed(tmp_path)
     manifest = _manifest(database, [('article', 'unchecked')])

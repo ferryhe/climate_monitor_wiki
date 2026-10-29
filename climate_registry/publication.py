@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sqlite3
+from functools import cached_property
 from pathlib import Path
 
 from climate_monitor.publisher_mapping import publisher_name
@@ -267,7 +268,16 @@ def _identity_aliases(connection):
     return approved_aliases(views) if views else {}
 
 
+class _PublicSnapshotConnection(sqlite3.Connection):
+    @cached_property
+    def identity_aliases(self):
+        # This projection is immutable before it is exposed; retain only its graph.
+        return _identity_aliases(self)
+
+
 def canonical_entity(connection, kind, entity_id, *, identity_aliases=None):
+    if identity_aliases is None and isinstance(connection, _PublicSnapshotConnection):
+        identity_aliases = connection.identity_aliases
     aliases = _identity_aliases(connection) if identity_aliases is None else identity_aliases
     if aliases:
         mapped = aliases.get((kind, entity_id))
@@ -884,7 +894,7 @@ def public_connection(source):
     if not enabled(source):
         return source
     from .schema import apply_migrations
-    projection = sqlite3.connect(":memory:")
+    projection = sqlite3.connect(":memory:", factory=_PublicSnapshotConnection)
     projection.row_factory = sqlite3.Row
     try:
         apply_migrations(projection)
