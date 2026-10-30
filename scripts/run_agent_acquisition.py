@@ -222,6 +222,62 @@ def _validate_agent_prompt_protocol(binding: Mapping[str, Any]) -> None:
         )
 
 
+def _acquisition_task_instructions(
+    binding: Mapping[str, Any], *, require_scoped_protocol: bool = False,
+) -> str:
+    """Select the bound task instructions for the run's frozen agent protocol."""
+    text = binding["definition"]["prompts"]["acquisition_task"]["text"]
+    if not (binding.get("agent_protocol") or {}).get("version"):
+        # Legacy bindings have no frozen protocol selector; preserve their exact
+        # acquisition prompt instead of interpreting newly scoped markers.
+        return text
+    sections = list(re.finditer(
+        r"(?ms)^<!-- acquisition-protocol:([a-z0-9_.-]+) -->\r?\n"
+        r"(.*?)^<!-- /acquisition-protocol:\1 -->[ \t]*(?:\r?\n|$)",
+        text,
+    ))
+    if not sections:
+        if require_scoped_protocol:
+            raise ValueError(
+                "weekly_search requires an explicitly upgraded, protocol-scoped "
+                "acquisition_task prompt; the saved prompt was left unchanged"
+            )
+        return text  # Previously frozen bindings keep their original prompt bytes.
+    names = [match.group(1) for match in sections]
+    expected = {V2_AGENT_PROTOCOL_VERSION, AGENT_PROTOCOL_VERSION}
+    if len(names) != len(expected) or set(names) != expected:
+        raise ValueError("acquisition task protocol sections are incomplete or duplicated")
+    if re.sub(
+        r"(?ms)^<!-- acquisition-protocol:[a-z0-9_.-]+ -->\r?\n"
+        r".*?^<!-- /acquisition-protocol:[a-z0-9_.-]+ -->[ \t]*(?:\r?\n|$)",
+        "",
+        text,
+    ).strip():
+        raise ValueError("acquisition task has unscoped instructions outside protocol sections")
+    definition_prompt = binding["definition"]["prompts"]["acquisition_task"]
+    if (
+        binding.get("prompt_versions", {}).get("acquisition_task") != "v2"
+        or definition_prompt.get("version") != "v2"
+    ):
+        raise ValueError("protocol-scoped acquisition prompt requires acquisition_task v2")
+    protocol = (binding.get("agent_protocol") or {}).get("version")
+    if protocol == AGENT_PROTOCOL_VERSION:
+        if not candidate_handle_protocol(binding):
+            raise ValueError("V3 acquisition prompt does not match the frozen protocol")
+        selected = AGENT_PROTOCOL_VERSION
+    elif protocol == V2_AGENT_PROTOCOL_VERSION:
+        if not provider_native_unbounded_search(binding) or candidate_handle_protocol(binding):
+            raise ValueError("V2 acquisition prompt does not match the frozen protocol")
+        selected = V2_AGENT_PROTOCOL_VERSION
+    elif protocol is None:
+        selected = (
+            AGENT_PROTOCOL_VERSION if candidate_handle_protocol(binding)
+            else V2_AGENT_PROTOCOL_VERSION
+        )
+    else:
+        raise ValueError("unsupported acquisition task prompt protocol")
+    return next(match.group(2).strip() for match in sections if match.group(1) == selected)
+
 def _prompt(
     binding_path: Path,
     binding: Mapping[str, Any],
@@ -229,6 +285,7 @@ def _prompt(
 ) -> str:
     _validate_agent_prompt_protocol(binding)
     definition = binding["definition"]
+    task_instructions = _acquisition_task_instructions(binding)
     component_refs = ", ".join(
         f"{name}@{binding['prompt_versions'][name]} sha256:{binding['prompt_hashes'][name]}"
         for name in definition["prompts"]
@@ -242,9 +299,9 @@ def _prompt(
         if isinstance(row, dict):
             row.pop("guidance", None)
     public_binding["definition"]["prompts"] = {
-        name: ({**value} if name == "acquisition_task" else {
+        name: {
             "version": value["version"], "sha256": binding["prompt_hashes"][name]
-        })
+        }
         for name, value in definition["prompts"].items()
     }
     public_meeting = public_binding.get("meeting")
@@ -405,7 +462,7 @@ FROZEN BINDING (authoritative; do not reload active configuration):
 {json.dumps(public_binding, ensure_ascii=False, sort_keys=True)}
 
 BOUND ACQUISITION INSTRUCTIONS:
-{definition['prompts']['acquisition_task']['text']}
+{task_instructions}
 """
     return f"""Execute only the frozen climate acquisition task represented below.
 Run/attempt: {binding['run_id']} / {binding['attempt']}
@@ -485,7 +542,7 @@ FROZEN BINDING (authoritative; do not reload active configuration):
 {json.dumps(public_binding, ensure_ascii=False, sort_keys=True)}
 
 BOUND ACQUISITION INSTRUCTIONS:
-{definition['prompts']['acquisition_task']['text']}
+{task_instructions}
 """
 
 
@@ -3904,6 +3961,10 @@ def _execute_attempt(
                 or any(row.get("status") != "succeeded" for row in payload["source_outcomes"])
                 or bool(unresolved_acquisition_items(payload))
                 or any(search.get("status") == "failed" for search in payload["searches"])
+                or (
+                    binding.get("acquisition_kind") == "weekly_search"
+                    and not any(search.get("status") == "success" for search in payload["searches"])
+                )
                 or bool(blocked_tool_prechecks))
         # Completion is runner-owned trusted state: model timestamps cannot
         # complete a gapped batch or leave a fully reconciled batch unfinished.
