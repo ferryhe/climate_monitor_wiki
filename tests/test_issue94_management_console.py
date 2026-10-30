@@ -982,6 +982,328 @@ def test_agent_runner_uses_narrow_tools_and_minimal_environment(monkeypatch, tmp
     assert not ({"terminal", "file", "code_execution"} & set(toolsets))
 
 
+def test_manual_weekly_search_rejects_saved_unmarked_prompt_before_run_creation(monkeypatch, tmp_path):
+    store = _store(tmp_path)
+    definition = _definition(tmp_path)
+    saved_prompt = (
+        "Legacy acquisition task v2. Reference the bound `search_guidance`, `relevance`, "
+        "`article_summary`, and `executive_summary` components.\n"
+        "Do not run Hermes native search or browser reads.\n"
+        "Use only the V3 climate_stage_candidate and climate_finalize_candidates tools."
+    )
+    definition["prompts"]["acquisition_task"]["text"] = saved_prompt
+    assert definition["prompts"]["acquisition_task"]["version"] == "v2"
+    store.save(definition, actor="test")
+
+    snapshot_calls = []
+    launched = []
+    monkeypatch.setattr(
+        "climate_monitor.hermes_identity.create_snapshot",
+        lambda run_dir: snapshot_calls.append(run_dir) or {"snapshot": "test-only"},
+    )
+    service = ManagementService(
+        store=store,
+        runtime_root=definition["runtime"]["run_root"],
+        launcher=lambda binding: launched.append(binding) or {"pid": 12345},
+    )
+
+    with pytest.raises(ValueError, match="explicitly upgrade"):
+        service.start(
+            trigger="manual", execution_mode="ingest_only",
+            acquisition_kind="weekly_search",
+        )
+
+    assert launched == []
+    assert snapshot_calls == []
+    assert list(Path(definition["runtime"]["run_root"]).iterdir()) == []
+    assert store.load(include_raw=True)["_raw_definition"]["prompts"]["acquisition_task"]["text"] == saved_prompt
+
+
+def test_manual_weekly_search_uses_existing_v2_search_ledger(monkeypatch, tmp_path):
+    import scripts.run_agent_acquisition as runner
+    from climate_monitor.request_budget import (
+        AGENT_PROTOCOL_VERSION,
+        CANDIDATE_RECEIPT_POLICY,
+        PROVIDER_NATIVE_SEARCH_POLICY,
+        RequestBudget,
+        V2_AGENT_PROTOCOL_VERSION,
+        hook_decision,
+        ledger_path,
+    )
+
+    store = _store(tmp_path)
+    definition = _definition(tmp_path)
+    store.save(definition, actor="test")
+    monkeypatch.setattr(
+        "climate_monitor.hermes_identity.create_snapshot",
+        lambda run_dir: {"snapshot": "test-only"},
+    )
+    launched = []
+    service = ManagementService(
+        store=store,
+        runtime_root=definition["runtime"]["run_root"],
+        launcher=lambda binding: launched.append(binding) or {"pid": 12345},
+    )
+
+    weekly = service.start(
+        trigger="manual", execution_mode="ingest_only",
+        acquisition_kind="weekly_search",
+    )
+    weekly_binding = service.binding(weekly["run_id"])
+    assert weekly_binding["agent_protocol"] == {
+        "version": V2_AGENT_PROTOCOL_VERSION,
+        "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
+    }
+    assert weekly_binding["execution_mode"] == "ingest_only"
+    assert weekly_binding["acquisition_kind"] == "weekly_search"
+    assert runner._controlled_site_context(weekly_binding)["candidates"] == []
+
+    prompt = runner._prompt(
+        Path(weekly_binding["checkpoint_dir"]) / "attempt-1.json", weekly_binding,
+    )
+    task_prompt = weekly_binding["definition"]["prompts"]["acquisition_task"]["text"]
+    assert weekly_binding["prompt_versions"]["acquisition_task"] == "v2"
+    assert weekly_binding["prompt_hashes"]["acquisition_task"] == hashlib.sha256(
+        task_prompt.encode("utf-8")
+    ).hexdigest()
+    assert "Do not run Hermes native search or browser reads" not in prompt
+    assert "Use Hermes native `web_search`" in prompt
+    assert "exact result references in the search ledger" in prompt
+    assert "call climate_stage_candidate with that result_handle" not in prompt
+    assert "Do not crawl rotation sites" in prompt
+    command = runner._hermes_command(
+        "/usr/bin/hermes", weekly_binding, tmp_path / "weekly-prompt.md",
+    )
+    assert command[command.index("--toolsets") + 1] == "web,browser"
+    assert "--max-turns" not in command
+
+    ledger = RequestBudget(ledger_path(weekly_binding), weekly_binding)
+    pre = {
+        "hook_event_name": "pre_tool_call", "tool_name": "web_search",
+        "tool_input": {"query": "WMO climate", "num_results": 1},
+        "session_id": "weekly-session", "extra": {"tool_call_id": "weekly-call"},
+    }
+    assert hook_decision(ledger, pre) == {}
+    assert ledger.usage()["search_attempts"] == 1
+    result = (
+        '<untrusted_tool_result source="web_search">\nExternal content follows.\n\n'
+        + json.dumps({"success": True, "data": {"web": [{
+            "url": "https://wmo.int/climate", "title": "Climate update",
+        }]}})
+        + "\n</untrusted_tool_result>"
+    )
+    post = {
+        **pre, "hook_event_name": "post_tool_call",
+        "extra": {
+            "tool_call_id": "weekly-call", "result": result, "status": "ok",
+        },
+    }
+    assert hook_decision(ledger, post) == {}
+    assert ledger.usage()["search_results"] == 1
+    assert ledger.usage()["search_results_reserved"] == 0
+
+    rotation_root = tmp_path / "rotation-runs"
+    rotation_root.mkdir()
+    rotation_definition = json.loads(json.dumps(definition))
+    rotation_definition["runtime"]["run_root"] = str(rotation_root)
+    rotation_store = TaskDefinitionStore(
+        tmp_path / "rotation-task.json", tmp_path / "rotation-versions",
+    )
+    rotation_store.save(rotation_definition, actor="test")
+    rotation_service = ManagementService(
+        store=rotation_store, runtime_root=rotation_root,
+        launcher=lambda binding: launched.append(binding) or {"pid": 12345},
+    )
+    rotation = rotation_service.start(
+        trigger="manual", execution_mode="ingest_only",
+        acquisition_kind="website_rotation",
+        rotation={"run_id": "weekly-v2-rotation-v3", "source_keys": ["wmo"]},
+    )
+    rotation_binding = rotation_service.binding(rotation["run_id"])
+    assert rotation_binding["agent_protocol"] == {
+        "version": AGENT_PROTOCOL_VERSION,
+        "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
+        "candidate_policy": CANDIDATE_RECEIPT_POLICY,
+    }
+    rotation_prompt = runner._prompt(
+        Path(rotation_binding["checkpoint_dir"]) / "attempt-1.json", rotation_binding,
+    )
+    assert "Do not run Hermes native search or browser reads" in rotation_prompt
+    assert "Use only the exact web_listening candidate handles" in rotation_prompt
+    rotation_command = runner._hermes_command(
+        "/usr/bin/hermes", rotation_binding, tmp_path / "rotation-prompt.md",
+    )
+    assert rotation_command[rotation_command.index("--toolsets") + 1] == "climate_acquisition"
+
+    report_root = tmp_path / "report-runs"
+    report_root.mkdir()
+    report_definition = json.loads(json.dumps(definition))
+    report_definition["runtime"]["run_root"] = str(report_root)
+    report_store = TaskDefinitionStore(
+        tmp_path / "report-task.json", tmp_path / "report-versions",
+    )
+    report_store.save(report_definition, actor="test")
+    report_service = ManagementService(
+        store=report_store, runtime_root=report_root,
+        launcher=lambda binding: launched.append(binding) or {"pid": 12345},
+    )
+    report = report_service.start(
+        trigger="manual", now=datetime(2026, 9, 8, tzinfo=timezone.utc),
+        execution_mode="report", acquisition_kind="report",
+    )
+    report_binding = report_service.binding(report["run_id"])
+    assert report_binding["agent_protocol"]["version"] == AGENT_PROTOCOL_VERSION
+    report_prompt = runner._prompt(
+        Path(report_binding["checkpoint_dir"]) / "attempt-1.json", report_binding,
+    )
+    assert "Do not run Hermes native search or browser reads" in report_prompt
+    assert "Use only the exact web_listening candidate handles" in report_prompt
+    assert len(launched) == 3
+    assert [row["agent_protocol"]["version"] for row in launched] == [
+        V2_AGENT_PROTOCOL_VERSION, AGENT_PROTOCOL_VERSION, AGENT_PROTOCOL_VERSION,
+    ]
+
+
+def test_weekly_search_without_successful_query_stays_retryable_in_review(
+    monkeypatch, tmp_path,
+):
+    import copy
+    import scripts.run_agent_acquisition as runner
+    import climate_monitor.hermes_identity as identity
+    import climate_registry.acquisition as acquisition
+    import climate_registry.acquisition_review as review
+    from climate_monitor.management import default_task_definition
+    from climate_registry.persistent import initialize_registry
+
+    zero_usage = runner._empty_tool_usage()
+    queued = []
+
+    def run_case(case_name, search_events):
+        case_root = tmp_path / case_name
+        case_root.mkdir()
+        database = case_root / "registry.sqlite3"
+        initialize_registry(database)
+        monkeypatch.setenv("CLIMATE_REGISTRY_DB", str(database))
+        run_root = case_root / "runs"
+        run_root.mkdir()
+        definition = default_task_definition()
+        definition["parameters"].update(
+            report_date="2026-10-30", source_keys=["wmo"],
+            provider="openai-codex", model="gpt-5.6-sol-900k",
+        )
+        definition["runtime"].update(
+            registry_database=str(database), run_root=str(run_root),
+        )
+        store = TaskDefinitionStore(case_root / "task.json", case_root / "versions")
+        store.save(definition, actor="test")
+        monkeypatch.setattr(
+            "climate_monitor.hermes_identity.create_snapshot",
+            lambda _run_dir: {"executable": "test-hermes"},
+        )
+        service = ManagementService(
+            store=store, runtime_root=run_root,
+            launcher=lambda _binding: {"pid": 12345},
+        )
+        started = service.start(
+            trigger="manual", execution_mode="ingest_only",
+            acquisition_kind="weekly_search",
+        )
+        binding_path = run_root / started["run_id"] / "attempt-1.json"
+        response = {
+            "acquisition_batch": {
+                "schema_version": "climate-agent-candidate-decisions.v2",
+                "protocol_version": runner.V2_AGENT_PROTOCOL_VERSION,
+                "batch_id": f"acq-{started['run_id']}-attempt-1",
+                "report_date": "2026-10-30", "items": [],
+            }
+        }
+
+        class Budget:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def usage(self):
+                return copy.deepcopy(zero_usage)
+
+            def remaining_seconds(self):
+                return 600
+
+        def invoke(_command, response_path, *_args):
+            response_path.write_text(json.dumps(response), encoding="utf-8")
+            return 0
+
+        case_queue = []
+        with monkeypatch.context() as patch:
+            patch.setattr(runner, "RequestBudget", Budget)
+            patch.setattr(runner, "frozen_site_skill_hints", lambda _binding: {})
+            patch.setattr(runner, "_prior_tool_usage", lambda *_args: copy.deepcopy(zero_usage))
+            patch.setattr(runner, "_resume_history", lambda *_args: None)
+            patch.setattr(runner, "_resume_controlled_site_context", lambda *_args: {
+                "status": "completed", "source_results": [], "warnings": [],
+                "candidates": [], "attempts": [],
+            })
+            patch.setattr(runner, "_registry_history_context", lambda *_args: {})
+            patch.setattr(runner, "_persist_tool_provenance", lambda *_args, **_kwargs: {
+                "cumulative_actual": copy.deepcopy(zero_usage),
+            })
+            patch.setattr(runner, "_unresolved_tool_prechecks", lambda *_args: [])
+            patch.setattr(runner, "_controlled_site_evidence_reference", lambda *_args: {})
+            patch.setattr(runner, "_invoke_hermes", invoke)
+            patch.setattr(
+                runner, "_trusted_tool_events",
+                lambda *_args, **_kwargs: copy.deepcopy(search_events),
+            )
+            patch.setattr(
+                runner, "_controlled_fetch_payload",
+                lambda _path, _binding, payload, **_kwargs: (payload, []),
+            )
+            patch.setattr(runner, "_store_readback_and_freeze", lambda *_args, **_kwargs: {
+                "record_count": 0, "records": [], "dependency_status": "complete",
+            })
+            patch.setattr(runner, "_commit_controlled_site_checkpoints", lambda *_args: None)
+            patch.setattr(runner, "_discard_controlled_site_checkpoints", lambda *_args: None)
+            patch.setattr(identity, "load_snapshot", lambda *_args: {"executable": "test-hermes"})
+            patch.setattr(
+                acquisition, "readback_source_outcomes",
+                lambda _database, payload: payload["source_outcomes"],
+            )
+            patch.setattr(
+                review, "queue_acquisition_review",
+                lambda _path, _binding, payload: case_queue.append(copy.deepcopy(payload)),
+            )
+            return_code = runner._execute_attempt(binding_path, ingest_only=True)
+
+        result = json.loads(
+            (binding_path.parent / "attempt-1-result.json").read_text(encoding="utf-8")
+        )
+        assert len(case_queue) == 1
+        queued.append(case_queue[0])
+        return return_code, result
+
+    no_query_rc, no_query = run_case("no-query", [])
+    assert no_query_rc == 0
+    assert queued[0]["searches"] == []
+    assert no_query["execution_complete"] is False
+    assert no_query["full_coverage"] is False
+    assert no_query["retryable"] is True
+    assert no_query["outcome"] == "acquisition_pending_review"
+
+    zero_results_rc, zero_results = run_case("successful-zero-results", [{
+        "tool": "web_search", "tool_call_id": "search-empty-1",
+        "arguments": {"query": "WMO climate risk", "num_results": 1},
+        "result": {"data": {"web": []}}, "durable_status": "ok",
+        "attempted_at": "2026-10-30T12:00:00Z", "session_id": "session-1",
+    }])
+    assert zero_results_rc == 0
+    assert len(queued[1]["searches"]) == 1
+    assert queued[1]["searches"][0]["status"] == "success"
+    assert queued[1]["searches"][0]["result_refs"] == []
+    assert zero_results["execution_complete"] is True
+    assert zero_results["full_coverage"] is True
+    assert zero_results["retryable"] is False
+    assert zero_results["outcome"] == "acquisition_pending_review"
+
+
 def test_site_skill_hints_are_frozen_and_added_as_non_authoritative_prompt_context(tmp_path):
     import scripts.run_agent_acquisition as runner
     from climate_monitor.management import frozen_site_skill_hints
@@ -1803,7 +2125,11 @@ def test_agent_prompt_exposes_business_components_as_references_only(tmp_path):
 
     binding = build_task_binding(_definition(tmp_path), task_version=1, run_id="prompt", attempt=1)
     prompt = runner._prompt(Path(binding["checkpoint_dir"]) / "attempt-1.json", binding)
-    assert binding["definition"]["prompts"]["acquisition_task"]["text"] in prompt
+    task_prompt = binding["definition"]["prompts"]["acquisition_task"]["text"]
+    assert task_prompt not in prompt
+    assert "Use only the exact web_listening candidate handles supplied" in prompt
+    assert "acquisition-protocol:" not in prompt
+    assert binding["prompt_hashes"]["acquisition_task"] in prompt
     for name in ("search_guidance", "relevance", "article_summary", "executive_summary"):
         component = binding["definition"]["prompts"][name]
         assert component["text"] not in prompt

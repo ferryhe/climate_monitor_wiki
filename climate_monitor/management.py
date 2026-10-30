@@ -28,6 +28,7 @@ from climate_monitor.request_budget import (
     DEFAULT_SEARCH_ATTEMPTS,
     DEFAULT_SEARCH_RESULTS,
     PROVIDER_NATIVE_SEARCH_POLICY,
+    V2_AGENT_PROTOCOL_VERSION,
     provider_native_unbounded_search,
 )
 
@@ -740,6 +741,7 @@ def build_task_binding(
     definition: Mapping[str, Any], *, task_version: int, run_id: str,
     attempt: int, created_at: datetime | None = None,
     definition_sha256: str | None = None,
+    acquisition_kind: str = "report",
 ) -> dict[str, Any]:
     raw_definition = copy.deepcopy(dict(definition))
     raw_sha256 = _sha(raw_definition)
@@ -819,11 +821,18 @@ def build_task_binding(
             "prompt_sha256": view["hashes"]["meeting"],
             "prompt_text": normalized["meeting"]["prompt"]["text"],
         },
-        "agent_protocol": {
-            "version": AGENT_PROTOCOL_VERSION,
-            "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
-            "candidate_policy": CANDIDATE_RECEIPT_POLICY,
-        },
+        "agent_protocol": (
+            {
+                "version": V2_AGENT_PROTOCOL_VERSION,
+                "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
+            }
+            if acquisition_kind == "weekly_search"
+            else {
+                "version": AGENT_PROTOCOL_VERSION,
+                "search_policy": PROVIDER_NATIVE_SEARCH_POLICY,
+                "candidate_policy": CANDIDATE_RECEIPT_POLICY,
+            }
+        ),
         "acquisition_lineage_id": f"acq-{run_id}",
         "acquisition_batch_id": f"acq-{run_id}-attempt-{attempt}",
         "checkpoint_dir": str(run_root / run_id / "checkpoint"),
@@ -1190,6 +1199,7 @@ class ManagementService:
             definition, task_version=loaded["version"], run_id=run_id,
             attempt=1, created_at=stamp,
             definition_sha256=_sha(definition),
+            acquisition_kind=acquisition_kind,
         )
         binding["trigger"] = trigger
         binding["execution_mode"] = execution_mode
@@ -1197,6 +1207,11 @@ class ManagementService:
             binding.update(acquisition_kind=acquisition_kind,
                 activation_policy="acquisition_review",
                 rotation=rotation, task_definition_sha256=loaded["hashes"]["definition_sha256"])
+        if acquisition_kind == "weekly_search":
+            # Validate the bound protocol before creating any run artifacts.
+            from scripts.run_agent_acquisition import _acquisition_task_instructions
+
+            _acquisition_task_instructions(binding, require_scoped_protocol=True)
         with _exclusive_lock(self.runtime_root / ".runs.lock"):
             if trigger == "scheduled":
                 existing = self._existing_scheduled_run(binding)
