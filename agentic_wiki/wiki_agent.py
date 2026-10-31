@@ -1043,11 +1043,11 @@ class WikiKnowledgeBase:
         if pages is None:
             if not self.wiki_dir.exists():
                 raise FileNotFoundError(f"Wiki directory not found: {self.wiki_dir}")
-            wiki_docs, wiki_chunks = self._load_directory(
+            wiki_docs = self._load_directory(
                 self.wiki_dir, "wiki", path_root="wiki"
             )
             if self.wiki_overlay_dir is not None:
-                overlay_docs, _ = self._load_directory(
+                overlay_docs = self._load_directory(
                     self.wiki_overlay_dir, "wiki", path_root="wiki"
                 )
                 overlay_paths = {doc.path for doc in overlay_docs}
@@ -1075,19 +1075,11 @@ class WikiKnowledgeBase:
                 wiki_docs = [
                     doc for doc in wiki_docs if doc.path not in overlay_paths
                 ] + merged_overlay_docs
-                wiki_chunks = [
-                    chunk for chunk in wiki_chunks if chunk.path not in overlay_paths
-                ] + [
-                    chunk
-                    for doc in merged_overlay_docs
-                    for chunk in self._chunk_document(doc)
-                ]
-            source_docs, source_chunks = self._load_directory(self.source_dir, "source")
+            source_docs = self._load_directory(self.source_dir, "source")
         else:
             wiki_docs = [self._document_from_markdown(self.wiki_dir / name, markdown, "wiki", path_root="wiki")
                 for name, markdown in sorted(pages.items())]
-            wiki_chunks = [chunk for doc in wiki_docs for chunk in self._chunk_document(doc)]
-            source_docs, source_chunks = [], []
+            source_docs = []
 
         registry_markdown = deduplicate_registry_pdf_markdown({
             doc.file: doc.markdown for doc in wiki_docs if is_registry_runtime_path(doc.file)})
@@ -1096,6 +1088,7 @@ class WikiKnowledgeBase:
             if doc.file in registry_markdown and registry_markdown[doc.file] != doc.markdown else doc
             for doc in wiki_docs]
         wiki_chunks = [chunk for doc in wiki_docs for chunk in self._chunk_document(doc)]
+        source_chunks = [chunk for doc in source_docs for chunk in self._chunk_document(doc)]
 
         self.documents = wiki_docs
         self.source_documents = source_docs
@@ -1122,12 +1115,11 @@ class WikiKnowledgeBase:
         corpus: CorpusType,
         *,
         path_root: str | None = None,
-    ) -> tuple[list[WikiDocument], list[WikiChunk]]:
+    ) -> list[WikiDocument]:
         if not directory.exists():
-            return [], []
+            return []
 
         docs: list[WikiDocument] = []
-        chunks: list[WikiChunk] = []
         for path in sorted(directory.glob("*.md")):
             doc = self._document_from_markdown(
                 path,
@@ -1136,8 +1128,7 @@ class WikiKnowledgeBase:
                 path_root=path_root,
             )
             docs.append(doc)
-            chunks.extend(self._chunk_document(doc))
-        return docs, chunks
+        return docs
 
     def _document_from_markdown(
         self,
