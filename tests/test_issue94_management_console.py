@@ -1208,13 +1208,14 @@ def test_weekly_search_without_successful_query_stays_retryable_in_review(
             trigger="manual", execution_mode="ingest_only",
             acquisition_kind="weekly_search",
         )
+        binding = service.binding(started["run_id"])
         binding_path = run_root / started["run_id"] / "attempt-1.json"
         response = {
             "acquisition_batch": {
                 "schema_version": "climate-agent-candidate-decisions.v2",
                 "protocol_version": runner.V2_AGENT_PROTOCOL_VERSION,
                 "batch_id": f"acq-{started['run_id']}-attempt-1",
-                "report_date": "2026-10-30", "items": [],
+                "report_date": binding["report_date"], "items": [],
             }
         }
 
