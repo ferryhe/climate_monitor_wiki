@@ -1,13 +1,47 @@
+from collections import Counter
 from datetime import date, timedelta
 from pathlib import Path
 import re
 
 import anyio
+import climate_registry.publication as registry_publication
 from agentic_wiki import AgenticWikiResponder, WikiKnowledgeBase
 from agentic_wiki.wiki_agent import _expand_query, _is_displayable_graph_concept, _requested_dates, _strip_markdown
 from api_server import WikiStaticFiles, app, responder
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+def _chunk_signature(chunks):
+    return [
+        (
+            chunk.id, chunk.title, chunk.path, chunk.heading, chunk.type,
+            chunk.date, chunk.text, chunk.markdown, tuple(chunk.links),
+            chunk.corpus, chunk.document_title, chunk.canonical_url,
+            chunk.checked_source_url, chunk.original_source_url,
+            chunk.checked_source_provenance, tuple(chunk.tokens), tuple(chunk.urls),
+            chunk.date_metadata,
+        )
+        for chunk in chunks
+    ]
+
+
+def _assert_chunks_match_final_documents(kb, chunk_document):
+    expected_wiki = [
+        chunk for doc in kb.documents for chunk in chunk_document(kb, doc)
+    ]
+    expected_source = [
+        chunk for doc in kb.source_documents for chunk in chunk_document(kb, doc)
+    ]
+    actual_wiki = [chunk for chunk in kb.chunks if chunk.corpus == "wiki"]
+    actual_source = [chunk for chunk in kb.chunks if chunk.corpus == "source"]
+    assert _chunk_signature(actual_wiki) == _chunk_signature(expected_wiki)
+    assert _chunk_signature(actual_source) == _chunk_signature(expected_source)
+    assert _chunk_signature(kb.chunks) == _chunk_signature(expected_wiki + expected_source)
+    assert kb.token_chunk_counts == Counter(
+        token for chunk in expected_wiki + expected_source for token in set(chunk.tokens)
+    )
+    return expected_wiki, expected_source
 
 
 def test_wiki_index_loads_documents_and_chunks():
@@ -79,7 +113,7 @@ def test_subject_rarity_and_chunk_length_outweigh_repeated_audience_words(tmp_pa
     assert "latest dated report" in next(hit.reason for hit in kb.search("latest insurance report", top_k=30) if hit.chunk.corpus == "source")
 
 
-def test_runtime_registry_overlay_merges_public_history_and_keeps_other_precedence(tmp_path):
+def test_runtime_registry_overlay_merges_public_history_and_keeps_other_precedence(tmp_path, monkeypatch):
     base, overlay, sources = (
         tmp_path / "wiki", tmp_path / "runtime", tmp_path / "sources"
     )
@@ -114,6 +148,18 @@ def test_runtime_registry_overlay_merges_public_history_and_keeps_other_preceden
     for name in ("article-history.md", "registry-manual-history.md", "article-manual.notes.md"):
         (base / name).write_text(f"# {name}\n\nBase history.\n", encoding="utf-8")
 
+    (sources / "climate-monitor-2026-10-27.md").write_text(
+        "# climate-monitor-2026-10-27\n\nSource evidence remains available.\n",
+        encoding="utf-8",
+    )
+    chunk_calls = Counter()
+    chunk_document = WikiKnowledgeBase._chunk_document
+
+    def count_chunk_calls(self, doc):
+        chunk_calls[(doc.corpus, doc.path)] += 1
+        return chunk_document(self, doc)
+
+    monkeypatch.setattr(WikiKnowledgeBase, "_chunk_document", count_chunk_calls)
     kb = WikiKnowledgeBase(base, sources, overlay)
     static = WikiStaticFiles(directory=base)
     static.all_directories = [str(overlay), str(base)]
@@ -168,6 +214,35 @@ def test_runtime_registry_overlay_merges_public_history_and_keeps_other_preceden
         assert f"wiki/{name}" in paths
         assert static.lookup_path(name)[1] is not None
 
+    expected_paths = [
+        "wiki/article-history.md",
+        "wiki/article-manual.notes.md",
+        "wiki/registry-manual-history.md",
+        "wiki/article-runtime-only.md",
+        "wiki/article-shared.md",
+        "wiki/manual-shared.md",
+        "wiki/registry-source-observations.md",
+    ]
+    assert [doc.path for doc in kb.documents] == expected_paths
+    kb_by_path = {doc.path: doc for doc in kb.documents}
+    assert "Published base body" in kb_by_path["wiki/article-shared.md"].markdown
+    assert "Activated runtime Web body" in kb_by_path["wiki/article-shared.md"].markdown
+    assert "Public PDF history" in kb_by_path["wiki/registry-source-observations.md"].markdown
+    assert "Activated PDF source" in kb_by_path["wiki/registry-source-observations.md"].markdown
+    assert "Runtime manual body" in kb_by_path["wiki/manual-shared.md"].markdown
+    assert "Base manual body" not in kb_by_path["wiki/manual-shared.md"].markdown
+    assert [doc.path for doc in kb.source_documents] == [
+        "sources/climate-monitor-2026-10-27.md"
+    ]
+    expected_wiki_chunks, expected_source_chunks = _assert_chunks_match_final_documents(
+        kb, chunk_document
+    )
+    assert expected_wiki_chunks and expected_source_chunks
+    assert chunk_calls == Counter(
+        {("wiki", doc.path): 1 for doc in kb.documents}
+        | {("source", doc.path): 1 for doc in kb.source_documents}
+    )
+
     next_generation = tmp_path / "next-runtime"
     next_generation.mkdir()
     fallback = WikiKnowledgeBase(base, sources, next_generation)
@@ -183,6 +258,56 @@ def test_runtime_registry_overlay_merges_public_history_and_keeps_other_preceden
     assert "Published base body" in fallback_page.text
     assert "Activated runtime Web body" not in fallback_page.text
     assert client.get("/wiki/article-runtime-only.md").status_code == 404
+
+def test_approved_public_snapshot_chunks_final_documents_once(tmp_path, monkeypatch):
+    wiki, sources = tmp_path / "wiki", tmp_path / "sources"
+    wiki.mkdir()
+    sources.mkdir()
+    (sources / "climate-monitor-2026-10-27.md").write_text(
+        "# climate-monitor-2026-10-27\n\nDisk source is not part of the approved snapshot branch.\n",
+        encoding="utf-8",
+    )
+    pages = {
+        "registry-source-observations.md": (
+            "# Public observations\n\n"
+            "## PDF report observation: Approved report\n\n"
+            "Public approved summary.\n"
+            "PDF: approved-report.pdf; SHA-256: " + "c" * 64 + "; page 4\n"
+        ),
+        "topic-approved.md": "# Approved topic\n\nApproved snapshot body.\n",
+    }
+    monkeypatch.setattr(
+        registry_publication,
+        "public_wiki_snapshot",
+        lambda database, *, wiki_dir=None: (pages, "revision-7"),
+    )
+    chunk_calls = Counter()
+    chunk_document = WikiKnowledgeBase._chunk_document
+
+    def count_chunk_calls(self, doc):
+        chunk_calls[(doc.corpus, doc.path)] += 1
+        return chunk_document(self, doc)
+
+    monkeypatch.setattr(WikiKnowledgeBase, "_chunk_document", count_chunk_calls)
+    kb = WikiKnowledgeBase(
+        wiki, sources, approved_registry_snapshot=tmp_path / "approved.sqlite3"
+    )
+
+    assert kb.public_registry_revision == "revision-7"
+    assert [doc.path for doc in kb.documents] == [
+        "wiki/registry-source-observations.md",
+        "wiki/topic-approved.md",
+    ]
+    assert [doc.markdown for doc in kb.documents] == [
+        pages["registry-source-observations.md"],
+        pages["topic-approved.md"],
+    ]
+    assert kb.source_documents == []
+    expected_wiki_chunks, expected_source_chunks = _assert_chunks_match_final_documents(
+        kb, chunk_document
+    )
+    assert expected_wiki_chunks and expected_source_chunks == []
+    assert chunk_calls == Counter({("wiki", doc.path): 1 for doc in kb.documents})
 
 
 def test_strip_markdown_removes_report_break_tags():
