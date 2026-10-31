@@ -356,6 +356,58 @@ def test_taxonomy_loader_rejects_unhashable_yaml_mapping_keys():
         taxonomy_module._parse_article_taxonomy_bytes(b"? [complex, key]\n: value\n")
 
 
+def test_taxonomy_parse_cache_reuses_only_successful_exact_bytes(monkeypatch):
+    raw = DEFAULT_TAXONOMY_PATH.read_bytes() + b"\n# exact-byte cache probe\n"
+    original_load = taxonomy_module.yaml.load
+    yaml_loads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal yaml_loads
+        yaml_loads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(taxonomy_module.yaml, "load", counted_load)
+    first = taxonomy_module._parse_article_taxonomy_bytes(raw)
+    second = taxonomy_module._parse_article_taxonomy_bytes(raw)
+
+    assert first is second
+    assert first.sha256 == hashlib.sha256(raw).hexdigest()
+    assert yaml_loads == 1
+    with pytest.raises((AttributeError, TypeError)):
+        first.categories[0].signals += ("changed",)
+
+    changed = raw + b"# distinct bytes\n"
+    changed_result = taxonomy_module._parse_article_taxonomy_bytes(changed)
+    assert changed_result is not first
+    assert changed_result.sha256 == hashlib.sha256(changed).hexdigest()
+    assert yaml_loads == 2
+
+    invalid_yaml = b"schema_version: [\n"
+    for _ in range(2):
+        with pytest.raises(ValueError, match="valid UTF-8 YAML"):
+            taxonomy_module._parse_article_taxonomy_bytes(invalid_yaml)
+    assert yaml_loads == 4  # Failed parses are not memoized.
+
+    with pytest.raises(ValueError, match="frozen identity"):
+        taxonomy_module.frozen_article_taxonomy({
+            "taxonomy_id": first.taxonomy_id,
+            "sha256": "0" * 64,
+            "definition_yaml": first.definition_yaml,
+        })
+    with pytest.raises(ValueError, match="frozen identity"):
+        taxonomy_module.frozen_article_taxonomy({
+            "taxonomy_id": first.taxonomy_id,
+            "sha256": first.sha256,
+            "definition_yaml": (first.definition_yaml + "# changed\n"),
+        })
+    with pytest.raises(ValueError, match="valid UTF-8 YAML"):
+        taxonomy_module._parse_article_taxonomy_bytes(b"\xff")
+    with pytest.raises(ValueError, match="size limit"):
+        taxonomy_module._parse_article_taxonomy_bytes(b"x" * (MAX_TAXONOMY_BYTES + 1))
+    with pytest.raises(ValueError, match="bytes"):
+        taxonomy_module._parse_article_taxonomy_bytes("not bytes")
+
+
 def test_json_schema_snapshot_matches_the_yaml_authority():
     taxonomy = load_article_taxonomy()
     schema = _semantic_schema()

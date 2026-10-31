@@ -4,6 +4,7 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -294,9 +295,9 @@ def _parse_categories(value: Any) -> tuple[ArticleCategory, ...]:
     return tuple(output)
 
 
-def _parse_article_taxonomy_bytes(raw: bytes) -> ArticleTaxonomy:
-    if not raw or len(raw) > MAX_TAXONOMY_BYTES:
-        raise ValueError("taxonomy file is empty or exceeds its size limit")
+@lru_cache(maxsize=16)
+def _parse_article_taxonomy_bytes_cached(raw: bytes) -> ArticleTaxonomy:
+    """Parse exact taxonomy bytes; returned dataclasses contain only immutable values."""
     try:
         decoded = raw.decode("utf-8")
     except UnicodeError as exc:
@@ -320,6 +321,14 @@ def _parse_article_taxonomy_bytes(raw: bytes) -> ArticleTaxonomy:
         constraints=_parse_constraints(root["constraints"]),
         definition_yaml=decoded,
     )
+
+
+def _parse_article_taxonomy_bytes(raw: bytes) -> ArticleTaxonomy:
+    if not isinstance(raw, bytes):
+        raise ValueError("taxonomy bytes must be bytes")
+    if not raw or len(raw) > MAX_TAXONOMY_BYTES:
+        raise ValueError("taxonomy file is empty or exceeds its size limit")
+    return _parse_article_taxonomy_bytes_cached(raw)
 
 
 def _validate_supported_taxonomy_identity(taxonomy: ArticleTaxonomy) -> None:
