@@ -180,6 +180,80 @@ def test_public_connection_streams_approved_snapshots_without_bulk_fetch(tmp_pat
         source.close()
 
 
+
+
+def test_public_connection_preserves_approved_pdf_blob_bytes(tmp_path):
+    import climate_registry.publication as publication
+
+    pdf_bytes = b"\x00"
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        _pdf(db, identity="pdf-only", url="https://example.org/pdf-only",
+             occurrence_id="pdf-only-occurrence")
+        assert db.execute(
+            "SELECT original_pdf,size_bytes FROM pdf_intake_documents WHERE document_sha256=?",
+            ("f" * 64,),
+        ).fetchone() == (None, 1)
+        db.execute(
+            "UPDATE pdf_intake_documents SET original_pdf=? WHERE document_sha256=?",
+            (pdf_bytes, "f" * 64),
+        )
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit fixture approval"}, status="accepted_legacy")
+
+    source = sqlite3.connect(database)
+    projection = publication.public_connection(source)
+    try:
+        assert projection.execute(
+            "SELECT 1 FROM public_snapshot_metadata WHERE entity_kind='pdf_article' AND entity_id='pdf-only'"
+        ).fetchone()
+        pdf_row = projection.execute(
+            "SELECT original_pdf FROM pdf_intake_documents WHERE document_sha256=?",
+            ("f" * 64,),
+        ).fetchone()
+        assert pdf_row and pdf_row[0] == pdf_bytes
+        assert hashlib.sha256(pdf_row[0]).digest() == hashlib.sha256(pdf_bytes).digest()
+        with pytest.raises(sqlite3.OperationalError):
+            projection.execute("CREATE TABLE query_only_rejected(id)")
+    finally:
+        projection.close()
+        source.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        projection.execute("SELECT 1")
+
+
+def test_public_connection_closes_projection_after_migration_error(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+    import climate_registry.schema as schema
+
+    database = _database(tmp_path)
+    source = sqlite3.connect(database)
+    original_connect = sqlite3.connect
+    original_migrations = schema.apply_migrations
+    created = []
+
+    def capture_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        created.append(connection)
+        return connection
+
+    def migrate_then_fail(connection):
+        original_migrations(connection)
+        raise RuntimeError("synthetic projection construction failure")
+
+    monkeypatch.setattr(publication.sqlite3, "connect", capture_connect)
+    monkeypatch.setattr(schema, "apply_migrations", migrate_then_fail)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic projection construction failure"):
+            publication.public_connection(source)
+    finally:
+        source.close()
+
+    assert len(created) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        created[0].execute("SELECT 1")
+
+
 def test_snapshot_loader_shares_unicode_strings_only():
     import climate_registry.publication as publication
 

@@ -894,7 +894,7 @@ def public_connection(source):
     if not enabled(source):
         return source
     from .schema import apply_migrations
-    projection = sqlite3.connect(":memory:", factory=_PublicSnapshotConnection)
+    projection = sqlite3.connect("", factory=_PublicSnapshotConnection)
     projection.row_factory = sqlite3.Row
     try:
         apply_migrations(projection)
