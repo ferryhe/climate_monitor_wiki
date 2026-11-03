@@ -909,7 +909,15 @@ def public_connection(source):
                 projection.executemany(f'INSERT INTO "{table}" VALUES({",".join("?" for _ in cursor.description)})', cursor)
         # PDF archive metadata is independent of whether any extracted item is public.
         if source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pdf_intake_documents'").fetchone():
-            cursor = source.execute("SELECT * FROM pdf_intake_documents")
+            source_columns = [
+                row[1] for row in source.execute('PRAGMA table_info("pdf_intake_documents")')
+            ]
+            selected_columns = ",".join(
+                'NULL AS "original_pdf"' if column == "original_pdf"
+                else '"' + column.replace('"', '""') + '"'
+                for column in source_columns
+            )
+            cursor = source.execute(f"SELECT {selected_columns} FROM pdf_intake_documents")
             columns = [item[0] for item in cursor.description]
             for row in cursor:
                 values = dict(zip(columns, row))
