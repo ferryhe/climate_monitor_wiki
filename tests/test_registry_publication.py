@@ -202,8 +202,16 @@ def test_public_connection_preserves_approved_pdf_blob_bytes(tmp_path):
             _approve(db, sha, {"basis": "explicit fixture approval"}, status="accepted_legacy")
 
     source = sqlite3.connect(database)
+    source_statements = []
+    source.set_trace_callback(source_statements.append)
     projection = publication.public_connection(source)
     try:
+        normalized_sql = [" ".join(statement.lower().split()) for statement in source_statements]
+        assert "select * from pdf_intake_documents" not in normalized_sql
+        assert any(
+            'null as "original_pdf"' in statement and "from pdf_intake_documents" in statement
+            for statement in normalized_sql
+        )
         assert projection.execute(
             "SELECT 1 FROM public_snapshot_metadata WHERE entity_kind='pdf_article' AND entity_id='pdf-only'"
         ).fetchone()
