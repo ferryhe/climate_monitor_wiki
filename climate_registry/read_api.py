@@ -1439,7 +1439,9 @@ class RegistryReader:
             with self.connect() as connection:
                 if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone() and connection.execute(
                         "SELECT 1 FROM public_snapshot_metadata WHERE json_type(snapshot_json,'$.identity_mapping')='object' LIMIT 1").fetchone():
-                    candidates = {(row[0], row[1]): json.loads(row[2]) for row in connection.execute(
+                    from .publication import _load_snapshot_json
+                    strings = {}
+                    candidates = {(row[0], row[1]): _load_snapshot_json(row[2], strings) for row in connection.execute(
                         "SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata")}
                     return self._pdf_report_from_published_candidates(connection, document_sha256,
                         allowed_occurrence_ids=allowed_occurrence_ids, allowed_calendar_ids=allowed_calendar_ids,
@@ -2664,8 +2666,12 @@ class RegistryReader:
                 if getattr(self, "_snapshot_direct", False):
                     approved = self._public_candidates("meeting", "pdf_meeting")
                 else:
-                    approved = {(kind, identity): json.loads(encoded) for kind, identity, encoded in
-                        connection.execute("SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata")}
+                    from .publication import _load_snapshot_json
+                    strings = {}
+                    approved = {(kind, identity): _load_snapshot_json(encoded, strings)
+                        for kind, identity, encoded in connection.execute(
+                            "SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata "
+                            "WHERE entity_kind IN ('meeting','pdf_meeting')")}
                 pdf_occurrences = {identity: {row["occurrence_id"]
                     for row in snapshot.get("tables", {}).get("pdf_intake_calendar_items", [])
                     if row.get("event_id") == identity and row.get("occurrence_id")}
@@ -3134,8 +3140,11 @@ class RegistryReader:
         if not getattr(self, "_snapshot_direct", False):
             # The materialized transaction already holds these exact approved views.
             with self.connect() as connection:
-                candidates = {(row[0], row[1]): json.loads(row[2]) for row in connection.execute(
-                    "SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata WHERE entity_kind IN ('meeting','pdf_meeting')")}
+                from .publication import _load_snapshot_json
+                strings = {}
+                candidates = {(row[0], row[1]): _load_snapshot_json(row[2], strings) for row in connection.execute(
+                    "SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata "
+                    "WHERE entity_kind IN ('meeting','pdf_meeting')")}
         legacy_batch_ids = sorted({run.get("batch_id")
             for (kind, _identity), snapshot in candidates.items() if kind == "meeting"
             for run in snapshot.get("dependencies", {}).get("meeting_runs", [])
