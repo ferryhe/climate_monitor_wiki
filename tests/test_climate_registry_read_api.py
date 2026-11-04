@@ -1135,7 +1135,8 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert raw.pdf_calendar_items()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
 
 
-def test_calendar_pdf_recovery_interleaves_source_reads_for_public_and_private_paths(registry_client, monkeypatch):
+@pytest.mark.parametrize("registry_client", [20, None], indirect=True)
+def test_calendar_pdf_recovery_interleaves_source_reads_for_public_and_private_paths(registry_client, monkeypatch, request):
     import climate_monitor.pdf_intake as pdf_intake
     import climate_registry.read_api as read_api
 
@@ -1246,7 +1247,12 @@ def test_calendar_pdf_recovery_interleaves_source_reads_for_public_and_private_p
         assert set(fetched) == set(shas) and len(set(fetched)) == 2
         assert recovered == fetched
 
-    assert_interleaved(public_events)
+    if request.node.callspec.params["registry_client"] == 20:
+        assert_interleaved(public_events)
+    else:
+        assert [kind for kind, _ in public_events] == ["fetch", "fetch"]
+        assert {sha for _, sha in public_events} == set(shas)
+        assert all(not item.get("raw_text") for item in public_items)
     assert_interleaved(private_events)
     fields = ("occurrence_id", "event_id", "source_document_sha256", "name", "raw_date",
         "start_date", "end_date", "date_precision", "source_filename")
