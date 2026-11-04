@@ -1135,6 +1135,138 @@ def test_pdf_intake_articles_and_calendar_are_queryable_without_fabricating_core
     assert raw.pdf_calendar_items()["items"][0]["source_observations"][0]["path"] == "C:/input/report.pdf"
 
 
+@pytest.mark.parametrize("registry_client", [20, None], indirect=True)
+def test_calendar_pdf_recovery_interleaves_source_reads_for_public_and_private_paths(registry_client, monkeypatch, request):
+    import climate_monitor.pdf_intake as pdf_intake
+    import climate_registry.read_api as read_api
+
+    client, database = registry_client
+
+    def make_pdf(text):
+        stream = f"BT /F1 12 Tf 30 740 Td ({text}) Tj ET".encode("ascii")
+        objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
+        ]
+        data = bytearray(b"%PDF-1.4\n")
+        offsets = [0]
+        for number, obj in enumerate(objects, 1):
+            offsets.append(len(data))
+            data.extend(f"{number} 0 obj\n".encode("ascii") + obj + b"\nendobj\n")
+        xref = len(data)
+        data.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode("ascii"))
+        for offset in offsets[1:]:
+            data.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+        data.extend(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii"))
+        return bytes(data)
+
+    docs = [
+        ("Climate forum September 4 2026", "2026-09-04"),
+        ("Risk workshop September 5 2026", "2026-09-05"),
+    ]
+    originals = [make_pdf(text) for text, _ in docs]
+    shas = [hashlib.sha256(raw).hexdigest() for raw in originals]
+    with sqlite3.connect(database) as db:
+        for index, ((text, date), raw, sha) in enumerate(zip(docs, originals, shas), 1):
+            occurrence_id = f"calendar-memory-{index}"
+            article_id = f"calendar-memory-article-{index}"
+            filename = f"calendar-memory-{index}.pdf"
+            document_json = json.dumps({"title": text, "page_count": 1,
+                "pages": [{"page": 1, "text": text}]})
+            item = {"event_id": occurrence_id, "occurrence_id": occurrence_id,
+                "source_document_sha256": sha, "page": 1, "name": text,
+                "kind": "publication", "raw_date": date, "start_date": date,
+                "end_date": date, "date_precision": "day", "summary": text,
+                "source_urls": [f"https://example.test/{index}"], "raw_text": text}
+            db.execute("""INSERT INTO pdf_intake_documents(
+                document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,
+                document_json,imported_at,period_start,period_end,date_of_run,original_pdf)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (sha, f"C:/input/{filename}", filename, "application/pdf", len(raw), sha,
+                 document_json, "2026-09-06T00:00:00Z", date, date, date, raw))
+            db.execute("INSERT INTO pdf_intake_articles(article_id,canonical_url,title,imported_at) VALUES(?,?,?,?)",
+                (article_id, f"https://example.test/{index}", text, "2026-09-06T00:00:00Z"))
+            occurrence = {"occurrence_id": occurrence_id, "source_document_sha256": sha,
+                "page": 1, "raw_url": f"https://example.test/{index}", "report_date": date,
+                "publication_date": date, "content_sha256": str(index) * 64,
+                "title": text, "summary": text}
+            db.execute("""INSERT INTO pdf_intake_article_occurrences(
+                occurrence_id,article_id,source_document_sha256,page,raw_url,report_date,
+                publication_date,content_sha256,page_sha256,occurrence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (occurrence_id, article_id, sha, 1, occurrence["raw_url"], date, date,
+                 occurrence["content_sha256"], str(index + 2) * 64, json.dumps(occurrence)))
+            db.execute("""INSERT INTO pdf_intake_calendar_items(
+                occurrence_id,event_id,source_document_sha256,page,name,kind,raw_date,
+                date_precision,start_date,end_date,summary,content_sha256,
+                type_safe_classification_json,item_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (occurrence_id, occurrence_id, sha, 1, text, "publication", date, "day",
+                 date, date, text, str(index + 3) * 64, None, json.dumps(item)))
+    _approve_fixture(database)
+
+    events = []
+    original_connect = read_api.sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        def trace(statement):
+            if "SELECT original_pdf FROM pdf_intake_documents WHERE document_sha256=" in statement:
+                sha = next((value for value in shas if value in statement), "unknown")
+                events.append(("fetch", sha))
+        connection.set_trace_callback(trace)
+        return connection
+
+    monkeypatch.setattr(read_api.sqlite3, "connect", traced_connect)
+    recover = pdf_intake.recover_calendar_fields
+
+    def traced_recover(raw, items):
+        events.append(("recover", hashlib.sha256(raw).hexdigest()))
+        return recover(raw, items)
+
+    monkeypatch.setattr(pdf_intake, "recover_calendar_fields", traced_recover)
+    reader = RegistryReader(database, repository_root=ROOT)
+    start = len(events)
+    with reader.public_snapshot():
+        assert not getattr(reader, "_snapshot_direct", False)
+        assert getattr(reader, "_snapshot_connection", None) is not None
+        public_items = reader.pdf_calendar_items_all()
+    public_events = events[start:]
+    private_start = len(events)
+    private_items = RegistryReader(database, repository_root=ROOT, public=False).pdf_calendar_items_all()
+    private_events = events[private_start:]
+
+    def assert_interleaved(trace):
+        assert len(trace) == 4
+        assert [kind for kind, _ in trace] == ["fetch", "recover", "fetch", "recover"]
+        fetched = [sha for kind, sha in trace if kind == "fetch"]
+        recovered = [sha for kind, sha in trace if kind == "recover"]
+        assert set(fetched) == set(shas) and len(set(fetched)) == 2
+        assert recovered == fetched
+
+    if request.node.callspec.params["registry_client"] == 20:
+        assert_interleaved(public_events)
+    else:
+        assert [kind for kind, _ in public_events] == ["fetch", "fetch"]
+        assert {sha for _, sha in public_events} == set(shas)
+        assert all(not item.get("raw_text") for item in public_items)
+    assert_interleaved(private_events)
+    fields = ("occurrence_id", "event_id", "source_document_sha256", "name", "raw_date",
+        "start_date", "end_date", "date_precision", "source_filename")
+    signature = lambda rows: [{key: row.get(key) for key in fields} for row in rows]
+    assert signature(public_items) == signature(private_items)
+    assert {row["source_document_sha256"] for row in public_items} == set(shas)
+
+    monkeypatch.setattr(api_server, "_range_report_overlay", lambda: (None, None, None))
+    for sha, raw in zip(shas, originals):
+        response = client.get(f"/api/registry/pdf-intake/reports/{sha}/pdf")
+        assert response.status_code == 200
+        assert response.content == raw
+
+
 def test_direct_public_pdf_readers_preserve_frozen_source_and_meeting_contracts(registry_client, monkeypatch):
     import climate_registry.publication as publication
 

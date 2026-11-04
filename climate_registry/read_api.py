@@ -2554,49 +2554,53 @@ class RegistryReader:
                 sha: self._pdf_document_sources(connection, sha)
                 for sha in {row["source_document_sha256"] for row in rows}
             }
-            originals = {}
-            if "original_pdf" in {column[1] for column in connection.execute("PRAGMA table_info(pdf_intake_documents)")}:
-                for sha in sources:
-                    row = connection.execute(
-                        "SELECT original_pdf FROM pdf_intake_documents WHERE document_sha256=?", (sha,),
-                    ).fetchone()
-                    if row is not None:
-                        originals[sha] = row["original_pdf"]
-        items = []
-        for row in rows:
-            try:
-                item = json.loads(row["item_json"])
-            except (json.JSONDecodeError, TypeError) as exc:
-                raise RegistryContractError("invalid PDF calendar item data") from exc
-            if not isinstance(item, dict):
-                raise RegistryContractError("invalid PDF calendar item data")
-            item["occurrence_id"] = row["occurrence_id"]
-            try:
-                item["type_safe_classification"] = (
-                    json.loads(row["type_safe_classification_json"])
-                    if row["type_safe_classification_json"] else None
-                )
-            except (json.JSONDecodeError, TypeError) as exc:
-                raise RegistryContractError("invalid PDF calendar classification data") from exc
-            item["source_kind"] = "pdf"
-            item["source_filename"] = row["source_filename"]
-            item["source_observations"] = sources[row["source_document_sha256"]]
-            items.append(item)
-        if originals:
-            from climate_monitor.pdf_intake import recover_calendar_fields
+            items = []
+            for row in rows:
+                try:
+                    item = json.loads(row["item_json"])
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise RegistryContractError("invalid PDF calendar item data") from exc
+                if not isinstance(item, dict):
+                    raise RegistryContractError("invalid PDF calendar item data")
+                item["occurrence_id"] = row["occurrence_id"]
+                try:
+                    item["type_safe_classification"] = (
+                        json.loads(row["type_safe_classification_json"])
+                        if row["type_safe_classification_json"] else None
+                    )
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise RegistryContractError("invalid PDF calendar classification data") from exc
+                item["source_kind"] = "pdf"
+                item["source_filename"] = row["source_filename"]
+                item["source_observations"] = sources[row["source_document_sha256"]]
+                items.append(item)
+
             indexes_by_sha: dict[str, list[int]] = {}
             for index, item in enumerate(items):
                 if not item.get("metadata_only") and not item.get("manual_verification") and item.get("raw_text"):
                     indexes_by_sha.setdefault(item["source_document_sha256"], []).append(index)
-            for sha, raw in originals.items():
-                if raw is not None:
-                    indexes = indexes_by_sha.get(sha, [])
-                    if not indexes:
+            has_original_pdf = "original_pdf" in {
+                column[1] for column in connection.execute("PRAGMA table_info(pdf_intake_documents)")
+            }
+            if has_original_pdf:
+                from climate_monitor.pdf_intake import recover_calendar_fields
+
+                for sha in sources:
+                    original_row = connection.execute(
+                        "SELECT original_pdf FROM pdf_intake_documents WHERE document_sha256=?", (sha,),
+                    ).fetchone()
+                    if original_row is None:
                         continue
-                    recovered = recover_calendar_fields(raw, [items[index] for index in indexes])
-                    by_id = {item["occurrence_id"]: item for item in recovered}
-                    for index in indexes:
-                        items[index] = by_id.get(items[index]["occurrence_id"], items[index])
+                    original_pdf = original_row["original_pdf"]
+                    indexes = indexes_by_sha.get(sha, [])
+                    if original_pdf is not None and indexes:
+                        source_items = [items[index] for index in indexes]
+                        recovered = recover_calendar_fields(original_pdf, source_items)
+                        by_id = {item["occurrence_id"]: item for item in recovered}
+                        for index in indexes:
+                            items[index] = by_id.get(items[index]["occurrence_id"], items[index])
+                        del by_id, recovered, source_items
+                    del original_pdf, original_row
         from climate_monitor.meeting_fields import pdf_meeting_fields
         from .information_checks import latest_checks
         with self.connect() as connection:
