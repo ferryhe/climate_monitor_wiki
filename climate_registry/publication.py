@@ -257,7 +257,9 @@ def _identity_aliases(connection):
     """Load the current approved graph once for a writer's unchanged source batch."""
     from .identity import approved_aliases
     if connection.execute("SELECT 1 FROM sqlite_temp_master WHERE name='public_snapshot_metadata'").fetchone():
-        views = {(row[0], row[1]): json.loads(row[2]) for row in connection.execute("SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata")}
+        strings = {}
+        views = {(row[0], row[1]): _load_snapshot_json(row[2], strings) for row in connection.execute(
+            "SELECT entity_kind,entity_id,snapshot_json FROM public_snapshot_metadata")}
     elif enabled(connection) and next(iter(connection.execute("""SELECT 1 FROM registry_publication p
             JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
             WHERE json_type(c.snapshot_json,'$.identity_correction')='object'

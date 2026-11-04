@@ -533,7 +533,9 @@ def _render_registry_report_page(reader: RegistryReader, report_date: str, sourc
             identities = [row["article_id"] for row in appearances]
             candidates = reader._public_candidates("article", entity_ids={"article": identities}) if identities else {}
         else:
-            candidates = {(kind, identity): json.loads(encoded) for kind, identity, encoded in connection.execute(
+            from .publication import _load_snapshot_json
+            strings = {}
+            candidates = {(kind, identity): _load_snapshot_json(encoded, strings) for kind, identity, encoded in connection.execute(
                 """SELECT DISTINCT m.entity_kind,m.entity_id,m.snapshot_json FROM public_snapshot_metadata m
                    JOIN report_appearances ra ON ra.article_id=m.entity_id
                    WHERE m.entity_kind='article' AND ra.report_id=?""", (report["report_id"],))}

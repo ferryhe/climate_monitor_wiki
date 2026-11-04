@@ -279,6 +279,91 @@ def test_snapshot_loader_shares_unicode_strings_only():
     assert publication.digest(snapshot) == publication.digest(json.loads(encoded))
 
 
+def test_identity_alias_loader_shares_strings_within_each_materialized_batch(monkeypatch):
+    import climate_registry.identity as identity
+    import climate_registry.publication as publication
+
+    repeated = "Repeated approved snapshot detail " * 100
+    snapshots = [
+        {"entity_kind": "article", "entity_id": "target", "detail": repeated,
+            "count": 1, "enabled": True, "identity_mapping": {"aliases": [{"source": {
+                "entity_kind": "article", "entity_id": "source", "selection": "entity"}}]}},
+        {"entity_kind": "article", "entity_id": "source", "detail": repeated,
+            "values": [1, None, False], "identity_mapping": {"aliases": []}},
+    ]
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TEMP TABLE public_snapshot_metadata(entity_kind TEXT,entity_id TEXT,snapshot_json TEXT)")
+    connection.executemany("INSERT INTO public_snapshot_metadata VALUES(?,?,?)", [
+        (snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot)) for snapshot in snapshots])
+    batches = []
+    real_aliases = identity.approved_aliases
+
+    def capture(views):
+        batches.append(views)
+        return real_aliases(views)
+
+    monkeypatch.setattr(identity, "approved_aliases", capture)
+    try:
+        expected = {("article", "source"): ("article", "target")}
+        assert publication._identity_aliases(connection) == expected
+        assert publication._identity_aliases(connection) == expected
+    finally:
+        connection.close()
+
+    assert batches[0][("article", "target")]["detail"] is batches[0][("article", "source")]["detail"]
+    assert batches[0][("article", "target")]["detail"] is not batches[1][("article", "target")]["detail"]
+    assert batches[0][("article", "target")]["count"] == 1
+    assert batches[0][("article", "target")]["enabled"] is True
+    assert batches[0][("article", "source")]["values"] == [1, None, False]
+
+
+def test_materialized_calendar_identity_resolution_only_decodes_meeting_snapshots(monkeypatch):
+    import climate_registry.publication as publication
+    import climate_registry.read_api as read_api
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute("PRAGMA user_version=21")
+    connection.execute("CREATE TEMP TABLE public_snapshot_metadata(entity_kind TEXT,entity_id TEXT,snapshot_json TEXT)")
+    connection.execute("CREATE TABLE climate_events(event_id TEXT)")
+    meeting = {"entity_kind": "meeting", "entity_id": "native",
+        "tables": {"pdf_intake_calendar_items": []}}
+    pdf_meeting = {"entity_kind": "pdf_meeting", "entity_id": "target",
+        "identity_mapping": {"aliases": [{"source": {"entity_kind": "pdf_meeting", "entity_id": "source",
+            "selection": "occurrences", "occurrence_ids": ["pdf-occurrence"]}}]},
+        "tables": {"pdf_intake_calendar_items": [{"event_id": "source", "occurrence_id": "pdf-occurrence",
+            "source_document_sha256": "d" * 64}]}}
+    pdf_article = {"entity_kind": "pdf_article", "entity_id": "pdf-article",
+        "tables": {"pdf_intake_article_occurrences": []}}
+    article = {"entity_kind": "article", "entity_id": "article",
+        "tables": {"pdf_intake_calendar_items": []}}
+    values = [
+        (snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot))
+        for snapshot in (meeting, pdf_meeting, pdf_article, article)]
+    connection.executemany("INSERT INTO public_snapshot_metadata VALUES(?,?,?)", values)
+    reader = RegistryReader.__new__(RegistryReader)
+    reader.database, reader.public, reader.static_snapshot = None, True, None
+    reader._snapshot_connection, reader._snapshot_direct = connection, False
+    selected = {encoded for kind, _identity, encoded in values if kind in {"meeting", "pdf_meeting"}}
+    unrelated = {encoded for kind, _identity, encoded in values if kind in {"article", "pdf_article"}}
+    real_loads = publication.json.loads
+    decoded = []
+
+    def only_meeting_snapshots(encoded, *args, **kwargs):
+        if encoded in selected:
+            decoded.append(encoded)
+        elif encoded in unrelated:
+            pytest.fail("calendar identity resolution decoded an unrelated snapshot")
+        return real_loads(encoded, *args, **kwargs)
+
+    monkeypatch.setattr(read_api.json, "loads", only_meeting_snapshots)
+    try:
+        item = {"event_id": "source", "occurrence_id": "pdf-occurrence", "source_document_sha256": "d" * 64}
+        assert reader.resolve_pdf_meeting_identities([item]) == [{**item, "canonical_pdf_event_id": "target"}]
+        assert set(decoded) == selected
+    finally:
+        connection.close()
+
+
 def test_public_snapshot_rejects_sha_mismatch_after_shared_string_decode(tmp_path, monkeypatch):
     import climate_registry.publication as publication
     from climate_registry.read_api import RegistryContractError
