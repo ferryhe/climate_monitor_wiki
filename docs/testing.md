@@ -21,8 +21,8 @@ Current automated coverage includes:
 - `brief` vs `detailed` vs `executive` answer-mode behavior
 - rolling weekly-report summaries such as `past 4 weeks`
 - monthly/date-range prompts such as `this month` and explicit ISO date ranges
-- `/api/config` payload fields required by graph/dataview, prompt starters, and precomputed graph payloads
-- showcase root HTML containing `Historical Reports`, `Chat`, and `Obsidian` workspaces
+- `/api/config` payload fields required by Graph, prompt starters, and precomputed graph payloads
+- showcase root HTML containing `Reports`, `Chat`, `Dates`, and `Graph` workspaces
 - exact-date weekly Registry dry-run, candidate promotion, rollback/restore,
   DB-first metadata precedence, and the unscheduled 10:30 runner contract
 - canonical URL identity, history selection and same-date carry-forward
@@ -60,24 +60,18 @@ or production scheduling. Dated SSH evidence and remaining live gates are in
 3. Switch between `Brief`, `Detailed`, and `Report` and ask the same question in all three modes.
 4. Confirm the detailed answer is meaningfully richer than `Brief`, and that `Report` uses sectioned output with clustered themes plus report-by-report coverage.
 5. Expand the `Evidence` drawer inside the assistant message.
-6. Click a `wiki/` source card and confirm the app switches to the `Obsidian` tab with that note selected.
+6. Click a `wiki/` source card and confirm the app focuses its Graph node without changing Chat context.
 7. Click a `sources/` source card and confirm the raw report opens.
 8. Ask `Summarize the past 4 weeks` and confirm the answer lists only real report dates in the window, without manufacturing missing daily updates.
 9. Ask `Give me an executive report for the past 12 weeks` and confirm the answer includes `Executive Summary`, `Major Themes`, `Date Coverage`, and `Report-by-Report Coverage`.
 
-### Obsidian Workspace
+### Graph
 
-1. Open the `Obsidian` tab.
-2. Confirm the page order is `Dataview + Note Detail` first, then `Graph View`.
-3. Confirm `Graph View` renders nodes and link lines.
-4. Switch from `Notes` to `Keywords` and confirm the keyword graph appears promptly with both note and keyword nodes.
-5. Click a graph node and verify:
-   - the Dataview row becomes selected
-   - the detail panel updates
-   - the chat header shows the active note badge
-6. Search in the Dataview box and confirm the table filters in place.
-7. Select a daily report note and click `Source`; confirm it opens the matching `sources/*.md` file on GitHub `main`.
-8. Click `Use in chat`, switch back to `Chat`, and ask a question about the selected note in `Detailed` mode.
+1. Open `Graph` and confirm it renders nodes and connections.
+2. Switch among `Notes`, `Concept Map`, and `Category Map`.
+3. Select nodes and connections by click and keyboard; verify diagram highlighting, no Wiki fetch, and no Chat context change.
+4. Expand the graph and close it with Escape; repeat at a mobile viewport.
+5. Read report/article content in `Reports` and meeting details in `Dates`.
 
 ### Offline Mode
 

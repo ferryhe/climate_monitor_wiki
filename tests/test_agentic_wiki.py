@@ -419,11 +419,14 @@ def test_showcase_root_defaults_to_chat_and_contains_workspaces():
     assert 'id="obsidianView"' in body
     assert 'id="messageInput"' in body
     assert 'id="graphSvg"' in body
-    assert 'id="rows"' in body
+    for removed_graph_id in ("rows", "wikiSearch", "detailMarkdown", "detailFile", "useInChatButton", "clearSelectionButton", "articleCategoryEvidence"):
+        assert f'id="{removed_graph_id}"' not in body
     assert 'data-answer-mode="detailed"' in body
     assert 'id="answerModeHint"' not in body
     assert 'id="registryPublisherCustom"' in body
     assert 'data-graph-mode="keywords"' in body
+    assert 'data-graph-mode="notes"' in body
+    assert 'data-graph-mode="article-categories"' in body
     assert body.index('id="chatTab"') < body.index('id="registryTab"')
     chat_tab_opening_tag = body[body.index('id="chatTab"') : body.index(">", body.index('id="chatTab"'))]
     assert 'class="tabbar__tab is-active"' in chat_tab_opening_tag
@@ -434,7 +437,7 @@ def test_showcase_root_defaults_to_chat_and_contains_workspaces():
     assert "hidden" in registry_opening_tag
     chat_opening_tag = body[body.index('id="chatView"') : body.index(">", body.index('id="chatView"'))]
     assert "hidden" not in chat_opening_tag
-    assert body.index("Graph View") < body.index("Page Index")
+    assert "Page Index" not in body
     keyword_button = body.index('data-graph-mode="keywords"')
     assert 'is-active' in body[keyword_button - 120 : keyword_button]
 

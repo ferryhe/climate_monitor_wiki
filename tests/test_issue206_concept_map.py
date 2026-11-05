@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 
-def test_concept_map_filters_both_graph_paths_without_changing_note_contracts():
+def test_concept_map_keeps_precomputed_and_fallback_relationships():
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is needed to exercise the Concept Map JavaScript functions")
@@ -71,12 +71,11 @@ const context = {
     notes: { title: "Vault Links", hint: "", legendHtml: "" },
     keywords: { title: "Concept Map", hint: "Edges explain concepts.", legendHtml: "Concept" },
   },
-  state: { rows: fixture.rows, concepts: fixture.concepts, filteredRows: fixture.rows },
-  els: { wikiSearch: { value: "" } },
+  state: { rows: fixture.rows, concepts: fixture.concepts },
 };
 vm.createContext(context);
 vm.runInContext(declarationSource("HIDDEN_GRAPH_CONCEPTS"), context);
-for (const name of ["keywordNodeId", "isDisplayableGraphConcept", "buildKeywordGraph", "normalizeGraphData", "scopeNotesGraphToPageSearch"]) {
+for (const name of ["keywordNodeId", "isDisplayableGraphConcept", "buildKeywordGraph", "normalizeGraphData", "graphDataForCurrentMode"]) {
   vm.runInContext(functionSource(name), context);
 }
 const sourceGraph = {
@@ -101,13 +100,12 @@ const notesGraph = context.normalizeGraphData("notes", {
   links: [{ source: "wiki/a.md", target: "wiki/orphan.md" }],
 });
 context.state.rows = fixture.rows;
+context.state.graphData = { notes: { nodes: [sourceGraph.nodes[0], sourceGraph.nodes[1]], links: [{ source: "wiki/a.md", target: "wiki/orphan.md" }] }, keywords: sourceGraph };
+context.state.graphMode = "notes";
+const notesMode = context.graphDataForCurrentMode();
+context.state.graphMode = "keywords";
+const conceptMode = context.graphDataForCurrentMode();
 const fallback = context.buildKeywordGraph(fixture.rows);
-context.els.wikiSearch.value = "second";
-context.state.filteredRows = fixture.rows.filter((row) => row.path === "wiki/b.md");
-const scopedNotes = context.scopeNotesGraphToPageSearch(context.normalizeGraphData("notes", {
-  nodes: sourceGraph.nodes.filter((node) => node.kind === "note"),
-  links: [{ source: "wiki/a.md", target: "wiki/orphan.md" }],
-}));
 process.stdout.write(JSON.stringify({
   sourceUnchanged: JSON.stringify(sourceGraph) === sourceBefore,
   casingVariantsHidden: ["PDF Report Observation", "pdf report observation", "Original Links"].every(
@@ -115,9 +113,10 @@ process.stdout.write(JSON.stringify({
   ),
   meaningfulConceptVisible: context.isDisplayableGraphConcept("Diabetes") && context.isDisplayableGraphConcept("Climate Risk"),
   domainConceptHidden: !context.isDisplayableGraphConcept("imf.org"),
-  scopedNotes,
   notesGraphNodeIds: notesGraph.nodes.map((node) => node.id),
   notesGraphLinks: notesGraph.links,
+  notesMode,
+  conceptMode,
   precomputed,
   fallback,
 }));
@@ -155,12 +154,12 @@ process.stdout.write(JSON.stringify({
     assert data["casingVariantsHidden"] is True
     assert data["meaningfulConceptVisible"] is True
     assert data["domainConceptHidden"] is True
-    assert [node["id"] for node in data["scopedNotes"]["nodes"]] == ["wiki/b.md"]
-    assert data["scopedNotes"]["links"] == []
-    assert data["scopedNotes"]["emptyMessage"] == "No notes match the Page Index search."
-    assert data["scopedNotes"]["staticLayout"] is True
     assert data["notesGraphNodeIds"] == ["wiki/a.md", "wiki/orphan.md"]
     assert data["notesGraphLinks"] == [{"source": "wiki/a.md", "target": "wiki/orphan.md"}]
+    assert [node["id"] for node in data["notesMode"]["nodes"]] == ["wiki/a.md", "wiki/orphan.md"]
+    assert [node["label"] for node in data["conceptMode"]["nodes"] if node["kind"] == "keyword"] == [
+        "Climate Risk", "Parametric Insurance", "Diabetes",
+    ]
     precomputed = data["precomputed"]
     assert precomputed["title"] == "Concept Map"
     assert precomputed["staticLayout"] is True
@@ -217,18 +216,19 @@ def test_concept_map_copy_and_note_label_accessibility_contract():
     assert ".graph-node--keywords.graph-node--note:hover text," in css
     assert ".graph-node--keywords.graph-node--note:focus-visible text," in css
     assert ".graph-node--keywords.graph-node--note.is-active text" in css
-    assert ".graph-node--notes.graph-node--note.is-neighbor circle" in css
-    assert "graph-edge--notes.is-context-link" in css
+    assert ".graph-node.is-neighbor circle" in css
+    assert ".graph-edge.is-highlighted" in css
     assert ".graph-wrap" in css and "overflow: auto;" in css
     assert "function graphNodePosition(mode, node, rank, count, width, height" in app
     assert "function graphCanvasHeight(rectHeight, categoryHeight = 0)" in app
     assert 'graphCanvasHeight(svg.getBoundingClientRect().height, categoryLayout?.height)' in app
-    assert "Search the Page Index to focus this graph." in app
-    assert 'Selected reference for chat: ${doc.displayTitle}' in app
-    assert html.index('id="activeContextBadge"') > html.index('<footer class="composer-shell">')
-    assert 'class="composer-shell__context"' in html
-    assert 'state.confirmedContextPath = state.activeContextPath;' in app
-    assert ".context-badge.is-confirmed" in css
+    assert "Search the Page Index" not in app + html
+    assert "selectGraphNode(node)" in app
+    assert 'aria-label", categoryMode ? `${node.label}: ${node.weight} supporting articles` : `Select ${node.label}`' in app
+    assert 'state.graphSelection = { nodeId: node.id }' in app
+    assert "/wiki/" not in app[app.index("function selectGraphNode("):app.index("function selectGraphEdge(")]
+    assert "Use in chat" not in html
+    assert "Clear selection" not in html
     assert 'aria-live="polite"' in html
     assert 'id="graphExpandButton"' in html
     assert 'aria-expanded="false"' in html
@@ -236,7 +236,6 @@ def test_concept_map_copy_and_note_label_accessibility_contract():
     assert ".graph-viewport.is-expanded" in css
     assert 'els.graphExpandButton?.addEventListener("click", toggleGraphExpanded);' in app
     assert 'document.addEventListener("keydown", handleGraphKeydown);' in app
-    assert 'node.kind === "keyword" ? `Filter Page Index by keyword ${node.label}` : `Open note ${node.label}`' in app
     assert 'group.addEventListener("click", activateNode);' in app
     assert 'if (event.key === "Enter" || event.key === " ")' in app
-    assert "setActiveContext(node.refPath || node.id);" in app
+    assert "setActiveContext(node.refPath || node.id);" not in app

@@ -662,24 +662,24 @@ def main() -> int:
         page.get_by_role("button", name="Missing article").click()
         page.get_by_role("heading", name="Article unavailable").wait_for()
 
-        page.get_by_role("tab", name="Obsidian").click()
+        page.get_by_role("tab", name="Graph").click()
         assert page.get_by_role("button", name="Concept Map").get_attribute("aria-pressed") == "true"
         graph_box = page.locator(".panel--graph").bounding_box()
-        index_box = page.locator(".panel--table").bounding_box()
-        assert graph_box and index_box and graph_box["y"] < index_box["y"]
+        assert graph_box
+        for selector in ["#rows", "#wikiSearch", "#detailMarkdown", "#detailFile", "#useInChatButton", "#articleCategoryEvidence"]:
+            assert page.locator(selector).count() == 0
         keyword_circle = page.locator("#graphSvg .graph-node--keyword circle")
         keyword_circle.wait_for()
         assert float(keyword_circle.get_attribute("r")) > 10
-        keyword_button = page.get_by_role("button", name="Filter Page Index by keyword Climate pricing")
+        keyword_button = page.get_by_role("button", name="Select Climate pricing")
         keyword_button.focus()
         keyword_button.press("Enter")
-        assert page.get_by_label("Search wiki pages").input_value() == "Climate pricing"
-        page.get_by_role("cell", name="Climate pricing topic", exact=True).click()
+        assert keyword_button.get_attribute("aria-pressed") == "true"
+        assert page.locator("#graphSvg .graph-edge.is-highlighted").count() == 1
         page.get_by_role("tab", name="Chat").click()
-        _visible(page, "Focused note: Climate pricing topic")
-        page.get_by_role("tab", name="Obsidian").click()
-        page.get_by_role("cell", name="climate-monitor-2026-08-10", exact=True).click()
-        page.get_by_role("link", name="Historical report · 2026-08-10").click()
+        assert page.locator("#activeContextBadge").is_hidden()
+        page.get_by_role("tab", name="Reports").click()
+        page.get_by_role("button", name="Report page 1", exact=False).click()
         page.get_by_role("heading", name="Report detail").wait_for()
         assert page.url.endswith("#historical-report=2026-08-10")
         page.reload()
@@ -698,10 +698,10 @@ def main() -> int:
         assert page.locator("#registryReportPdf").get_attribute("download") is None
         page.go_forward()
         page.get_by_role("heading", name="Report detail").wait_for()
-        page.get_by_role("tab", name="Obsidian").click()
-        page.get_by_role("cell", name="climate-monitor-2026-08-10", exact=True).click()
+        page.get_by_role("tab", name="Reports").click()
+        page.get_by_role("button", name="Report page 1", exact=False).click()
         page.get_by_role("tab", name="Chat").click()
-        _visible(page, "Focused report: climate-monitor-2026-08-10")
+        assert page.locator("#activeContextBadge").is_hidden()
         assert page.evaluate("window.__registryRequests.every(x => x.method === 'GET')")
         _assert_network_isolation(page, audit)
         page.close()

@@ -18,8 +18,6 @@ def run_js(body):
     start = source.index("function buildArticleCategoryGraph(articles, taxonomy) {")
     end = source.index("\nfunction getNodeRadius(", start)
     layout_end = source.index("\nfunction setConnectionStatus(", end)
-    evidence_start = source.index("function showArticleCategoryEvidence(")
-    evidence_end = source.index("\nasync function fetchMarkdown(", evidence_start)
     taxonomy = {"categories": [{"id": item.id, "label": item.label} for item in load_article_taxonomy().categories]}
     setup = r'''
 class Element {
@@ -30,12 +28,11 @@ class Element {
 }
 const state={articleCategoryGraphLoading:false,graphData:{articleCategories:null},graphMode:"article-categories"};
 const GRAPH_COPY={articleCategories:{title:"Category Map",hint:"hint",legendHtml:""}};
-const els={articleCategoryEvidence:new Element(),graphModeButtons:[]};
+const els={graphModeButtons:[]};
 function renderCurrentGraph() {}
-function registryElement(tag,className="",text="") { return new Element(tag,text); }
 function registryErrorMessage(error) { return String(error); }
 '''
-    script = "const taxonomy=" + json.dumps(taxonomy) + ";" + setup + source[start:layout_end] + source[evidence_start:evidence_end] + body
+    script = "const taxonomy=" + json.dumps(taxonomy) + ";" + setup + source[start:layout_end] + body
     result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 
@@ -60,11 +57,11 @@ process.stdout.write(JSON.stringify(graph));
     assert nodes["Climate & Health"]["weight"] == 0
     assert nodes["Physical Risk"]["radius"] > nodes["Insurance Risk"]["radius"] > nodes["Climate & Health"]["radius"]
     assert sorted(item["weight"] for item in result["links"]) == [1, 2]
-    pdf = next(item for item in nodes["Insurance Risk"]["articles"] if item.get("source_kind") == "pdf")
-    assert pdf["published_candidate_sha256"] == "approved-pdf"
+    assert all("articles" not in item for item in nodes.values())
+    assert all("articles" not in item for item in result["links"])
 
 
-def test_category_map_fetches_once_and_keeps_compact_approved_evidence():
+def test_category_map_fetches_once_and_keeps_only_relationship_counts():
     result = run_js(r'''
 let calls=0;
 const article={article_id:"a",title:"Approved",publisher:"Publisher",source_kind:"registry",categories:["Physical Risk"],
@@ -72,24 +69,24 @@ const article={article_id:"a",title:"Approved",publisher:"Publisher",source_kind
 async function registryFetch(path) { calls++; if(path!=="/api/registry/article-categories") throw Error(path); return {items:[article],taxonomy}; }
 (async()=>{ await loadArticleCategoryGraph(); await loadArticleCategoryGraph();
 const node=state.graphData.articleCategories.nodes.find(item=>item.label==="Physical Risk");
-showArticleCategoryEvidence(node.label,node.articles);
-const entry=els.articleCategoryEvidence.children[1].children[0];
-process.stdout.write(JSON.stringify({calls,footer:entry.children[1].textContent,source:entry.children[0].dataset.articleSource})); })();
+process.stdout.write(JSON.stringify({calls,weight:node.weight,keys:Object.keys(node).sort(),links:state.graphData.articleCategories.links})); })();
 ''')
-    assert result == {"calls": 1, "footer": "Publisher · reviewed_category_correction · content version content-1", "source": "registry"}
+    assert result["calls"] == 1
+    assert result["weight"] == 1
+    assert "articles" not in result["keys"]
+    assert result["links"] == []
 
 
-def test_category_map_error_can_retry_and_clears_old_evidence():
+def test_category_map_error_can_retry_without_evidence_panel():
     result = run_js(r'''
 let calls=0;
 async function registryFetch() { if(++calls===1) throw Error("unavailable"); return {items:[],taxonomy}; }
-(async()=>{ showArticleCategoryEvidence("old",[]); await loadArticleCategoryGraph();
+(async()=>{ await loadArticleCategoryGraph();
 const error=state.graphData.articleCategories.emptyMessage;
-const hidden=els.articleCategoryEvidence.hidden;
 await loadArticleCategoryGraph();setGraphMode("keywords");
-process.stdout.write(JSON.stringify({error,hidden,calls,nodes:state.graphData.articleCategories.nodes.length,mode:state.graphMode})); })();
+process.stdout.write(JSON.stringify({error,calls,nodes:state.graphData.articleCategories.nodes.length,mode:state.graphMode})); })();
 ''')
-    assert result == {"error": "Article categories could not be loaded.", "hidden": True, "calls": 2, "nodes": 14, "mode": "keywords"}
+    assert result == {"error": "Article categories could not be loaded.", "calls": 2, "nodes": 14, "mode": "keywords"}
 
 
 def test_category_map_visible_labels_and_accessible_edges_replace_old_path():
@@ -108,7 +105,11 @@ def test_category_map_visible_labels_and_accessible_edges_replace_old_path():
     assert '.graph-node--article-categories rect' not in css
     assert 'const card = document.createElementNS' not in app
     assert 'circle.setAttribute("r", String(getNodeRadius(node)))' in app
-    assert "opacity: 0" not in css[css.index(".graph-node--article-categories circle"):css.index(".article-category-evidence {")]
+    assert 'line.addEventListener("click", selectEdge);' in app
+    assert 'group.addEventListener("click", activateNode);' in app
+    assert 'selectGraphEdge(edge)' in app
+    assert "articleCategoryEvidence" not in app + page + css
+    assert "opacity: 0" not in css[css.index(".graph-node--article-categories circle"):css.index(".graph-edge-count {")]
 
 
 def test_category_circle_sizes_follow_support_count_instead_of_degree():

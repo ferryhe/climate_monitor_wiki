@@ -51,8 +51,9 @@ const selection = { hidden: true, textContent: '' };
 const state = {
   graphExpanded: false,
   graphReturnFocus: null,
-  activeContextPath: 'wiki/diabetes.md',
+  graphSelection: { nodeId: 'wiki/diabetes.md' },
   rows: [{ path: 'wiki/diabetes.md', displayTitle: 'Diabetes', type: 'topic' }],
+  graph: { nodes: [{ id: 'wiki/diabetes.md', label: 'Diabetes' }] },
 };
 let renders = 0;
 const context = vm.createContext({
@@ -107,9 +108,10 @@ assert.equal(documentClasses.has('graph-expanded'), true);
 assert.equal(expandButton.attributes['aria-expanded'], 'true');
 assert.equal(expandButton.textContent, 'Close full-screen graph');
 assert.equal(selection.hidden, false);
-assert.match(selection.textContent, /Selected page: Diabetes.*Close graph to view Note Detail/);
+assert.equal(selection.textContent, 'Selected: Diabetes');
 const longPdfTitle = 'PDF source observation · carbonaccountingfinancials.com · p.24';
 state.rows[0].displayTitle = longPdfTitle;
+state.graph.nodes[0].label = longPdfTitle;
 context.renderExpandedGraphSelection();
 assert.ok(selection.textContent.includes(longPdfTitle), 'the expanded status preserves a long PDF source title');
 assert.equal(renders, 1);

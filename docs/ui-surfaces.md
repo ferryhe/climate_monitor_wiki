@@ -7,9 +7,9 @@ The web application has four complementary tabs:
 - `Reports`: the report archive for weekly briefings,
   PDFs, source articles, and article-level provenance.
 - `Chat`: a minimal single-column conversation surface with inline evidence drawers inside assistant messages.
-- `Graph`: a restored browsing workspace with `Graph View`, `Dataview`, and `Note Detail`.
+- `Graph`: a relationship view with `Notes`, `Concept Map`, and `Category Map` modes.
 
-The tabs share one piece of state: `activeContextPath`.
+Chat context is maintained separately from Graph selection.
 `Dates` shows upcoming meetings and deadlines. On screens up to 760px wide, the header uses a page menu and Reports shows a list or a detail at a time. Returning to the list preserves its page, filters, and scroll position. Desktop keeps the horizontal tabs and two panes.
 
 Prompt starters keep the same API questions and answer modes. Compact buttons fill the composer for review before sending. The allowance and token entry share one expandable control; invalid-token and request errors stay visible.
@@ -66,33 +66,29 @@ This keeps the answering flow close to the `c-ross-2` style while using the dark
 
 ## Graph Tab
 
-The Obsidian workspace restores the older browsing affordances:
+Graph is a relationship view with three modes: `Notes`, `Concept Map`, and
+`Category Map`. Notes shows internal wiki links from Obsidian wikilinks and
+local Markdown `.md` links. Concept Map connects wiki pages to indexed concepts.
+Category Map shows the Registry article-category taxonomy and distinct article
+counts. All three modes support node and connection selection, keyboard
+activation, expansion, and dragging where applicable; selection only highlights
+the diagram and does not load page content or set Chat context. The expanded
+toolbar names the selected node; Escape or `Close full-screen graph` returns to
+the page.
 
-- `Graph View`: precomputed graph payloads with a `Notes / Keywords` mode switch
-- `Dataview`: searchable table for page metadata, links, and daily-report status
-- `Note Detail`: metadata plus raw Markdown preview for the selected note
-
-The current page order is `Dataview + Note Detail` first, then `Graph View`.
-`Notes` mode shows the wiki's internal page relationships from both Obsidian
-wikilinks and local Markdown `.md` links. Links to external websites, source
-reports, and paths outside the wiki stay out of this graph. The Page Index
-search scopes Notes mode. Notes and Concept Map use static radial layouts, with
-page labels revealed on hover, keyboard focus, or selection; selecting a note
-also highlights its linked pages and edges. `Expand graph` opens the current map
-to the available screen area; Escape or `Close full-screen graph` returns to the
-page. In the expanded view, selecting a note shows its title and reminds the
-reader that closing the map returns to the full Note Detail pane.
-`Keywords` mode now renders a note-to-concept map built from a backend concept index derived from both curated wiki notes and `sources/` raw reports.
-The API now precomputes both graph payloads so the frontend can hydrate the Obsidian workspace directly instead of assembling the keyword graph on the fly.
+Graph does not preview Wiki Markdown or expose a page index. Read article and
+report content in Reports, and meeting details in Dates. The API precomputes
+the Notes and Concept Map payloads; Category Map loads its snapshot-backed
+Registry category data when selected.
 
 Wiki pages include approved article content and PDF/source-observation pages
 rendered from Registry evidence. The display title uses the Markdown page
 heading; lowercase headings are made readable and show the canonical host when
 one is present. A domain-only PDF observation heading is shown as a PDF source
-observation with its explicit website and page number. The original Markdown,
-page path, and retrieval content remain available in Note Detail. The Concept
-Map hides exact structural headings and bare domain labels from the graph view
-only; the full concept catalog, pages, and evidence remain available elsewhere.
+observation with its explicit website and page number. The Concept Map hides
+exact structural headings and bare domain labels. Page content remains in the
+Wiki corpus for Chat retrieval and is shown in the appropriate Reports or Dates
+detail view.
 
 ### How the Keywords graph gets its concepts
 
@@ -128,16 +124,14 @@ the Keywords mode reflects the concept index. Chat retrieval reads Wiki pages
 and retained `sources/` reports independently of graph edges, so graph indexing
 does not author or alter the facts used in answers.
 
-Selecting a note node or Dataview row sets the active note for chat retrieval.
-Clicking a keyword node applies that concept as a Dataview filter so you can jump straight to the relevant note set.
-For daily report notes, the `Source` link in the detail panel points to the corresponding `sources/*.md` file on GitHub's default branch instead of the local wiki summary note.
+Selecting a graph node or connection highlights its relationships in the
+diagram only. Wiki links in Chat answers can focus the matching node in Notes
+mode without changing Chat context or loading a Wiki page.
 
 ## Active Context Rules
 
-- Selecting a note in the Obsidian tab activates it for chat.
-- `Use in chat` moves the selected note's display title into a persistent status
-  beside the composer. Chat still uses the same question input, and retrieval
-  prioritizes that note until the context is cleared or another note is chosen.
+- Graph selections do not set Chat context. The Chat request continues to use
+  its existing `contextPath` field for contexts supplied by compatible clients.
 - Clicking an inline citation opens its matching evidence entry in that assistant reply.
 - Clicking a meeting source card opens its matching Dates record in the app; article and report cards open their matching Historical Reports detail. The original source URL remains available from those details.
 - Source cards show a retrieval score only when one was supplied, using its raw score without a percentage or probability label. After an answer arrives, the chat positions the current question at the top with the answer below it.
@@ -175,7 +169,9 @@ The web workspace depends on `GET /api/config` returning:
 - `graphs.keywords.static_layout`
 - `wiki.source_documents`
 
-Those fields are enough to hydrate the precomputed graphs, Dataview table, prompt starters, and active-note routing before individual Markdown files are fetched for preview.
+Those fields hydrate the graph modes and prompt starters. Graph selection does
+not fetch Markdown or set Chat context. The server response schema and the
+Obsidian plugin's `contextPath` contract remain unchanged.
 
 The Historical Reports tab additionally consumes the read-only
 `/api/registry/*` routes. Narrative briefings and PDF links are projected from
