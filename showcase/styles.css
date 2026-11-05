@@ -1678,6 +1678,22 @@ tbody tr.is-selected {
   color: #9dd0b1;
 }
 
+.md-preview {
+  margin: 0;
+  min-height: 260px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #cfd7db;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+
 .muted {
   margin: 0;
   color: var(--muted);

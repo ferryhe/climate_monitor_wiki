@@ -4,6 +4,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../showcase/index.html', import.meta.url), 'utf8');
+const styles = readFileSync(new URL('../showcase/styles.css', import.meta.url), 'utf8');
 function functionSource(name) {
   let start = source.indexOf(`function ${name}(`);
   assert.notEqual(start, -1, `missing ${name}`);
@@ -106,6 +107,12 @@ vm.runInContext(functionSource('loadConfig'), catalogContext);
 await catalogContext.loadConfig();
 assert.deepEqual(requests, ['/api/config'], 'initializing without Page Index and detail elements makes no Wiki request');
 assert.equal(catalogState.rows.length, 1);
+
+assert.match(html, /<pre id="registryMarkdown" class="md-preview"><\/pre>/);
+const markdownStyle = styles.match(/\.md-preview\s*\{([^}]*)\}/)?.[1] || '';
+assert.match(markdownStyle, /white-space:\s*pre-wrap/, 'Reports Markdown continues to wrap long lines');
+assert.match(markdownStyle, /word-break:\s*break-word/);
+assert.match(markdownStyle, /overflow:\s*auto/);
 
 class SvgElement {
   constructor(name) {

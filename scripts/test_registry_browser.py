@@ -679,6 +679,8 @@ def main() -> int:
         page.get_by_role("tab", name="Chat").click()
         assert page.locator("#activeContextBadge").is_hidden()
         page.get_by_role("tab", name="Reports").click()
+        page.locator('[data-registry-mode="reports"]').click()
+        assert page.locator("#registryReportsPanel").is_visible()
         page.get_by_role("button", name="Report page 1", exact=False).click()
         page.get_by_role("heading", name="Report detail").wait_for()
         assert page.url.endswith("#historical-report=2026-08-10")
