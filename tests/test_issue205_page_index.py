@@ -238,22 +238,19 @@ def test_catalog_uses_same_page_titles_and_only_explicit_content_dates(tmp_path)
     assert len(catalog) == len(pages)
 
 
-def test_page_index_sorts_and_searches_by_display_metadata_without_changing_paths(current_article_catalog):
+def test_graph_workspace_rows_keep_display_order_and_internal_links(current_article_catalog):
     node = shutil.which("node")
     if not node:
-        pytest.skip("Node.js is needed to exercise the Page Index JavaScript functions")
+        pytest.skip("Node.js is needed to exercise the graph workspace data")
 
     app_path = Path(__file__).parents[1] / "showcase" / "app.js"
     documents = [
-        {"title": "z-old", "path": "wiki/old.md", "type": "topic", "display_title": "Needle old", "display_date": "2025-04", "links": []},
-        {"title": "m-tie-a", "path": "wiki/tie-a.md", "type": "topic", "display_title": "Needle tie A", "display_date": "2026-09-14", "display_date_basis": "report_date", "links": ["target"]},
-        {"title": "a-new", "path": "wiki/new.md", "type": "topic", "display_title": "Needle newest", "display_date": "2026-10-04", "display_date_basis": "publication_date", "links": ["target"]},
-        {"title": "b-tie-b", "path": "wiki/tie-b.md", "type": "topic", "display_title": "Needle tie B", "display_date": "2026-09-14", "display_date_basis": "report_date", "links": []},
-        {"title": "quarter", "path": "wiki/quarter.md", "type": "topic", "display_title": "Needle quarter", "display_date": "2026-Q3", "display_date_basis": "publication_date", "links": []},
-        {"title": "mid-quarter", "path": "wiki/mid-quarter.md", "type": "topic", "display_title": "Mid quarter date", "display_date": "2026-07-15", "display_date_basis": "publication_date", "links": []},
-        {"title": "c-unknown", "path": "wiki/unknown.md", "type": "topic", "display_title": "Unknown", "display_date": None, "links": []},
-        {"title": "target", "path": "wiki/target.md", "type": "topic", "display_title": "Readable target", "display_date": None, "links": []},
-        {"title": "isolated", "path": "wiki/isolated.md", "type": "topic", "display_title": "Zero-link page", "display_date": None, "links": []},
+        {"title": "z-old", "path": "wiki/old.md", "type": "topic", "display_title": "Old title", "display_date": "2025-04", "links": []},
+        {"title": "m-tie-a", "path": "wiki/tie-a.md", "type": "topic", "display_title": "Tie A", "display_date": "2026-09-14", "links": ["target"]},
+        {"title": "a-new", "path": "wiki/new.md", "type": "topic", "display_title": "Newest", "display_date": "2026-10-04", "links": ["target"]},
+        {"title": "b-tie-b", "path": "wiki/tie-b.md", "type": "topic", "display_title": "Tie B", "display_date": "2026-09-14", "links": []},
+        {"title": "target", "path": "wiki/target.md", "type": "topic", "display_title": "Readable target", "links": []},
+        {"title": "isolated", "path": "wiki/isolated.md", "type": "topic", "display_title": "Zero-link page", "links": []},
     ]
     script = r"""
 const fs = require("node:fs");
@@ -273,46 +270,24 @@ function functionSource(name) {
 }
 const context = {
   GRAPH_COPY: { notes: { title: "Notes", hint: "", legendHtml: "" } },
-  state: { rows: [], filteredRows: [] },
-  normalizeSearchText: (value) => String(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(),
-  renderRows: () => {},
+  state: { rows: [] },
 };
 vm.createContext(context);
-for (const name of ["displayDateSortKey", "buildWorkspaceData", "applyTableFilter", "normalizeGraphData", "registryArticleDateLabel", "displayDateLabel"]) {
+for (const name of ["displayDateSortKey", "buildWorkspaceData", "normalizeGraphData"]) {
   vm.runInContext(functionSource(name), context);
 }
 const payload = JSON.parse(fs.readFileSync(0, "utf8"));
-const docs = payload.documents;
-const data = context.buildWorkspaceData(docs);
+const data = context.buildWorkspaceData(payload.documents);
 const current = context.buildWorkspaceData(payload.current);
 context.state.rows = data.rows;
-context.state.rows.push({
-  path: "wiki/page-update.md",
-  displayTitle: "Updated page",
-  displayDate: "2025-11",
-  displayDateBasis: "page_update_date",
-  type: "topic",
-});
-context.applyTableFilter("last updated date");
-const updateBasisPaths = context.state.filteredRows.map((row) => row.path);
-context.state.rows.pop();
-context.applyTableFilter("needle");
 const graph = context.normalizeGraphData("notes", {
   nodes: [{ id: "wiki/target.md", label: "target", kind: "note", type: "topic" }],
   links: [{ source: "wiki/new.md", target: "wiki/target.md" }],
 });
 process.stdout.write(JSON.stringify({
-  currentRows: current.rows.map(row => ({path: row.path, label: context.displayDateLabel(row)})),
   rows: data.rows.map(({ path, displayTitle, inlinks }) => ({ path, displayTitle, inlinks })),
-  dateLabels: [
-    context.displayDateLabel(data.rows.find((row) => row.path === "wiki/new.md")),
-    context.displayDateLabel(data.rows.find((row) => row.path === "wiki/unknown.md")),
-    context.displayDateLabel({ displayDate: "2025-11", displayDateBasis: "page_update_date" }),
-    context.displayDateLabel({ displayDate: "2026-Q3", displayDateBasis: "publication_date" }),
-  ],
+  currentPaths: current.rows.map((row) => row.path),
   edges: data.edges,
-  filteredPaths: context.state.filteredRows.map((row) => row.path),
-  updateBasisPaths,
   graphNodes: graph.nodes,
   graphLinks: graph.links,
 }));
@@ -325,83 +300,23 @@ process.stdout.write(JSON.stringify({
         check=True,
     )
     data = json.loads(result.stdout)
-    current = {row["path"].removeprefix("wiki/article-").removesuffix(".md"): row["label"] for row in data["currentRows"]}
-    assert current == {
-        "unknown": "Unknown", "publication": "2026-10-10 (publication date)",
-        "updated_date": "2026-10-16 (source updated date)", "revision_date": "2026-10-16 (source revision date)",
-        "content_version_discovery": "2026-10-16 (first observed content update)",
-        "collection": "2026-10-02 (first collection date)",
-        "month-source": "October 2026 (normalized to 2026-10-15 for sorting) (publication date)",
-        "month-human": "October 2026 (normalized to 2026-10-15 for sorting) · human override (publication date)",
-    }
-    current_paths = [row["path"] for row in data["currentRows"]]
+    assert [row["path"] for row in data["rows"]] == [
+        "wiki/new.md", "wiki/tie-a.md", "wiki/tie-b.md", "wiki/old.md", "wiki/target.md", "wiki/isolated.md",
+    ]
+    current_paths = data["currentPaths"]
     assert current_paths[-1] == "wiki/article-unknown.md"
     assert current_paths.index("wiki/article-month-source.md") < current_paths.index("wiki/article-publication.md")
-
-    paths = [row["path"] for row in data["rows"]]
-    assert paths == [
-        "wiki/new.md",
-        "wiki/tie-a.md",
-        "wiki/tie-b.md",
-        "wiki/mid-quarter.md",
-        "wiki/quarter.md",
-        "wiki/old.md",
-        "wiki/unknown.md",
-        "wiki/target.md",
-        "wiki/isolated.md",
-    ]
-    assert data["dateLabels"] == [
-        "2026-10-04 (publication date)",
-        "Unknown",
-        "2025-11 (last updated date)",
-        "2026-Q3 (publication date)",
-    ]
-    assert [row["path"] for row in data["rows"] if row["inlinks"] == 0] == [
-        "wiki/new.md",
-        "wiki/tie-a.md",
-        "wiki/tie-b.md",
-        "wiki/mid-quarter.md",
-        "wiki/quarter.md",
-        "wiki/old.md",
-        "wiki/unknown.md",
-        "wiki/isolated.md",
-    ]
     assert data["edges"] == [
         {"source": "wiki/tie-a.md", "target": "wiki/target.md"},
         {"source": "wiki/new.md", "target": "wiki/target.md"},
     ]
-    assert data["filteredPaths"] == ["wiki/new.md", "wiki/tie-a.md", "wiki/tie-b.md", "wiki/quarter.md", "wiki/old.md"]
-    assert data["updateBasisPaths"] == ["wiki/page-update.md"]
-    assert data["graphNodes"][0]["id"] == "wiki/target.md"
     assert data["graphNodes"][0]["label"] == "Readable target"
     assert data["graphLinks"] == [{"source": "wiki/new.md", "target": "wiki/target.md"}]
 
 
-def test_page_index_explains_internal_links_and_zero_link_pages():
+def test_graph_page_has_no_page_index_or_markdown_detail():
     html = (Path(__file__).parents[1] / "showcase" / "index.html").read_text(encoding="utf-8")
-    assert "internal wiki links" in html.lower()
-    assert "0-link pages remain useful" in html.lower()
-
-
-def test_local_markdown_links_and_obsidian_aliases_build_wiki_graph_edges(tmp_path):
-    wiki, sources = tmp_path / "wiki", tmp_path / "sources"
-    wiki.mkdir()
-    sources.mkdir()
-    (wiki / "index.md").write_text(
-        "# Wiki index\n\n"
-        "[[article-article-a|Readable alias]]\n"
-        "[Generated index link](article-article-a.md)\n"
-        "[Wiki path link](wiki/article-article-a.md)\n"
-        "[External article](https://example.org/article-article-a.md)\n"
-        "[Source report](sources/climate-monitor-2026-09-07.md)\n"
-        "[Outside page](../article-article-a.md)\n",
-        encoding="utf-8",
-    )
-    (wiki / "article-article-a.md").write_text("# Climate and Diabetes\n\nArticle text.\n", encoding="utf-8")
-    kb = WikiKnowledgeBase(wiki, sources)
-
-    index = next(row for row in kb.document_catalog() if row["path"] == "wiki/index.md")
-    assert index["links"] == ["article-article-a"]
-    assert kb.graph_catalog()["notes"]["links"] == [
-        {"source": "wiki/index.md", "target": "wiki/article-article-a.md"}
-    ]
+    for element_id in ("rows", "wikiSearch", "detailMarkdown", "detailFile"):
+        assert f'id="{element_id}"' not in html
+    assert "Page Index" not in html
+    assert "Markdown Preview" not in html

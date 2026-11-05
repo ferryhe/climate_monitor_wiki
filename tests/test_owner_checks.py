@@ -1346,26 +1346,18 @@ def test_owner_report_bulk_export_chat_and_category_carriers_keep_checked_role(t
     assert categories["items"]
     assert all(not item["categories"] for item in categories["items"])
     node = shutil.which("node")
-    assert node, "Node.js is required to prove the actual article-category builder input has no owner source button"
+    assert node, "Node.js is required to check the category graph relationship payload"
     source = (Path(__file__).resolve().parents[1] / "showcase/app.js").read_text(encoding="utf-8")
     start = source.index("function buildArticleCategoryGraph(articles, taxonomy) {")
-    end = source.index("\nasync function loadArticleCategoryGraph()", start)
-    evidence_start = source.index("function showArticleCategoryEvidence(label, articles) {")
-    evidence_end = source.index("\nasync function fetchMarkdown(", evidence_start)
+    end = source.index("\nfunction getNodeRadius(", start)
     script = r'''const assert=require("node:assert/strict");
-class Element { constructor(tag="div",text=""){this.tag=tag;this.textContent=text;this.children=[];this.dataset={};this.hidden=false;} append(...items){this.children.push(...items);} replaceChildren(...items){this.children=[...items];} focus(){} }
 const payload=JSON.parse(process.argv[1]);
-const state={graphMode:"article-categories",articleCategoryGraphLoading:false};
 const GRAPH_COPY={articleCategories:{title:"Category Map",hint:"",legendHtml:""}};
-const els={articleCategoryEvidence:new Element()};
-function registryElement(tag,klass="",text=""){return new Element(tag,text);}
-''' + source[start:end] + source[evidence_start:evidence_end] + r'''
+''' + source[start:end] + r'''
 const graph=buildArticleCategoryGraph(payload.items,payload.taxonomy);
-assert.ok(graph.nodes.every(node=>node.articles.length===0));
-const node=graph.nodes.find(item=>item.label===payload.taxonomy.categories[0].label);
-showArticleCategoryEvidence(node.label,node.articles);
-const list=els.articleCategoryEvidence.children.find(item=>item.tag==="ul");
-assert.equal(list.children.length,0);
+assert.ok(graph.nodes.every(node=>!Object.hasOwn(node,"articles")));
+assert.ok(graph.links.every(edge=>!Object.hasOwn(edge,"articles")));
+assert.ok(graph.nodes.every(node=>Number.isInteger(node.weight)));
 process.stdout.write(JSON.stringify({owner_buttons:0,category_nodes:graph.nodes.length}));'''
     subprocess.run([node, "-e", script, json.dumps(categories)], cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, check=True)
 

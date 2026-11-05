@@ -2,293 +2,178 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const taxonomy = {categories:[{id:"flood",label:"Flood"},{id:"insurance",label:"Insurance"}]};
 const source = readFileSync(new URL('../showcase/app.js', import.meta.url), 'utf8');
-const index = readFileSync(new URL('../showcase/index.html', import.meta.url), 'utf8');
-const slice = (start, end) => {
-  const from = source.indexOf(start);
-  const to = source.indexOf(end, from);
-  assert.notEqual(from, -1, `missing function marker: ${start}`);
-  assert.notEqual(to, -1, `missing end marker: ${end}`);
-  return source.slice(from, to);
+const html = readFileSync(new URL('../showcase/index.html', import.meta.url), 'utf8');
+const styles = readFileSync(new URL('../showcase/styles.css', import.meta.url), 'utf8');
+function functionSource(name) {
+  let start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `missing ${name}`);
+  if (source.slice(start - 6, start) === 'async ') start -= 6;
+  const open = source.indexOf('{', start);
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1;
+    if (source[index] === '}') depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
+  }
+  throw new Error(`unclosed ${name}`);
+}
+
+function classList() {
+  const values = new Set();
+  return {
+    toggle(name, force) { force ? values.add(name) : values.delete(name); },
+    add(name) { values.add(name); },
+    remove(name) { values.delete(name); },
+    values,
+  };
+}
+function graphNode(id) {
+  return {
+    id,
+    kind: 'note',
+    group: { classList: classList(), attributes: {}, setAttribute(key, value) { this.attributes[key] = value; }, querySelector: () => ({ setAttribute() {} }) },
+  };
+}
+const left = graphNode('wiki/left.md');
+const right = graphNode('wiki/right.md');
+const edge = { source: left, target: right };
+const edgeElement = { classList: classList(), attributes: {}, setAttribute(key, value) { this.attributes[key] = value; } };
+const state = {
+  activeContextPath: 'wiki/chat-context.md',
+  graphSelection: null,
+  graph: {
+    nodes: [left, right],
+    nodeEls: [left.group, right.group],
+    links: [edge],
+    linkEls: [edgeElement],
+    edgeTargetEls: [],
+    edgeLabelEls: [],
+  },
 };
+let wikiRequests = 0;
+const context = vm.createContext({
+  state,
+  fetch: (url) => { if (String(url).startsWith('/wiki/')) wikiRequests += 1; },
+  getNodeRadius: () => 5,
+  renderExpandedGraphSelection() {},
+});
+vm.runInContext([
+  functionSource('updateGraphSelection'),
+  functionSource('selectGraphNode'),
+  functionSource('selectGraphEdge'),
+].join('\n'), context);
 
-async function graphAtSize(size) {
-  const calls = [];
-  const items = Array.from({ length: size }, (_, index) => ({
-    article_id: `article-${index}`,
-    canonical_url: `https://example.org/${index}`,
-    title: `Climate article ${index}`,
-    publisher: 'Example Institute',
-    source_kind: index % 3 === 0 ? 'pdf' : 'registry',
-    current_version_id: `version-${index}`,
-    metadata_provenance: { categories: index % 3 === 0 ? 'manual_enrichment' : 'source_report' },
-    categories: ['Flood', 'Insurance'],
-  }));
-  const context = vm.createContext({
-    GRAPH_COPY: { articleCategories: { title: 'Category Map', hint: 'hint', legendHtml: '' } },
-    state: { articleCategoryGraphLoading: false, graphData: { articleCategories: null } },
-    els: { articleCategoryEvidence: { hidden: true, replaceChildren() {} } },
-    fetch: async (url) => {
-      calls.push(String(url));
-      const parsed = new URL(String(url), 'http://localhost');
-      assert.equal(parsed.pathname, '/api/registry/article-categories', 'graph must use the snapshot-backed category endpoint');
-      return { ok: true, json: async () => ({ items, taxonomy }) };
-    },
-    registryErrorMessage: (error) => String(error),
-    renderCurrentGraph() {},
-  });
-  vm.runInContext([
-    slice('function buildArticleCategoryGraph(articles, taxonomy) {', '\nasync function loadArticleCategoryGraph()'),
-    slice('async function registryFetch(path) {', '\nfunction renderRegistryNotice('),
-    slice('async function loadArticleCategoryGraph() {', '\nfunction clearArticleCategoryEvidence()'),
-    slice('function clearArticleCategoryEvidence() {', '\nfunction setGraphMode('),
-    'globalThis.runGraph = loadArticleCategoryGraph;',
-  ].join('\n'), context);
-  await context.runGraph();
-  const graph = JSON.parse(JSON.stringify(context.state.graphData.articleCategories));
-  assert.equal(calls.length, 1, `${size} articles should need one complete collection request`);
-  assert.equal(context.state.articleCategoryGraphLoading, false);
-  if (size === 0) {
-    assert.equal(graph.nodes.length, 2);
-    assert.deepEqual(graph.links, []);
-    return;
+context.selectGraphNode(left);
+assert.deepEqual(JSON.parse(JSON.stringify(state.graphSelection)), { nodeId: 'wiki/left.md' });
+assert.equal(left.group.classList.values.has('is-active'), true);
+assert.equal(right.group.classList.values.has('is-neighbor'), true);
+assert.equal(edgeElement.classList.values.has('is-highlighted'), true);
+assert.equal(state.activeContextPath, 'wiki/chat-context.md', 'graph selection must leave Chat context alone');
+assert.equal(wikiRequests, 0, 'graph selection must not fetch Wiki Markdown');
+
+context.selectGraphEdge(edge);
+assert.deepEqual(JSON.parse(JSON.stringify(state.graphSelection)), { edgeKey: 'wiki/left.md\0wiki/right.md' });
+assert.equal(edgeElement.classList.values.has('is-highlighted'), true);
+assert.equal(state.activeContextPath, 'wiki/chat-context.md');
+assert.equal(wikiRequests, 0);
+
+for (const id of ['rows', 'wikiSearch', 'detailMarkdown', 'detailFile', 'useInChatButton', 'clearSelectionButton', 'articleCategoryEvidence']) {
+  assert.doesNotMatch(html, new RegExp(`id="${id}"`), `${id} is no longer part of Graph`);
+}
+assert.match(source, /const activateNode = \(\) => selectGraphNode\(node\);/);
+assert.match(source, /const selectEdge = \(\) => selectGraphEdge\(edge\);/);
+assert.match(source, /event\.key === "Enter" \|\| event\.key === " "/);
+assert.doesNotMatch(source, /fetch\(`\/\$\{path\}`\)/, 'Graph selection no longer has a Markdown fetch path');
+
+const catalogState = { documents: [], rows: [], edges: [], graphData: {}, promptStarters: [], messages: [], activeContextPath: null };
+const requests = [];
+const catalogContext = vm.createContext({
+  state: catalogState,
+  els: {},
+  fetch: async (url) => {
+    requests.push(String(url));
+    return { ok: true, json: async () => ({ documents: [{ path: 'wiki/a.md' }], concepts: [], graphs: {}, prompt_starters: [] }) };
+  },
+  buildWorkspaceData: (documents) => ({ rows: documents.map((doc) => ({ ...doc })), edges: [] }),
+  renderChatContext() {},
+  setConnectionStatus() {},
+  setAnswerMode() {},
+  setGraphMode() {},
+  renderMessages() {},
+  DEFAULT_PROMPT_STARTERS: [],
+});
+vm.runInContext(functionSource('loadConfig'), catalogContext);
+await catalogContext.loadConfig();
+assert.deepEqual(requests, ['/api/config'], 'initializing without Page Index and detail elements makes no Wiki request');
+assert.equal(catalogState.rows.length, 1);
+
+assert.match(html, /<pre id="registryMarkdown" class="md-preview"><\/pre>/);
+const markdownStyle = styles.match(/\.md-preview\s*\{([^}]*)\}/)?.[1] || '';
+assert.match(markdownStyle, /white-space:\s*pre-wrap/, 'Reports Markdown continues to wrap long lines');
+assert.match(markdownStyle, /word-break:\s*break-word/);
+assert.match(markdownStyle, /overflow:\s*auto/);
+
+class SvgElement {
+  constructor(name) {
+    this.localName = name;
+    this.attributes = {};
+    this.children = [];
+    this.listeners = {};
+    this.style = {};
+    this.classList = classList();
   }
-  const flood = graph.nodes.find((node) => node.label === 'Flood');
-  const insurance = graph.nodes.find((node) => node.label === 'Insurance');
-  assert.equal(flood.weight, size);
-  assert.equal(insurance.weight, size);
-  assert.equal(graph.links[0].weight, size);
-  assert.equal(flood.articles.length, size);
-  const pdfEvidence = flood.articles.find((article) => article.source_kind === 'pdf');
-  if (pdfEvidence) {
-    assert.equal(pdfEvidence.metadata_provenance.categories, 'manual_enrichment');
-    assert.ok(pdfEvidence.current_version_id);
-  }
+  setAttribute(key, value) { this.attributes[key] = String(value); }
+  getAttribute(key) { return this.attributes[key] ?? null; }
+  appendChild(child) { this.children.push(child); return child; }
+  append(...children) { this.children.push(...children); }
+  addEventListener(type, callback) { (this.listeners[type] ||= []).push(callback); }
+  dispatch(type, event = {}) { for (const callback of this.listeners[type] || []) callback(event); }
+  querySelector(name) { return this.children.find((child) => child.localName === name) || null; }
+  cloneNode() { const clone = new SvgElement(this.localName); clone.textContent = this.textContent; return clone; }
+  getBoundingClientRect() { return { width: 420, height: 360, left: 0, top: 0 }; }
+  set innerHTML(value) { if (value === '') this.children = []; }
 }
-
-for (const size of [0, 1, 100, 229]) {
-  await graphAtSize(size);
-}
-
-async function categoryEvidenceUsesApprovedContentVersion() {
-  const calls = [];
-  const section = {
-    hidden: true,
-    children: [],
-    replaceChildren(...children) { this.children = children; },
-    append(...children) { this.children.push(...children); },
-    focus() {},
-  };
-  const article = {
-    article_id: 'article-a', title: 'Approved article', canonical_url: 'https://example.org/a',
-    publisher: 'Publisher', source_kind: 'registry', content_version_id: 'content-a',
-    metadata_provenance: { categories: 'content_enrichment' }, categories: ['Insurance'],
-  };
-  const element = (tag, className, text) => ({
-    tag, className, text, dataset: {}, children: [],
-    append(...children) { this.children.push(...children); },
-  });
-  const context = vm.createContext({
-    GRAPH_COPY: { articleCategories: { title: 'Category Map', hint: 'hint', legendHtml: '' } },
-    state: { articleCategoryGraphLoading: false, graphMode: 'article-categories', graphData: { articleCategories: null } },
-    els: { articleCategoryEvidence: section },
-    fetch: async (url) => {
-      calls.push(String(url));
-      assert.equal(String(url), '/api/registry/article-categories');
-      return { ok: true, json: async () => ({ items: [article], taxonomy }) };
-    },
-    registryElement: element, registryErrorMessage: String, renderCurrentGraph() {},
-  });
-  vm.runInContext([
-    slice('function buildArticleCategoryGraph(articles, taxonomy) {', '\nasync function loadArticleCategoryGraph()'),
-    slice('async function registryFetch(path) {', '\nfunction renderRegistryNotice('),
-    slice('async function loadArticleCategoryGraph() {', '\nfunction clearArticleCategoryEvidence()'),
-    slice('function clearArticleCategoryEvidence() {', '\nfunction setGraphMode('),
-    slice('function showArticleCategoryEvidence(label, articles) {', '\nasync function fetchMarkdown('),
-    'globalThis.loadGraph = loadArticleCategoryGraph; globalThis.showEvidence = showArticleCategoryEvidence;',
-  ].join('\n'), context);
-  await context.loadGraph();
-  const keyword = context.state.graphData.articleCategories.nodes.find((node) => node.label === 'Insurance');
-  assert.ok(keyword);
-  context.showEvidence(keyword.label, keyword.articles);
-  const footer = section.children.find((item) => item.tag === 'ul').children[0].children[1].text;
-  assert.equal(footer, 'Publisher · content_enrichment · content version content-a');
-  assert.deepEqual(calls, ['/api/registry/article-categories'],
-    'supporting evidence must keep the approved version without fetching article detail');
-}
-
-await categoryEvidenceUsesApprovedContentVersion();
-
-async function catalogAtSize(size) {
-  const markdownCalls = [];
-  const documents = Array.from({ length: size }, (_, index) => ({
-    path: `wiki/page-${index}.md`, title: `Page ${index}`, type: index % 2 ? 'index' : 'daily',
-    links: [], status: index % 2 ? '-' : index % 4 ? 'Reported' : 'No report',
-    display_date: `2026-${String((index % 12) + 1).padStart(2, '0')}-01`,
-    display_date_basis: 'report_observation',
-  }));
-  const catalogContext = vm.createContext({
-    state: { graphMode: 'keywords', messages: [], activeContextPath: null,
-      markdownByPath: {}, markdownRequests: {} },
-    els: { wikiSearch: { value: '' }, detailMarkdown: { textContent: '' } },
-    fetch: async (url) => {
-      const path = String(url);
-      if (path === '/api/config') return { ok: true, json: async () => ({
-        concepts: [], graphs: { notes: null, keywords: null }, prompt_starters: ['starter'],
-        documents, agent_mode: 'offline', model: 'offline-extractive', default_answer_mode: 'detailed',
-      }) };
-      if (path.startsWith('/wiki/')) {
-        markdownCalls.push(path);
-        return { ok: true, text: async () => '# Requested page\n\nNo report.' };
-      }
-      throw new Error(`unexpected fetch ${path}`);
-    },
-    applyTableFilter() {}, renderDetail() {}, renderChatContext() {},
-    setConnectionStatus() {}, setAnswerMode() {}, setGraphMode() {}, renderMessages() {},
-    updateDocumentStatus() {},
-  });
-  vm.runInContext([
-    slice('function displayDateSortKey(value) {', '\nfunction buildWorkspaceData('),
-    slice('function buildWorkspaceData(documents) {', '\nfunction keywordNodeId('),
-    slice('function normalizeMojibake(text) {', '\nfunction inlineFmt('),
-    slice('async function fetchMarkdown(path) {', '\nfunction updateDocumentStatus('),
-    slice('async function ensureMarkdownLoaded(path) {', '\nfunction clearContext('),
-    slice('async function loadConfig() {', '\nfunction registryElement('),
-    'globalThis.loadCatalog = loadConfig; globalThis.loadRequestedPage = ensureMarkdownLoaded;',
-  ].join('\n'), catalogContext);
-  await catalogContext.loadCatalog();
-  assert.equal(catalogContext.state.documents.length, size);
-  assert.equal(catalogContext.state.rows.length, size);
-  assert.equal(catalogContext.state.rows.filter((row) => row.status === 'Reported').length,
-    documents.filter((row) => row.status === 'Reported').length);
-  assert.equal(catalogContext.state.rows.filter((row) => row.status === 'No report').length,
-    documents.filter((row) => row.status === 'No report').length);
-  assert.equal(markdownCalls.length, 0, `${size}-page catalog initialization must not fetch bodies`);
-  if (size > 0) {
-    const path = 'wiki/page-0.md';
-    await Promise.all([
-      catalogContext.loadRequestedPage(path),
-      catalogContext.loadRequestedPage(path),
-    ]);
-    assert.deepEqual(markdownCalls, ['/wiki/page-0.md'], `${size} pages should fetch a requested body once`);
-  }
-}
-
-for (const size of [0, 1, 100, 229]) {
-  await catalogAtSize(size);
-}
-
-async function articleDetailUsesCurrentCategories() {
-  const element = (tag = 'div', className = '', text = '') => ({
-    tag, className, text, children: [], hidden: false,
-    append(...children) { this.children.push(...children); },
-    replaceChildren(...children) { this.children = children; },
-    setAttribute() {},
-    removeAttribute(name) { delete this[name]; },
-    get childElementCount() { return this.children.length; },
-  });
-  const els = Object.fromEntries([
-    'registryArticleDetail', 'registryArticleTitle', 'registryArticleMeta', 'registryEnrichment',
-    'registryAppearances', 'registryAppearancesSection', 'registryContentSection',
-    'registryOriginalLink', 'registryContentTitle', 'registryMarkdown',
-  ].map((name) => [name, element()]));
-  let article;
-  const context = vm.createContext({
-    els, state: { registry: { articleDetailRequestSequence: 0, evidenceNavigationSequence: 0 } },
-    registryElement: element, registryMetric: element, registryFetch: async () => article,
-    safeSourceUrl: (value) => value || '', reviewedCheckedSourceUrl: () => '', registryErrorMessage: String,
-    registrySummaryPresentation: () => ({}), appendPdfAppearances() {},
-  });
-  vm.runInContext([
-    slice('function showMobileDetail(panel) {', '\nfunction closeMobileDetail('),
-    slice('function appendRegistryTags(container, label, values) {', '\nasync function loadRegistryArticle('),
-    slice('function resetRegistryArticleDetail(title, fallbackSourceUrl = "", fallbackSourceIsChecked = false) {', '\nasync function loadRegistryArticle('),
-    slice('async function loadRegistryArticle(articleId, articleSource = "registry", fallbackSourceUrl = "",', '\nfunction attachSourceCardClickHandler('),    'globalThis.loadDetail = loadRegistryArticle;',
-  ].join('\n'), context);
-  const texts = (node) => [node.text, ...node.children.flatMap(texts)].filter(Boolean);
-  article = {
-    title: 'Approved PDF article', categories: ['Food & Water Security'],
-    metadata_provenance: { categories: 'reviewed_category_correction' },
-    occurrences: [{ verified_information: {
-      summary: 'Checked summary', categories: ['Old source category'], keywords: ['Observed keyword'],
-    } }],
-  };
-  await context.loadDetail('pdf-article', 'pdf');
-  let displayed = texts(els.registryEnrichment);
-  assert.equal(displayed.filter((text) => text === 'Categories').length, 1);
-  assert.ok(displayed.includes('Food & Water Security'));
-  assert.ok(!displayed.includes('Source Categories'));
-  assert.ok(!displayed.includes('Old source category'));
-  const currentCategories = els.registryEnrichment.children.find((block) => block.children[0]?.text === 'Categories');
-  assert.ok(!texts(currentCategories).includes('Old source category'), 'source categories do not become article categories');
-  assert.ok(!displayed.includes('Checked summary'));
-  assert.ok(!displayed.includes('Observed keyword'));
-  article = { title: 'Unclassified article', categories: [], enrichment: { categories: ['Stale category'] } };
-  await context.loadDetail('core-article');
-  displayed = texts(els.registryEnrichment);
-  assert.ok(!displayed.includes('Stale category'), 'an explicit empty approved classification must stay empty');
-  delete article.categories;
-  await context.loadDetail('legacy-core-article');
-  assert.ok(texts(els.registryEnrichment).includes('Stale category'), 'legacy absent category fields retain enrichment fallback');
-}
-
-await articleDetailUsesCurrentCategories();
-
-async function importedPdfDetailOmitsUnwantedMetadata() {
-  const element = (tag = 'div', className = '', text = '') => ({
-    tag, className, text, children: [], hidden: false, dataset: {},
-    append(...children) { this.children.push(...children); },
-    setAttribute() {}, addEventListener() {},
-  });
-  const els = Object.fromEntries([
-    'registryReportDetail', 'registryReportTitle', 'registryReportMeta', 'registryImportedReport', 'registryReportPdf',
-  ].map((name) => [name, element()]));
-  const calls = [];
-  const context = vm.createContext({
-    els, state: { registry: { reportRequestSequence: 0 } },
-    registryFetch: async (path) => {
-      calls.push(path);
-      return {
-        report_title: 'Imported report', report_date: '2026-09-28', filename: 'report.pdf',
-        source_filenames: ['report.pdf'], edition: 5, reporting_period: 'Sep',
-        period_start: '2026-09-01', period_end: '2026-09-28', page_count: 12,
-        pdf_created_at: 'created', pdf_modified_at: 'modified', imported_at: 'imported',
-        pdf_metadata: { '/CreationDate': 'creation', '/Creator': 'creator', '/ModDate': 'modification',
-          '/Producer': 'producer', '/Title': 'Useful PDF title' },
-        report_pdf: { filename: 'report.pdf', download_url: '/api/registry/pdf-intake/reports/doc-1/pdf' },
-      };
-    },
-    registryElement: element,
-    registryMetric: (label, value) => element('div', 'metric', `${label}: ${value}`),
-    clearHistoricalReportContent() {}, registryErrorMessage: String,
-    appendRegistryPdfOccurrences() {}, appendInformationCheck() {}, safeSourceUrl: (value) => value,
-  });
-  vm.runInContext([
-    slice('function showMobileDetail(panel) {', '\nfunction closeMobileDetail('),
-    slice('async function loadImportedRegistryReport(documentId, page = 1) {', '\nfunction appendRegistryPdfOccurrences('),
-    'globalThis.loadImported = loadImportedRegistryReport;',
-  ].join('\n'), context);
-  await context.loadImported('doc-1');
-  const texts = (node) => [node.text, ...node.children.flatMap(texts)].filter(Boolean);
-  const displayed = texts(els.registryImportedReport).join(' ');
-  for (const hidden of ['Sources', 'Edition', 'Period start', 'Period end',
-    'PDF created', 'PDF modified', 'CreationDate', 'Creator', 'ModDate', 'Producer', 'creation', 'producer']) {
-    assert.ok(!displayed.includes(hidden), `${hidden} should not appear in imported PDF detail`);
-  }
-  assert.ok(displayed.includes('Report date: 2026-09-28'));
-  assert.ok(displayed.includes('Reporting period: Sep'));
-  assert.ok(displayed.includes('Pages: 12'));
-  assert.ok(displayed.includes('Imported: imported'));
-  assert.ok(displayed.includes('Title: Useful PDF title'));
-  assert.deepEqual(calls, ['/api/registry/pdf-intake/reports/doc-1?page=1&page_size=5']);
-  assert.equal(els.registryReportPdf.href, '/api/registry/pdf-intake/reports/doc-1/pdf');
-}
-
-await importedPdfDetailOmitsUnwantedMetadata();
-
-assert.ok(!source.includes('loadFinalPipelineReports'));
-assert.ok(!source.includes("fetch('/api/registry/final-reports')"));
-assert.ok(!source.includes("fetch('/api/job-status')"));
-assert.ok(!index.includes('Enter for a new line. Use Ctrl/⌘ + Enter to send.'));
-assert.ok(source.includes('(event.metaKey || event.ctrlKey) && event.key === "Enter"'));
+const svg = new SvgElement('svg');
+const rendererState = { graphMode: 'article-categories', graphExpanded: false, graphFrame: 0, activeView: 'obsidianView', graphSelection: null };
+const rendererContext = vm.createContext({
+  state: rendererState,
+  els: { graphSvg: svg },
+  document: { hidden: false, createElementNS: (_ns, name) => new SvgElement(name) },
+  GRAPH_COLORS: { topic: '#7eb696', keyword: '#83a6c8' },
+  stopGraphAnimation() {},
+  getNodeRadius: (node) => node.radius || 8,
+  graphCanvasHeight: (_height, categoryHeight) => categoryHeight || 360,
+  projectRadialPosition: () => ({ x: 100, y: 120 }),
+  layoutArticleCategoryNodes: (nodes) => ({ height: 360, nodes: nodes.map((node, index) => ({
+    x: 100 + index * 150, y: 120, radius: 24, labelLines: [node.label],
+  })) }),
+  graphNodePosition: (_mode, _node, _rank, _count, _width, _height, categoryPosition) => categoryPosition,
+  categoryEdgeRoutes: () => [{ hit: { x: 175, y: 120 }, radius: 5, path: 'M100,120 Q175,120 250,120' }],
+  renderExpandedGraphSelection() {},
+});
+vm.runInContext([
+  functionSource('updateGraphSelection'),
+  functionSource('selectGraphNode'),
+  functionSource('selectGraphEdge'),
+  functionSource('renderGraph'),
+].join('\n'), rendererContext);
+rendererContext.renderGraph({
+  mode: 'article-categories', title: 'Category Map', nodes: [
+    { id: 'a', label: 'Flood', kind: 'category', weight: 2, radius: 24, labelLines: ['Flood'] },
+    { id: 'b', label: 'Insurance', kind: 'category', weight: 2, radius: 24, labelLines: ['Insurance'] },
+  ],
+  links: [{ source: 'a', target: 'b', weight: 1 }], staticLayout: true,
+});
+const [categoryNode] = rendererState.graph.nodeEls;
+const [categoryLine] = rendererState.graph.linkEls;
+const [edgeTarget] = rendererState.graph.edgeTargetEls;
+categoryNode.dispatch('click');
+assert.equal(categoryLine.classList.values.has('is-highlighted'), true);
+categoryLine.dispatch('pointerenter');
+categoryLine.dispatch('pointerleave');
+assert.equal(categoryLine.classList.values.has('is-highlighted'), true, 'pointer cleanup restores the selected node relationship');
+edgeTarget.dispatch('focus');
+edgeTarget.dispatch('blur');
+assert.equal(categoryLine.classList.values.has('is-highlighted'), true, 'focus cleanup restores the selected node relationship');
+assert.equal(categoryNode.getAttribute('aria-pressed'), 'true');

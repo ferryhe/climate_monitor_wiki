@@ -56,7 +56,7 @@ const GRAPH_COPY = {
   notes: {
     title: "Vault Links",
     hint:
-      "Search the Page Index to focus this graph. Labels appear on hover, keyboard focus, or selection; selecting a note highlights linked pages and edges.",
+      "Labels appear on hover, keyboard focus, or selection; selecting a note highlights linked pages and edges.",
     legendHtml: `
       <span><i class="dot dot-daily"></i>Daily</span>
       <span><i class="dot dot-topic"></i>Topic</span>
@@ -66,7 +66,7 @@ const GRAPH_COPY = {
   keywords: {
     title: "Concept Map",
     hint:
-      "Uses 27 manually maintained climate rules matched against Wiki page content, headings/titles, and linked source reports. Shows up to 18 concepts found on 2+ pages, or up to 12 if none recur. Size counts linked notes. Click a note to set chat context or a concept to filter the Page Index.",
+      "Uses 27 manually maintained climate rules matched against Wiki page content, headings/titles, and linked source reports. Shows up to 18 concepts found on 2+ pages, or up to 12 if none recur. Size counts linked notes. Select nodes or connections to highlight relationships.",
     legendHtml: `
       <span><i class="dot dot-daily"></i>Daily</span>
       <span><i class="dot dot-topic"></i>Topic</span>
@@ -76,7 +76,7 @@ const GRAPH_COPY = {
   },
   articleCategories: {
     title: "Category Map",
-    hint: "Counts show distinct public articles. Select a category or connection to inspect supporting articles. Shared categories do not imply causality.",
+    hint: "Counts show distinct public articles. Select nodes or connections to highlight relationships. Shared categories do not imply causality.",
     legendHtml: `<span><i class="dot dot-keyword"></i>Category</span>`,
   },
 };
@@ -125,8 +125,8 @@ const state = {
   documents: [],
   concepts: [],
   rows: [],
-  filteredRows: [],
   edges: [],
+  graphSelection: null,
   graphMode: "keywords",
   graphExpanded: false,
   graphReturnFocus: null,
@@ -137,8 +137,6 @@ const state = {
   chatAccess: null,
   activeView: "chatView",
   pendingQuestionFocus: false,
-  markdownByPath: {},
-  markdownRequests: {},
   graph: null,
   graphFrame: 0,
   graphData: { notes: null, keywords: null, articleCategories: null },
@@ -188,31 +186,16 @@ const els = {
   retryChatQuestion: document.getElementById("retryChatQuestion"),
   clearChat: document.getElementById("clearChatButton"),
   clearContext: document.getElementById("clearContextButton"),
-  useInChat: document.getElementById("useInChatButton"),
-  clearSelection: document.getElementById("clearSelectionButton"),
   status: document.getElementById("connectionStatus"),
   hermesLink: document.getElementById("hermesLink"),
   activeContextBadge: document.getElementById("activeContextBadge"),
-  activeContext: document.getElementById("activeContext"),
-  detailTitle: document.getElementById("detailTitle"),
-  detailType: document.getElementById("detailType"),
-  detailDate: document.getElementById("detailDate"),
-  detailWords: document.getElementById("detailWords"),
-  detailOutlinks: document.getElementById("detailOutlinks"),
-  detailInlinks: document.getElementById("detailInlinks"),
-  detailStatus: document.getElementById("detailStatus"),
-  detailFile: document.getElementById("detailFile"),
-  detailMarkdown: document.getElementById("detailMarkdown"),
   metaNotes: document.getElementById("metaNotes"),
   metaEdges: document.getElementById("metaEdges"),
   wikiStats: document.getElementById("wikiStats"),
-  wikiSearch: document.getElementById("wikiSearch"),
-  rows: document.getElementById("rows"),
   graphViewport: document.getElementById("graphViewport"),
   graphExpandButton: document.getElementById("graphExpandButton"),
   graphExpandedSelection: document.getElementById("graphExpandedSelection"),
   graphSvg: document.getElementById("graphSvg"),
-  articleCategoryEvidence: document.getElementById("articleCategoryEvidence"),
   graphTitle: document.getElementById("graphTitle"),
   graphLegend: document.getElementById("graphLegend"),
   graphHint: document.getElementById("graphHint"),
@@ -437,22 +420,6 @@ function renderMarkdownFull(markdown) {
   return out.join("\n").replace(/<\/ul>\n<ul>/g, "").replace(/<\/ol>\n<ol>/g, "");
 }
 
-function sourceLinkForRow(row) {
-  if (!row) {
-    return { href: "", label: "-" };
-  }
-
-  if (row.type === "daily" && row.date) {
-    return {
-      href: `#historical-report=${encodeURIComponent(row.date)}`,
-      label: `Historical report · ${row.date}`,
-      reportDate: row.date,
-    };
-  }
-
-  return { href: `/${row.path}`, label: row.path };
-}
-
 function historicalReportDateFromHash() {
   const match = /^#historical-report=(\d{4}-\d{2}-\d{2})(?:&.*)?$/.exec(window.location.hash);
   return match ? match[1] : "";
@@ -486,17 +453,6 @@ function openHistoricalReport(reportDate, { updateHash = true, fallbackSourceUrl
   setRegistryMode("reports");
   setWorkspaceView("registryView");
   void loadRegistryReport(reportDate, sourceUrl, Boolean(checkedRole), originalUrl);
-}
-
-function normalizeSearchText(value) {
-  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function deriveStatus(doc, markdown) {
-  if (doc.type !== "daily") {
-    return "-";
-  }
-  return /no climate monitor report|no report/i.test(markdown) ? "No report" : "Reported";
 }
 
 function displayDateSortKey(value) {
@@ -702,22 +658,7 @@ function graphDataForCurrentMode() {
     : state.graphMode === "keywords"
       ? buildKeywordGraph(state.rows)
       : buildNoteGraph(state.rows, state.edges);
-  return state.graphMode === "notes" ? scopeNotesGraphToPageSearch(graph) : graph;
-}
-
-function scopeNotesGraphToPageSearch(graph) {
-  const query = String(els.wikiSearch?.value || "").trim();
-  if (!query) return graph;
-  const paths = new Set(state.filteredRows.map((row) => row.path));
-  const nodes = graph.nodes.filter((node) => paths.has(node.refPath || node.id));
-  const visibleIds = new Set(nodes.map((node) => node.id));
-  return {
-    ...graph,
-    nodes,
-    links: graph.links.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
-    hint: `Page Index search: ${nodes.length} matching notes. Labels appear on hover, keyboard focus, or selection.`,
-    emptyMessage: "No notes match the Page Index search.",
-  };
+  return graph;
 }
 
 function buildArticleCategoryGraph(articles, taxonomy) {
@@ -731,16 +672,15 @@ function buildArticleCategoryGraph(articles, taxonomy) {
     const categories = [...new Set(article.categories)].filter((label) => allowed.has(label));
     byIdentity.set(identity, { ...article, categories });
   }
-  const categoryArticles = new Map(definitions.map((category) => [category.id, []]));
-  const pairArticles = new Map();
+  const categoryCounts = new Map(definitions.map((category) => [category.id, 0]));
+  const pairCounts = new Map();
   for (const article of byIdentity.values()) {
     const keys = article.categories.map((label) => allowed.get(label)).sort();
-    for (const key of keys) categoryArticles.get(key).push(article);
+    for (const key of keys) categoryCounts.set(key, categoryCounts.get(key) + 1);
     for (let left = 0; left < keys.length; left += 1) {
       for (let right = left + 1; right < keys.length; right += 1) {
         const key = JSON.stringify([keys[left], keys[right]]);
-        if (!pairArticles.has(key)) pairArticles.set(key, []);
-        pairArticles.get(key).push(article);
+        pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
       }
     }
   }
@@ -748,11 +688,11 @@ function buildArticleCategoryGraph(articles, taxonomy) {
   const nodes = definitions.map((category) => ({
     id: nodeId(category.id), label: category.label, description: category.description,
     kind: "category", type: "category", mode: "article-categories",
-    weight: categoryArticles.get(category.id).length, articles: categoryArticles.get(category.id),
+    weight: categoryCounts.get(category.id),
   }));
-  const links = [...pairArticles].map(([key, supporting]) => {
+  const links = [...pairCounts].map(([key, weight]) => {
     const [left, right] = JSON.parse(key);
-    return { source: nodeId(left), target: nodeId(right), weight: supporting.length, articles: supporting };
+    return { source: nodeId(left), target: nodeId(right), weight };
   });
   return { mode: "article-categories", title: GRAPH_COPY.articleCategories.title,
     hint: GRAPH_COPY.articleCategories.hint, legendHtml: GRAPH_COPY.articleCategories.legendHtml,
@@ -761,15 +701,12 @@ function buildArticleCategoryGraph(articles, taxonomy) {
 
 async function loadArticleCategoryGraph() {
   if (state.articleCategoryGraphLoading || state.graphData.articleCategories?.loaded) return;
-  clearArticleCategoryEvidence();
   state.articleCategoryGraphLoading = true;
   try {
     const { items: articles, taxonomy } = await registryFetch("/api/registry/article-categories");
     state.graphData.articleCategories = buildArticleCategoryGraph(articles, taxonomy);
-    clearArticleCategoryEvidence();
     renderCurrentGraph();
   } catch (error) {
-    clearArticleCategoryEvidence();
     state.graphData.articleCategories = {
       mode: "article-categories", title: GRAPH_COPY.articleCategories.title,
       hint: registryErrorMessage(error), legendHtml: GRAPH_COPY.articleCategories.legendHtml,
@@ -781,18 +718,9 @@ async function loadArticleCategoryGraph() {
   }
 }
 
-function clearArticleCategoryEvidence() {
-  if (!els.articleCategoryEvidence) return;
-  els.articleCategoryEvidence.replaceChildren();
-  els.articleCategoryEvidence.hidden = true;
-}
-
 function setGraphMode(mode) {
   if (!mode) {
     return;
-  }
-  if (state.graphMode === "article-categories" && mode !== "article-categories") {
-    clearArticleCategoryEvidence();
   }
   state.graphMode = mode;
   els.graphModeButtons.forEach((button) => {
@@ -877,11 +805,8 @@ function renderExpandedGraphSelection() {
   if (!els.graphExpandedSelection) return;
   els.graphExpandedSelection.hidden = !state.graphExpanded;
   if (!state.graphExpanded) return;
-
-  const selected = state.rows.find((row) => row.path === state.activeContextPath);
-  els.graphExpandedSelection.textContent = selected
-    ? `Selected page: ${selected.displayTitle} · ${selected.type}. Close graph to view Note Detail.`
-    : "Select a note to see its title here. Close graph to view Note Detail.";
+  const selected = state.graph?.nodes.find((node) => node.id === state.graphSelection?.nodeId);
+  els.graphExpandedSelection.textContent = selected ? `Selected: ${selected.label}` : "Select a graph node or connection to highlight it.";
 }
 
 function layoutArticleCategoryNodes(nodes, width, height = 0) {
@@ -1558,16 +1483,9 @@ function renderChatContext() {
   if (!doc) {
     els.activeContextBadge.hidden = true;
     els.activeContextBadge.classList.remove("is-confirmed");
-    els.activeContext.hidden = true;
     if (els.clearContext) {
       els.clearContext.disabled = true;
       els.clearContext.hidden = true;
-    }
-    if (els.useInChat) {
-      els.useInChat.disabled = true;
-    }
-    if (els.clearSelection) {
-      els.clearSelection.disabled = true;
     }
     return;
   }
@@ -1579,17 +1497,9 @@ function renderChatContext() {
     ? `Selected reference for chat: ${doc.displayTitle}`
     : `Focused ${contextKind}: ${doc.displayTitle}`;
   els.activeContextBadge.hidden = false;
-  els.activeContext.textContent = `${doc.displayTitle} is the focused ${contextKind} prioritized during chat retrieval.`;
-  els.activeContext.hidden = false;
   if (els.clearContext) {
     els.clearContext.disabled = false;
     els.clearContext.hidden = false;
-  }
-  if (els.useInChat) {
-    els.useInChat.disabled = false;
-  }
-  if (els.clearSelection) {
-    els.clearSelection.disabled = false;
   }
 }
 
@@ -1606,141 +1516,22 @@ function renderWorkspaceMetrics(graphData = null) {
   }
 }
 
-function renderRows() {
-  if (!els.rows) {
-    return;
-  }
-
-  if (!state.filteredRows.length) {
-    els.rows.innerHTML = `
-      <tr>
-        <td colspan="7" class="muted">No matching pages.</td>
-      </tr>
-    `;
-    return;
-  }
-
-  els.rows.innerHTML = state.filteredRows
-    .map((row) => {
-      const selectedClass = row.path === state.activeContextPath ? "is-selected" : "";
-      const statusClass =
-        row.status === "Reported"
-          ? "status-ok"
-          : row.status === "No report"
-            ? "status-empty"
-            : row.status === "Loading..."
-              ? "status-loading"
-              : "";
-      return `
-        <tr class="${selectedClass}" data-path="${escapeHtml(row.path)}">
-          <td>${escapeHtml(row.displayTitle)}</td>
-          <td>${escapeHtml(row.type)}</td>
-          <td>${escapeHtml(displayDateLabel(row))}</td>
-          <td>${row.words}</td>
-          <td>${row.outlinks}</td>
-          <td>${row.inlinks}</td>
-          <td class="${statusClass}">${escapeHtml(row.status)}</td>
-        </tr>
-      `;
-    })
-    .join("");
-
-  els.rows.querySelectorAll("tr[data-path]").forEach((rowEl) => {
-    rowEl.addEventListener("click", () => {
-      setActiveContext(rowEl.dataset.path);
-    });
-  });
-}
-
-function applyTableFilter(query = "") {
-  const needle = normalizeSearchText(query);
-  state.filteredRows = state.rows.filter((row) => {
-    const concepts = (row.concepts || []).map((concept) => concept.label).join(" ");
-    const haystack = normalizeSearchText(
-      `${row.displayTitle} ${row.type} ${displayDateLabel(row)} ${row.status} ${row.path} ${concepts}`,
-    );
-    return !needle || haystack.includes(needle);
-  });
-  if (!needle && !state.filteredRows.length && state.rows.length) {
-    state.filteredRows = [...state.rows];
-  }
-  renderRows();
-  if (state.graphMode === "notes") renderCurrentGraph();
-}
-
-function displayDateLabel(row) {
-  if (!row.displayDate) return "Unknown";
-  const basis = {
-    publication_date: "publication date",
-    report_date: "report date",
-    topic_update_date: "topic update date",
-    page_update_date: "last updated date",
-    updated_date: "source updated date",
-    revision_date: "source revision date",
-    content_version_discovery: "first observed content update",
-    collection_time: "first collection date",
-  }[row.displayDateBasis] || "date basis unknown";
-  const proof = row.content_date_evidence || {};
-  const value = registryArticleDateLabel({ content_date: row.displayDate, content_date_evidence: {
-    ...proof,
-    text: proof.text || proof.date_text,
-    source_date_precision: row.content_date_precision || proof.source_date_precision || proof.date_precision,
-    date_normalization: row.content_date_normalization || proof.date_normalization,
-    authority: row.content_date_authority || proof.authority,
-  } }, "content_date");
-  return `${value} (${basis})`;
-}
-
-function renderDetail(path) {
-  const row = state.rows.find((item) => item.path === path);
-
-  if (!row) {
-    els.detailTitle.textContent = "Select a note";
-    els.detailType.textContent = "None";
-    els.detailDate.textContent = "-";
-    els.detailWords.textContent = "-";
-    els.detailOutlinks.textContent = "-";
-    els.detailInlinks.textContent = "-";
-    els.detailStatus.textContent = "-";
-    els.detailFile.textContent = "-";
-    els.detailMarkdown.textContent = "Select a note to preview its markdown source.";
-    renderChatContext();
-    return;
-  }
-
-  els.detailTitle.textContent = row.displayTitle;
-  els.detailType.textContent = row.type;
-  els.detailDate.textContent = displayDateLabel(row);
-  els.detailWords.textContent = String(row.words);
-  els.detailOutlinks.textContent = String(row.outlinks);
-  els.detailInlinks.textContent = String(row.inlinks);
-  els.detailStatus.textContent = row.status;
-  const sourceLink = sourceLinkForRow(row);
-  const reportDateAttribute = sourceLink.reportDate
-    ? ` data-historical-report-date="${escapeHtml(sourceLink.reportDate)}"`
-    : ` target="_blank" rel="noopener noreferrer"`;
-  els.detailFile.innerHTML = `<a href="${escapeHtml(sourceLink.href)}"${reportDateAttribute}>${escapeHtml(sourceLink.label)}</a>`;
-
-  const markdown = state.markdownByPath[path];
-  els.detailMarkdown.textContent = markdown || "Loading markdown preview…";
-  renderChatContext();
-}
-
 function updateGraphSelection() {
   if (!state.graph) {
     return;
   }
   const neighborIds = new Set();
   for (const edge of state.graph.links || []) {
-    if (edge.source.id === state.activeContextPath) neighborIds.add(edge.target.id);
-    if (edge.target.id === state.activeContextPath) neighborIds.add(edge.source.id);
+    if (edge.source.id === state.graphSelection?.nodeId) neighborIds.add(edge.target.id);
+    if (edge.target.id === state.graphSelection?.nodeId) neighborIds.add(edge.source.id);
   }
   state.graph.nodes.forEach((node, index) => {
-    const active = node.kind === "note" && (node.refPath || node.id) === state.activeContextPath;
+    const active = node.id === state.graphSelection?.nodeId;
     const group = state.graph.nodeEls[index];
     const circle = group.querySelector("circle");
     group.classList.toggle("is-active", active);
-    group.classList.toggle("is-neighbor", node.kind === "note" && neighborIds.has(node.id));
+    group.setAttribute("aria-pressed", String(active));
+    group.classList.toggle("is-neighbor", neighborIds.has(node.id));
     if (circle) {
       const baseRadius = getNodeRadius(node);
       circle.setAttribute("r", String(active ? baseRadius + 2 : baseRadius));
@@ -1750,13 +1541,27 @@ function updateGraphSelection() {
   (state.graph.links || []).forEach((edge, index) => {
     const line = state.graph.linkEls?.[index];
     if (line) {
-      line.classList.toggle(
-        "is-context-link",
-        edge.source.id === state.activeContextPath || edge.target.id === state.activeContextPath,
-      );
+      const selected = state.graphSelection?.edgeKey === `${edge.source.id}\0${edge.target.id}`;
+      const connected = state.graphSelection?.nodeId === edge.source.id || state.graphSelection?.nodeId === edge.target.id;
+      line.classList.toggle("is-highlighted", selected || connected);
+      line.setAttribute("aria-pressed", String(selected));
+      const target = state.graph.edgeTargetEls?.[index];
+      target?.setAttribute("aria-pressed", String(selected));
+      const label = state.graph.edgeLabelEls?.[index];
+      if (label) label.style.display = selected ? "" : "none";
     }
   });
   renderExpandedGraphSelection();
+}
+
+function selectGraphNode(node) {
+  state.graphSelection = { nodeId: node.id };
+  updateGraphSelection();
+}
+
+function selectGraphEdge(edge) {
+  state.graphSelection = { edgeKey: `${edge.source.id}\0${edge.target.id}` };
+  updateGraphSelection();
 }
 
 function renderCurrentGraph() {
@@ -1876,13 +1681,22 @@ function renderGraph(graphData) {
   const lineEls = links.map((edge, index) => {
     const line = document.createElementNS(NS, categoryMode ? "path" : "line");
     line.setAttribute("fill", "none");
+    line.setAttribute("class", `graph-edge graph-edge--${graphData.mode}`);
     line.setAttribute(
       "stroke",
       graphData.mode === "keywords" ? "rgba(135, 168, 199, 0.28)" : "rgba(151, 163, 170, 0.42)",
     );
     line.setAttribute("stroke-width", "1.1");
+    line.setAttribute("role", "button");
+    line.setAttribute("tabindex", "0");
+    line.setAttribute("aria-label", `${edge.source.label} connected to ${edge.target.label}`);
+    line.setAttribute("aria-pressed", "false");
+    const selectEdge = () => selectGraphEdge(edge);
+    line.addEventListener("click", selectEdge);
+    line.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectEdge(); }
+    });
     if (graphData.mode === "article-categories") {
-      line.setAttribute("class", "graph-edge graph-edge--article-categories");
       const target = document.createElementNS(NS, "circle");
       target.setAttribute("class", "category-edge-target");
       target.setAttribute("role", "button");
@@ -1893,16 +1707,12 @@ function renderGraph(graphData) {
       title.textContent = `${edge.weight} articles contain both ${edge.source.label} and ${edge.target.label}`;
       line.appendChild(title);
       target.appendChild(title.cloneNode(true));
-      const activate = () => activateArticleCategoryEvidence(`${edge.source.label} + ${edge.target.label}`, edge.articles);
-      line.addEventListener("click", activate);
-      target.addEventListener("click", activate);
+      target.addEventListener("click", selectEdge);
       target.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); }
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectEdge(); }
       });
       edgeTargetGroup.appendChild(target);
       edgeTargetEls.push(target);
-    } else if (graphData.mode === "notes") {
-      line.setAttribute("class", "graph-edge graph-edge--notes");
     }
     linkGroup.appendChild(line);
     return line;
@@ -1919,23 +1729,17 @@ function renderGraph(graphData) {
     const line = lineEls[index];
     const target = edgeTargetEls[index];
     const reveal = () => { label.style.display = ""; line.classList.add("is-highlighted"); };
-    const hide = () => { if (line.getAttribute("aria-pressed") !== "true") { label.style.display = "none"; line.classList.remove("is-highlighted"); } };
+    const hide = () => {
+      if (line.getAttribute("aria-pressed") !== "true") {
+        label.style.display = "none";
+        updateGraphSelection();
+      }
+    };
     line.setAttribute("aria-pressed", "false");
     target.setAttribute("aria-pressed", "false");
     line.addEventListener("pointerenter", reveal); line.addEventListener("pointerleave", hide);
     target.addEventListener("pointerenter", reveal); target.addEventListener("pointerleave", hide);
     target.addEventListener("focus", reveal); target.addEventListener("blur", hide);
-    const select = () => {
-      lineEls.forEach((other, index) => {
-        other.setAttribute("aria-pressed", String(other === line));
-        edgeTargetEls[index].setAttribute("aria-pressed", String(other === line));
-        other.classList.toggle("is-highlighted", other === line);
-        if (edgeLabelEls[index]) edgeLabelEls[index].style.display = other === line ? "" : "none";
-      });
-    };
-    line.addEventListener("click", select);
-    target.addEventListener("click", select);
-    target.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") select(); });
     edgeLabelGroup.appendChild(label);
     return label;
   }) : [];
@@ -1945,8 +1749,8 @@ function renderGraph(graphData) {
     group.setAttribute("class", `graph-node graph-node--${node.kind || "note"} graph-node--${graphData.mode}`);
     group.setAttribute("role", "button");
     group.setAttribute("tabindex", "0");
-    group.setAttribute("aria-label", categoryMode ? `${node.label}: ${node.weight} supporting articles`
-      : node.kind === "keyword" ? `Filter Page Index by keyword ${node.label}` : `Open note ${node.label}`);
+    group.setAttribute("aria-pressed", "false");
+    group.setAttribute("aria-label", categoryMode ? `${node.label}: ${node.weight} supporting articles` : `Select ${node.label}`);
     if (categoryMode) {
       const circle = document.createElementNS(NS, "circle");
       circle.setAttribute("r", String(getNodeRadius(node)));
@@ -1994,26 +1798,7 @@ function renderGraph(graphData) {
     }
     nodeGroup.appendChild(group);
 
-    const activateNode = () => {
-      if (graphData.mode === "article-categories") {
-        lineEls.forEach((line, index) => {
-          line.setAttribute("aria-pressed", "false");
-          line.classList.remove("is-highlighted");
-          edgeTargetEls[index].setAttribute("aria-pressed", "false");
-          edgeLabelEls[index].style.display = "none";
-        });
-        activateArticleCategoryEvidence(node.label, node.articles);
-        return;
-      }
-      if (node.kind === "keyword") {
-        if (els.wikiSearch) {
-          els.wikiSearch.value = node.label;
-          applyTableFilter(node.label);
-        }
-        return;
-      }
-      setActiveContext(node.refPath || node.id);
-    };
+    const activateNode = () => selectGraphNode(node);
 
     group.addEventListener("click", activateNode);
     group.addEventListener("keydown", (event) => {
@@ -2159,7 +1944,7 @@ function renderGraph(graphData) {
     }
   }
 
-  state.graph = { nodes, nodeEls, links, linkEls: lineEls };
+  state.graph = { nodes, nodeEls, links, linkEls: lineEls, edgeTargetEls, edgeLabelEls };
   updateGraphSelection();
   draw();
   if (staticLayout) {
@@ -2168,154 +1953,10 @@ function renderGraph(graphData) {
   startAnimation();
 }
 
-function activateArticleCategoryEvidence(label, articles) {
-  if (state.graphMode !== "article-categories" || state.articleCategoryGraphLoading) return;
-  showArticleCategoryEvidence(label, articles);
-}
-
-function showArticleCategoryEvidence(label, articles) {
-  if (!els.articleCategoryEvidence) return;
-  const section = els.articleCategoryEvidence;
-  section.replaceChildren();
-  section.hidden = false;
-  section.append(registryElement("h3", "", `Supporting articles: ${label}`));
-  const list = registryElement("ul", "article-category-evidence__list");
-  [...articles].sort((a, b) => (a.title || "").localeCompare(b.title || "")).forEach((article) => {
-    const item = registryElement("li", "article-category-evidence__item");
-    const button = registryElement("button", "registry-article-link", article.title || article.canonical_url);
-    button.type = "button";
-    button.dataset.articleId = article.article_id;
-    button.dataset.articleSource = "registry";
-    const provenance = article.metadata_provenance?.categories;
-    const version = article.content_version_id;
-    const articleVersion = article.current_version_id || article.record_reference?.version_id;
-    const metadataRecord = article.published_candidate_sha256;
-    const sourceKind = article.source_kind === "pdf" ? "pdf" : "registry";
-    button.dataset.articleSource = sourceKind;
-    item.append(button, registryElement("p", "muted", `${article.publisher || article.source || "Publisher unavailable"}${provenance ? ` · ${provenance}` : ""}${version ? ` · content version ${version}` : articleVersion ? ` · article version ${articleVersion}` : metadataRecord ? ` · approved candidate ${metadataRecord.slice(0, 12)}` : ""}`));
-    list.append(item);
-  });
-  section.append(list);
-  section.focus?.();
-}
-
-async function fetchMarkdown(path) {
-  const response = await fetch(`/${path}`);
-  if (!response.ok) {
-    throw new Error(`Failed to load ${path}: ${response.status}`);
-  }
-  return normalizeMojibake(await response.text());
-}
-
-function updateDocumentStatus(path, markdown) {
-  let changed = false;
-  state.documents = state.documents.map((doc) => {
-    if (doc.path !== path) {
-      return doc;
-    }
-    const nextStatus = deriveStatus(doc, markdown);
-    if (doc.status === nextStatus) {
-      return doc;
-    }
-    changed = true;
-    return { ...doc, status: nextStatus };
-  });
-
-  if (!changed) {
-    if (state.graphMode === "keywords") {
-      renderCurrentGraph();
-    }
-    return;
-  }
-
-  const data = buildWorkspaceData(state.documents);
-  state.rows = data.rows;
-  state.edges = data.edges;
-  applyTableFilter(els.wikiSearch ? els.wikiSearch.value : "");
-  renderDetail(state.activeContextPath);
-  if (state.graphMode === "keywords") {
-    renderCurrentGraph();
-  } else {
-    renderWorkspaceMetrics();
-  }
-}
-
-async function ensureMarkdownLoaded(path) {
-  if (!path) {
-    return null;
-  }
-
-  if (state.markdownByPath[path]) {
-    return state.markdownByPath[path];
-  }
-
-  if (state.markdownRequests[path]) {
-    return state.markdownRequests[path];
-  }
-
-  state.markdownRequests[path] = fetchMarkdown(path)
-    .then((markdown) => {
-      state.markdownByPath[path] = markdown;
-      updateDocumentStatus(path, markdown);
-      if (state.activeContextPath === path) {
-        renderDetail(path);
-      }
-      return markdown;
-    })
-    .catch((error) => {
-      if (state.activeContextPath === path) {
-        els.detailMarkdown.textContent = `Load failed: ${error.message}`;
-      }
-      return null;
-    })
-    .finally(() => {
-      delete state.markdownRequests[path];
-    });
-
-  return state.markdownRequests[path];
-}
-
 function clearContext() {
   state.activeContextPath = null;
   state.confirmedContextPath = null;
   renderChatContext();
-  renderRows();
-  renderDetail(null);
-  updateGraphSelection();
-}
-
-function scrollSelectedRowIntoView() {
-  if (state.activeView !== "obsidianView") {
-    return;
-  }
-  const rowEl = document.querySelector(`tr[data-path="${CSS.escape(state.activeContextPath || "")}"]`);
-  if (rowEl) {
-    rowEl.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-}
-
-function setActiveContext(path, options = {}) {
-  if (!path) {
-    clearContext();
-    return;
-  }
-
-  if (state.activeContextPath !== path) {
-    state.confirmedContextPath = null;
-  }
-  state.activeContextPath = path;
-  renderChatContext();
-  renderRows();
-  renderDetail(path);
-  updateGraphSelection();
-
-  if (options.switchView) {
-    beginEvidenceNavigation();
-    setWorkspaceView(options.switchView);
-  }
-
-  scrollSelectedRowIntoView();
-  void ensureMarkdownLoaded(path);
 }
 
 async function loadConfig() {
@@ -2336,11 +1977,6 @@ async function loadConfig() {
   state.rows = data.rows;
   state.edges = data.edges;
 
-  if (els.wikiSearch) {
-    els.wikiSearch.value = "";
-  }
-  applyTableFilter("");
-  renderDetail(null);
   renderChatContext();
   setConnectionStatus(config.agent_mode, config.model);
   setAnswerMode(config.default_answer_mode || "detailed");
@@ -3962,25 +3598,6 @@ function attachEvents() {
     });
   }
 
-  if (els.wikiSearch) {
-    els.wikiSearch.addEventListener("input", () => {
-      applyTableFilter(els.wikiSearch.value);
-    });
-  }
-
-  if (els.useInChat) {
-    els.useInChat.addEventListener("click", () => {
-      if (!state.activeContextPath) {
-        return;
-      }
-      state.confirmedContextPath = state.activeContextPath;
-      renderChatContext();
-      beginEvidenceNavigation();
-      setWorkspaceView("chatView");
-      els.input.focus();
-    });
-  }
-
   if (els.clearChat) {
     els.clearChat.addEventListener("click", () => {
       clearThread();
@@ -3989,12 +3606,6 @@ function attachEvents() {
 
   if (els.clearContext) {
     els.clearContext.addEventListener("click", () => {
-      clearContext();
-    });
-  }
-
-  if (els.clearSelection) {
-    els.clearSelection.addEventListener("click", () => {
       clearContext();
     });
   }
@@ -4086,7 +3697,9 @@ function attachEvents() {
         (item) => item.title === pageName || item.path === pageName || item.path === `wiki/${pageName}.md`,
       );
       if (doc) {
-        setActiveContext(doc.path, { switchView: "obsidianView" });
+        setGraphMode("notes");
+        setWorkspaceView("obsidianView");
+        selectGraphNode({ id: doc.path });
       }
     }
   });

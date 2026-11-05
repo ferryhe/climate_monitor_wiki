@@ -4,7 +4,7 @@ For automated report production and module ownership, start with
 [PIPELINE_REFERENCE.md](../PIPELINE_REFERENCE.md). This SOP covers source
 publication and preserves append-mostly report history.
 
-Use this workflow whenever `sources/` changes so the app, Dataview, and chat all stay in sync.
+Use this workflow whenever `sources/` changes so the app, Graph, and Chat stay in sync.
 
 ## Manual source-edit flow
 
@@ -46,7 +46,7 @@ the controlled server through the same monitor and publisher.
 
 ## Why Reload Is Required
 
-`api_server.py` creates one `AgenticWikiResponder` at startup, and the knowledge base loads `wiki/` and `sources/` into memory. Updating files on disk does not refresh chat retrieval, Dataview metadata, concept indexing, or `latest` date handling until you call `/api/reload` or restart the server.
+`api_server.py` creates one `AgenticWikiResponder` at startup, and the knowledge base loads `wiki/` and `sources/` into memory. Updating files on disk does not refresh chat retrieval, Graph data, concept indexing, or `latest` date handling until you call `/api/reload` or restart the server.
 
 ## Quick Command
 
@@ -89,4 +89,4 @@ node --check showcase/app.js
 - `/api/config` includes `wiki/climate-monitor-YYYY-MM-DD.md`
 - that report page points to `sources/climate-monitor-YYYY-MM-DD.md`
 - `/api/chat` returns a non-empty answer with evidence
-- the web workspace and Obsidian surface can see the new report page after reload
+- the web workspace and Graph can see the new report page after reload
