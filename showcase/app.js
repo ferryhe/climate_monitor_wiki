@@ -2698,7 +2698,8 @@ async function loadRegistryReports() {
       const metadata = registryElement(
         "span",
         "registry-card__meta",
-        [report.report_date || "Report date unavailable", report.source_label || "Monitoring report",
+        [report.report_date || "Report date unavailable", report.email_sent_date ? `Email sent ${report.email_sent_date}` : "",
+          report.source_label || "Monitoring report",
           report.source_kind === "pdf" ? report.filename : "", `${report.article_count} articles`].filter(Boolean).join(" · "),
       );
       button.append(heading, metadata);
@@ -3030,12 +3031,13 @@ async function loadImportedRegistryReport(documentId, page = 1) {
     const report = await registryFetch(`/api/registry/pdf-intake/reports/${encodeURIComponent(documentId)}?page=${page}&page_size=5`);
     if (!isCurrent()) return;
     els.registryReportTitle.textContent = report.report_title;
-    els.registryReportMeta.textContent = [report.report_date || "Report date unavailable", "PDF import", report.filename].join(" · ");
+    els.registryReportMeta.textContent = [report.report_date || "Report date unavailable",
+      report.email_sent_date ? `Email sent ${report.email_sent_date}` : "", "PDF import", report.filename].filter(Boolean).join(" · ");
     const details = els.registryImportedReport;
     const content = registryElement("div", "registry-imported-content");
     details.append(content);
     const metadata = registryElement("dl", "detail-meta");
-    const fields = {"Report date": report.report_date, "Reporting period": report.reporting_period,
+    const fields = {"Report date": report.report_date, "Email sent": report.email_sent_date, "Reporting period": report.reporting_period,
       "Pages": report.page_count, "Imported": report.imported_at};
     Object.entries(fields).forEach(([label, value]) => {
       if (value != null && value !== "") metadata.append(registryMetric(label, value));

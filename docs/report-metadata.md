@@ -82,6 +82,23 @@ owns the queue; the deterministic finalizer validates and renders the completed
 response without fetching again, making another model call, or inventing fields.
 See [the current flow](../PIPELINE_REFERENCE.md).
 
+## PDF report email dates
+
+`article_metadata/reports-email-dates.json` optionally binds an ISO `email_sent_date`
+to a PDF report's full lowercase SHA-256. It is presentation metadata in the
+Registry read layer; it does not change the report run date, article publication
+dates, source archive, approval state, or stored Registry snapshots. Supporting
+email evidence stays outside the repository.
+
+With `include_pdf=true`, the report list sorts by the email date when a matching
+PDF annotation exists, otherwise by `report_date`, before pagination. The PDF
+detail API and Reports cards label this separately as “Email sent”; an unknown
+run date remains “Report date unavailable”. Missing annotations preserve the
+existing ordering and display. Invalid or duplicate entries are ignored as a
+whole, and non-PDF reports never use these dates. The annotation file fingerprint
+is part of the shared list cache version so status and list requests see the same
+generation after metadata changes.
+
 ## Semantic sidecar (`article-semantic-sidecar.v1`)
 
 `climate_monitor/semantic_bundle.py` is the repository-owned producer. For each
