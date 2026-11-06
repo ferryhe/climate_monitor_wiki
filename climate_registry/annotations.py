@@ -44,6 +44,7 @@ MAX_ANNOTATION_BYTES = 2 * 1024 * 1024
 MAX_ANNOTATION_FILES = 64
 MAX_ANNOTATION_TOTAL_BYTES = 16 * 1024 * 1024
 MAX_ANNOTATION_ARTICLES = 10_000
+REPORT_EMAIL_DATES_FILENAME = "reports-email-dates.json"
 
 
 @dataclass(frozen=True)
@@ -357,3 +358,40 @@ def load_article_annotations_strict(
 def load_article_annotations(metadata_dir: str | Path | None) -> dict[str, ArticleAnnotation]:
     status, annotations = load_article_annotations_strict(metadata_dir)
     return annotations if status == "valid" else {}
+
+
+def load_report_email_dates_catalog(
+    metadata_dir: str | Path | None,
+) -> tuple[str, dict[str, str], str]:
+    """Read optional, SHA-bound email dates; any malformed catalog fails closed."""
+    directory = Path(metadata_dir) if metadata_dir is not None else Path(__file__).resolve().parents[1] / "article_metadata"
+    path = directory / REPORT_EMAIL_DATES_FILENAME
+    raw_bytes = _safe_batch_bytes(path)
+    if raw_bytes is None:
+        status = "invalid" if path.exists() else "absent"
+        fingerprint = hashlib.sha256(status.encode("ascii")).hexdigest()
+        return status, {}, fingerprint
+    fingerprint = hashlib.sha256(raw_bytes).hexdigest()
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8"), object_pairs_hook=_unique_object)
+    except (UnicodeError, ValueError):
+        return "invalid", {}, fingerprint
+    if (not isinstance(payload, dict) or set(payload) != {"schema_version", "reports"}
+            or type(payload.get("schema_version")) is not int or payload["schema_version"] != 1
+            or not isinstance(payload["reports"], list)):
+        return "invalid", {}, fingerprint
+    output: dict[str, str] = {}
+    for row in payload["reports"]:
+        if not isinstance(row, dict) or set(row) != {"document_sha256", "email_sent_date"}:
+            return "invalid", {}, fingerprint
+        digest, sent_date = row["document_sha256"], row["email_sent_date"]
+        try:
+            parsed_date = date.fromisoformat(sent_date)
+        except (TypeError, ValueError):
+            return "invalid", {}, fingerprint
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)
+                or parsed_date.isoformat() != sent_date or digest in output):
+            return "invalid", {}, fingerprint
+        output[digest] = sent_date
+    return "valid", output, fingerprint

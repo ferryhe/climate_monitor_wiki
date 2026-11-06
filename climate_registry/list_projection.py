@@ -82,6 +82,17 @@ def group_pdf_articles(items):
     return grouped
 
 
+def sort_reports_by_email_date(items, email_dates=None):
+    email_dates = email_dates or {}
+    output = []
+    for item in items:
+        sent_date = email_dates.get(item.get("document_sha256")) if item.get("source_kind") == "pdf" else None
+        output.append({**item, **({"email_sent_date": sent_date} if sent_date else {})})
+    output.sort(key=lambda item: (item.get("email_sent_date") or item.get("report_date") or "",
+        item.get("report_id") or ""), reverse=True)
+    return output
+
+
 class RegistryListProjection:
     def __init__(self, reader):
         # Prime once so all readers share candidate decoding and hidden-alias propagation.
@@ -220,8 +231,13 @@ class RegistryListProjection:
             (*params, page_size, (page - 1) * page_size))
         return {"items": [json.loads(row[0]) for row in rows], "pagination": _pagination(page, page_size, total)}
 
-    def reports(self, *, page, page_size, include_pdf=False):
+    def reports(self, *, page, page_size, include_pdf=False, email_dates=None):
         validate_page(page, page_size)
+        if include_pdf:
+            rows = self.connection.execute(f"SELECT card FROM {self.prefix}reports").fetchall()
+            items = sort_reports_by_email_date([json.loads(row[0]) for row in rows], email_dates)
+            return {"items": items[(page - 1) * page_size:page * page_size],
+                "pagination": _pagination(page, page_size, len(items))}
         where = "" if include_pdf else " WHERE source_kind='registry'"
         total = self.connection.execute(f"SELECT COUNT(*) FROM {self.prefix}reports" + where).fetchone()[0]
         order = "report_date DESC, report_id DESC" if include_pdf else "report_date DESC, report_id"

@@ -91,7 +91,8 @@ from climate_registry.pdf_pipeline import (
 )
 from climate_registry.information_checks import merge_checked_observation, deduplicate_pdf_occurrences
 from climate_registry.publication import _public_dto, _pdf_dto, _calendar_dto, _merge_pdf_article_payloads
-from climate_registry.list_projection import RegistryListProjection, category_collection, group_pdf_articles
+from climate_registry.list_projection import RegistryListProjection, category_collection, group_pdf_articles, sort_reports_by_email_date
+from climate_registry.annotations import load_report_email_dates_catalog
 from climate_registry.display import DisplayReader, display_snapshot
 from climate_registry.range_reports import (
     RENDERER_VERSION,
@@ -711,12 +712,17 @@ def _clear_registry_list_cache() -> None:
         _REGISTRY_LIST_CACHE = None
 
 
+def _report_email_dates():
+    return load_report_email_dates_catalog(ARTICLE_METADATA_DIR)
+
+
 @contextmanager
-def _registry_list_projection(selected=None, *, prepare=True):
+def _registry_list_projection(selected=None, *, prepare=True, report_email_catalog=None):
     """Share one validated generation for lists and category graph bytes."""
     global _REGISTRY_LIST_CACHE
     with _REGISTRY_LIST_LOCK:
         try:
+            report_email_catalog = report_email_catalog or _report_email_dates()
             selected = selected or _registry_reader()
             if selected.static_snapshot is not None or selected.database is None:
                 if _REGISTRY_LIST_CACHE is not None:
@@ -732,7 +738,9 @@ def _registry_list_projection(selected=None, *, prepare=True):
                         if _REGISTRY_LIST_CACHE is not None:
                             _REGISTRY_LIST_CACHE[1].close()
                             _REGISTRY_LIST_CACHE = None
-                        yield DisplayReader(connection)
+                        projection = DisplayReader(connection)
+                        projection.version = hashlib.sha256(repr((projection.version, report_email_catalog[2])).encode("utf-8")).hexdigest()[:32]
+                        yield projection
                         return
                     if version < 21:
                         if _REGISTRY_LIST_CACHE is not None:
@@ -745,13 +753,14 @@ def _registry_list_projection(selected=None, *, prepare=True):
                     except Exception:
                         selected._validate_contract(connection)
                         raise
-                    key = (str(selected.database), version, before, bindings, load_article_taxonomy().sha256)
+                    key = (str(selected.database), version, before, bindings, load_article_taxonomy().sha256,
+                        report_email_catalog[2])
                 after = _registry_file_stamp(selected.database)
                 stable = _registry_read_stamps_match(before, after)
                 if not stable and attempt < 2:
                     continue
                 if before is not None and stable and _REGISTRY_LIST_CACHE and _REGISTRY_LIST_CACHE[0] == key:
-                    _REGISTRY_LIST_CACHE = ((key[0], key[1], after, key[3], key[4]), _REGISTRY_LIST_CACHE[1])
+                    _REGISTRY_LIST_CACHE = ((key[0], key[1], after, key[3], key[4], key[5]), _REGISTRY_LIST_CACHE[1])
                     yield _REGISTRY_LIST_CACHE[1]
                     return
                 break
@@ -766,7 +775,8 @@ def _registry_list_projection(selected=None, *, prepare=True):
                 with selected.public_snapshot(direct=True, manage_wal=True):
                     with selected.connect() as connection:
                         key = (str(selected.database), connection.execute("PRAGMA user_version").fetchone()[0],
-                            before, _registry_public_bindings(connection), load_article_taxonomy().sha256)
+                            before, _registry_public_bindings(connection), load_article_taxonomy().sha256,
+                            report_email_catalog[2])
                     projection = RegistryListProjection(selected)
                     projection.version = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
                 after = _registry_file_stamp(selected.database)
@@ -780,7 +790,7 @@ def _registry_list_projection(selected=None, *, prepare=True):
             else:
                 raise RegistryUnavailableError("registry database changed during list preparation")
             if before is not None:
-                _REGISTRY_LIST_CACHE = ((key[0], key[1], after, key[3], key[4]), projection)
+                _REGISTRY_LIST_CACHE = ((key[0], key[1], after, key[3], key[4], key[5]), projection)
             try:
                 yield projection
             finally:
@@ -922,13 +932,13 @@ def registry_status(include_pdf: bool = False):
         )
 
 
-def _registry_report_page(reader, page, page_size, *, include_pdf):
+def _registry_report_page(reader, page, page_size, *, include_pdf, email_dates=None):
     validate_page(page, page_size)
     if not include_pdf:
         return reader.reports(page=page, page_size=page_size)
     core = _all_registry_pages(reader.reports)
     items = core + _pdf_reports(reader)
-    items.sort(key=lambda item: (item.get("report_date") or "", item.get("report_id") or ""), reverse=True)
+    items = sort_reports_by_email_date(items, email_dates if email_dates is not None else _report_email_dates()[1])
     offset = (page - 1) * page_size
     return {"items": items[offset:offset + page_size], "pagination": _pagination(page, page_size, len(items))}
 
@@ -938,11 +948,13 @@ def registry_reports(page: str = "1", page_size: str = "20", include_pdf: bool =
     parsed_page, parsed_size = _parse_registry_decimal(page), _parse_registry_decimal(page_size)
     def query_reports():
         reader = _registry_reader()
-        with _registry_list_projection(reader) as projection:
+        email_catalog = _report_email_dates()
+        email_dates = email_catalog[1]
+        with _registry_list_projection(reader, report_email_catalog=email_catalog) as projection:
             if projection is not None:
-                return {**projection.reports(page=parsed_page, page_size=parsed_size, include_pdf=include_pdf), "cache_version": projection.version}
+                return {**projection.reports(page=parsed_page, page_size=parsed_size, include_pdf=include_pdf, email_dates=email_dates), "cache_version": projection.version}
         with reader.public_snapshot(direct=True):
-            return _registry_report_page(reader, parsed_page, parsed_size, include_pdf=include_pdf)
+            return _registry_report_page(reader, parsed_page, parsed_size, include_pdf=include_pdf, email_dates=email_dates)
     return _registry_query(query_reports)
 
 
@@ -954,6 +966,7 @@ def registry_pdf_report(document_sha256: str, page: str | None = None, page_size
         if parsed_page is not None:
             validate_page(parsed_page, parsed_size)
         report = _pdf_report(document_sha256, page=parsed_page, page_size=parsed_size)
+        email_date = _report_email_dates()[1].get(document_sha256)
         if parsed_page is not None and "pagination" not in report:
             report = RegistryReader.paginate_pdf_report(report, parsed_page, parsed_size)
         calendars = [_calendar_dto(item) for item in report["calendar_items"]]
@@ -963,7 +976,8 @@ def registry_pdf_report(document_sha256: str, page: str | None = None, page_size
                 "source_document_sha256", "occurrence_id", "event_id", "canonical_pdf_event_id",
                 "verification_status", "access_status", "collection_status", "owner_agent_verification", "publisher"}
             calendars = [{key: value for key, value in item.items() if key in fields} for item in calendars]
-        return {**report, "articles": [_pdf_dto(item) for item in report["articles"]],
+        return {**report, **({"email_sent_date": email_date} if email_date else {}),
+            "articles": [_pdf_dto(item) for item in report["articles"]],
             "calendar_items": calendars}
     return _registry_query(read_report)
 
