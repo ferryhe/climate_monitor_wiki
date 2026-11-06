@@ -881,9 +881,9 @@ def set_visibility(database, kind, entity_id, is_visible):
     with _writer(resolve_database(database)) as connection:
         from .identity import approved_aliases
         aliases = approved_aliases(published_snapshots(connection, tuple(ENTITY_TABLES), include_hidden=True))
-        kind, entity_id = aliases.get((kind, entity_id), canonical_entity(connection, kind, entity_id))
+        kind, entity_id = canonical_entity(connection, kind, entity_id, identity_aliases=aliases)
         identities = [(row[0], row[1]) for row in connection.execute("SELECT entity_kind,entity_id FROM registry_publication")
-            if aliases.get((row[0], row[1]), canonical_entity(connection, row[0], row[1])) == (kind, entity_id)]
+            if canonical_entity(connection, row[0], row[1], identity_aliases=aliases) == (kind, entity_id)]
         cursor = connection.execute("UPDATE registry_publication SET is_visible=? WHERE entity_kind=? AND entity_id=?", (int(is_visible), kind, entity_id))
         for alias_kind, alias_id in identities:
             connection.execute("UPDATE registry_publication SET is_visible=? WHERE entity_kind=? AND entity_id=?", (int(is_visible), alias_kind, alias_id))

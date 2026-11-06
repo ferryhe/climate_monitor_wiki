@@ -58,6 +58,37 @@ def _registry_sidecars(database: Path) -> list[Path]:
         if Path(str(database) + suffix).exists()]
 
 
+def test_visibility_reuses_approved_graph_for_two_entities(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+
+    database = _database(tmp_path)
+    with sqlite3.connect(database) as db:
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "explicit fixture approval"}, status="accepted_legacy")
+    real_aliases = publication._identity_aliases
+    loads = []
+
+    def count_alias_loads(connection):
+        loads.append(connection)
+        return real_aliases(connection)
+
+    monkeypatch.setattr(publication, "_identity_aliases", count_alias_loads)
+    for visible in (False, True):
+        before = len(loads)
+        publication.set_visibility(database, "article", "a", visible)
+        assert len(loads) - before <= 1, "visibility must reuse the approved identity graph"
+        with sqlite3.connect(database) as db:
+            assert dict(db.execute("SELECT entity_id,is_visible FROM registry_publication")) == {
+                "a": int(visible), "b": 1,
+            }
+    with sqlite3.connect(database) as db:
+        before = db.execute("SELECT entity_kind,entity_id,is_visible FROM registry_publication ORDER BY entity_kind,entity_id").fetchall()
+    with pytest.raises(ValueError, match="Registry identity not found"):
+        publication.set_visibility(database, "article", "missing", False)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT entity_kind,entity_id,is_visible FROM registry_publication ORDER BY entity_kind,entity_id").fetchall() == before
+
+
 def test_public_snapshot_reuses_alias_map_for_metadata_and_article_reads(tmp_path, monkeypatch):
     import climate_registry.publication as publication
 
