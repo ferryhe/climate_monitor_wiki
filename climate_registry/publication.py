@@ -78,8 +78,32 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
     if apply_policy and not include_hidden and kinds and next(iter(connection.execute("""SELECT 1 FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
             WHERE json_type(c.snapshot_json,'$.identity_correction')='object' OR json_type(c.snapshot_json,'$.approved_identity_history')='array' LIMIT 1""")), None):
         # Approved ownership survives hiding; visibility cannot revive old aliases.
-        all_views = published_snapshots(connection, tuple(ENTITY_TABLES), candidate_cache=candidate_cache,
-            candidate_sha_out=candidate_sha_out, packet_cache=packet_cache, include_hidden=True)
+        if entity_ids is None:
+            all_views = published_snapshots(connection, tuple(ENTITY_TABLES), candidate_cache=candidate_cache,
+                candidate_sha_out=candidate_sha_out, packet_cache=packet_cache, include_hidden=True)
+        else:
+            # Resolve the approved identity graph first, then load only the requested
+            # entities and their exact alias closure. Do not expand unrelated history.
+            identity_ids = {}
+            for kind, identity in connection.execute("""SELECT p.entity_kind,p.entity_id
+                    FROM registry_publication p JOIN registry_candidates c
+                    ON c.candidate_sha256=p.published_candidate_sha256
+                    WHERE json_type(c.snapshot_json,'$.identity_correction')='object'
+                        OR json_type(c.snapshot_json,'$.approved_identity_history')='array'"""):
+                identity_ids.setdefault(kind, set()).add(identity)
+            from .identity import selected_entities
+            identity_views = published_snapshots(connection, tuple(ENTITY_TABLES), entity_ids=identity_ids,
+                candidate_cache=candidate_cache, candidate_sha_out=candidate_sha_out, packet_cache=packet_cache,
+                include_hidden=True)
+            selected = {(kind, identity) for kind in kinds for identity in
+                (entity_ids.get(kind, ()) if isinstance(entity_ids, dict) else entity_ids)}
+            selected = selected_entities(identity_views, selected)
+            selected_ids = {}
+            for kind, identity in selected:
+                selected_ids.setdefault(kind, set()).add(identity)
+            all_views = published_snapshots(connection, tuple(ENTITY_TABLES), entity_ids=selected_ids,
+                candidate_cache=candidate_cache, candidate_sha_out=candidate_sha_out, packet_cache=packet_cache,
+                include_hidden=True)
         visible = {(row[0], row[1]) for row in connection.execute("SELECT entity_kind,entity_id FROM registry_publication WHERE is_visible=1")}
         selected = None
         if entity_ids is not None:

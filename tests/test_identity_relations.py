@@ -109,6 +109,40 @@ def test_public_projection_alias_reuse_never_crosses_approval_or_revocation(tmp_
             connection.close()
 
 
+def test_scoped_published_reads_keep_approved_aliases_without_global_expansion(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+
+    database = _seed(tmp_path)
+    manifest = _manifest(database, [("article", "unchecked")])
+    manifest["aliases"] = [{"source": _scope(manifest["plan"]["participants"][1]),
+        "same_object": True, "evidence_ids": ["semantic-proof"]}]
+    _approve(database, tmp_path, _ingest(database, tmp_path, manifest))
+
+    calls = []
+    original = publication.published_snapshots
+
+    def traced(connection, kinds, entity_ids=None, **kwargs):
+        calls.append((tuple(sorted(kinds)), entity_ids, kwargs.get("include_hidden", False)))
+        return original(connection, kinds, entity_ids=entity_ids, **kwargs)
+
+    monkeypatch.setattr(publication, "published_snapshots", traced)
+    reader = _reader(database, tmp_path)
+    with reader.public_snapshot(direct=True):
+        chronology = reader.knowledge_chronology(entity_ids={
+            "meeting": {"known-event"}, "pdf_meeting": {"known-event"}})
+    assert chronology == {}
+    assert calls[0] == (("meeting", "pdf_meeting"), {
+        "meeting": {"known-event"}, "pdf_meeting": {"known-event"}}, False)
+    assert all(entity_ids is not None for _, entity_ids, _ in calls)
+    assert any(include_hidden and entity_ids == {"article": {"good"}}
+        for _, entity_ids, include_hidden in calls)
+
+    with sqlite3.connect(database) as db:
+        visible = original(db, ("article",), entity_ids={"article": {"unchecked"}})
+    assert list(visible) == [("article", "good")]
+    assert visible[("article", "good")]["identity_mapping"]["aliases"][0]["source"]["entity_id"] == "unchecked"
+
+
 def test_public_connection_builds_identity_alias_graph_once_per_projection(tmp_path, monkeypatch):
     import climate_registry.publication as publication
 
