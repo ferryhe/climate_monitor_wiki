@@ -705,7 +705,7 @@ class RegistryReader:
                     available_kinds, available_ids, _ = cached_key
                 if available is None or not set(kinds_key) <= set(available_kinds):
                     continue
-                if bool(selected_publication_scope) and (len(cached_key) == 2 or not cached_key[2]):
+                if bool(selected_publication_scope) != (len(cached_key) == 3 and bool(cached_key[2])):
                     continue
                 if available_ids is not None:
                     if requested_ids is None:
