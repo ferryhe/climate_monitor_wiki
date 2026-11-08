@@ -260,12 +260,23 @@ def _fragment_lines(page: dict[str, Any], fragment: dict[str, Any]) -> list[int]
     return offsets
 
 
+_UNREGISTERED_REPORTLAB_FONTS: set[str] = set()
+
+
 def _fragment_right(fragment: dict[str, Any]) -> float:
-    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfbase import pdfmetrics
+    font_name = None
     try:
-        width = stringWidth(fragment["text"], fragment["font_name"].lstrip("/"), fragment["font_size"])
+        font_name = fragment["font_name"].lstrip("/")
+        if font_name in _UNREGISTERED_REPORTLAB_FONTS and font_name not in pdfmetrics.getRegisteredFontNames():
+            return fragment["right"]
+        width = pdfmetrics.stringWidth(fragment["text"], font_name, fragment["font_size"])
     except KeyError:
+        if font_name is not None:
+            _UNREGISTERED_REPORTLAB_FONTS.add(font_name)
         width = fragment["right"] - fragment["x"]
+    else:
+        _UNREGISTERED_REPORTLAB_FONTS.discard(font_name)
     return fragment["x"] + width
 
 
@@ -446,7 +457,9 @@ def _calendar_pages(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         lines = page["text"].splitlines()
         if "table of contents" in page["text"].casefold():
             continue
-        if any(re.fullmatch(r"\s*DATE\(S\)\s+EVENT\s+HOST\s+RELEVANCE\s*", line, re.I) for line in lines):
+        compact = re.sub(r"[^a-z]", "", page["text"].casefold())
+        if (any(re.fullmatch(r"\s*DATE\(S\)\s+EVENT\s+HOST\s+RELEVANCE\s*", line, re.I) for line in lines)
+                or "dateseventhostrelevance" in compact or "eventhostrelevance" in compact):
             found.append(page)
         elif re.search(r"(?mi)^\s*Key Dates\s*$", page["text"]):
             found.append(page)
@@ -639,6 +652,7 @@ def _calendar_table_rows(raw_pdf: bytes, pages: tuple[int, ...]) -> tuple[dict[s
     with pdfplumber.open(BytesIO(raw_pdf)) as pdf:
         for number in pages:
             page = pdf.pages[number - 1]
+            page_rows = []
             for table in page.find_tables():
                 columns = None
                 for row, values in zip(table.rows, table.extract()):
@@ -658,13 +672,108 @@ def _calendar_table_rows(raw_pdf: bytes, pages: tuple[int, ...]) -> tuple[dict[s
                         if link.get("uri", "").startswith(("https://", "http://"))
                         and link["top"] < bottom and link["bottom"] > top
                         and link["x0"] < columns[1][2] and link["x1"] > columns[1][0]))
-                    rows.append({"page": number, "raw_date": match[1], "kind": match[2].lower(),
+                    page_rows.append({"page": number, "raw_date": match[1], "kind": match[2].lower(),
                         "name": _calendar_event_title(raw_cells[1], cells[1]),
                         "publisher": cells[2], "relevance": cells[3],
                         "location": _explicit_calendar_location(raw_cells[1], multiline=True),
                         "online_url": _explicit_calendar_online_url(raw_cells[1], multiline=True),
                         "source_urls": urls})
+            # Borderless tables use one thin separator per cell. Group those
+            # separators by y, then read each row inside the inferred columns.
+            separators = {}
+            for rect in getattr(page, "rects", []):
+                if rect["height"] <= 2 and rect["width"] >= 35:
+                    separators.setdefault(round(rect["top"], 1), []).append(rect)
+            levels = sorted(y for y, rects in separators.items() if len(rects) >= 3)
+            if len(levels) < 2:
+                rows.extend(page_rows)
+                continue
+            segments = sorted((rect["x0"], rect["x1"]) for y in levels for rect in separators[y])
+            columns = []
+            for left, right in segments:
+                if columns and abs(columns[-1][0] - left) <= 1 and abs(columns[-1][1] - right) <= 1:
+                    columns[-1] = ((columns[-1][0] + left) / 2, (columns[-1][1] + right) / 2)
+                else:
+                    columns.append((left, right))
+            if len(columns) != 4:
+                rows.extend(page_rows)
+                continue
+            geometry_rows = []
+            words = page.extract_words(x_tolerance=2, y_tolerance=2)
+            for ordinal, (top, bottom) in enumerate(zip(levels, levels[1:]), 1):
+                if bottom - top <= 2:
+                    continue
+                raw_cells = []
+                for left, right in columns:
+                    cell_words = [word for word in words if left + .2 < (word["x0"] + word["x1"]) / 2 < right - .2
+                        and top + 1 < (word["top"] + word["bottom"]) / 2 < bottom - 1]
+                    lines = {}
+                    for word in cell_words:
+                        lines.setdefault(round(word["top"] / 2) * 2, []).append(word)
+                    raw_cells.append("\n".join(" ".join(word["text"] for word in sorted(line, key=lambda value: value["x0"]))
+                        for _, line in sorted(lines.items())))
+                cells = [_compact(value) for value in raw_cells]
+                match = re.fullmatch(r"(.+?)\s+(EVENT|DEADLINE|LAUNCH|PUBLICATION|WATCH|WEBINAR)", cells[0], re.I)
+                if match is None:
+                    continue
+                urls = list(dict.fromkeys(link["uri"] for link in page.hyperlinks
+                    if link.get("uri", "").startswith(("https://", "http://"))
+                    and link["top"] < bottom and link["bottom"] > top
+                    and link["x0"] < columns[1][1] and link["x1"] > columns[1][0]))
+                geometry_rows.append({"page": number, "ordinal": ordinal, "raw_date": match[1], "kind": match[2].lower(),
+                    "name": _calendar_event_title(raw_cells[1], cells[1]),
+                    "publisher": cells[2], "relevance": cells[3], "raw_cells": raw_cells,
+                    "bbox": [columns[0][0], top, columns[-1][1], bottom],
+                    "location": _explicit_calendar_location(raw_cells[1], multiline=True),
+                    "online_url": _explicit_calendar_online_url(raw_cells[1], multiline=True),
+                    "source_urls": urls})
+            rows.extend(geometry_rows if len(geometry_rows) > len(page_rows) else page_rows)
     return tuple(rows)
+
+
+def _calendar_geometry_items(document: dict[str, Any], rows: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+    items = []
+    for row in rows:
+        if not row.get("bbox"):
+            continue
+        page = document["pages"][row["page"] - 1]
+        x0, top, x1, bottom = row["bbox"]
+        page_height = page["page_rect"][3]
+        fragments = [fragment for fragment in page.get("_text_fragments", [])
+            if x0 <= fragment["x"] <= x1 and top <= page_height - fragment["y"] <= bottom]
+        offsets = [fragment[key] for fragment in fragments for key in ("source_char_start", "source_char_end")
+            if isinstance(fragment.get(key), int)]
+        if not offsets:
+            continue
+        raw_cells = row["raw_cells"]
+        raw_date, raw_kind = row["raw_date"], row["kind"]
+        date_fields = _parse_calendar_date(raw_date)
+        row_text = "\n".join(value.strip() for value in raw_cells if value.strip())
+        summary = "\n".join(value.strip() for value in raw_cells[1:] if value.strip())
+        item_hash = _sha256(f"{document['source']['sha256']}\n{row['page']}\n{row['ordinal']}\n{row_text}")
+        identity_title = _compact(row["name"]).casefold()
+        identity_urls = sorted({canonical_url(url) or url for url in row["source_urls"]})
+        event_identity = ("\n".join((raw_kind, identity_title, *identity_urls)) if identity_urls else
+            "\n".join((raw_kind, date_fields["start_date"] or raw_date.casefold(),
+                date_fields["end_date"] or "", identity_title)))
+        source_links = [link for link in page["links"] if len(link.get("rect", [])) == 4
+            and link["rect"][0] < x1 and link["rect"][2] > x0
+            and link["rect"][1] <= page_height - top and link["rect"][3] >= page_height - bottom]
+        source_region = {"char_start": min(offsets), "char_end": max(offsets), "bbox": row["bbox"]}
+        items.append({
+            "event_id": f"event-{_sha256(event_identity)[:24]}",
+            "occurrence_id": f"pdf-event-occurrence-{item_hash[:24]}",
+            "name": row["name"], "kind": raw_kind, "raw_kind": raw_kind, "raw_date": raw_date,
+            **date_fields, "date_evidence": raw_date, "summary": summary,
+            "summary_basis": "verbatim_pdf_row", "summary_sha256": _sha256(summary),
+            "raw_text": row_text, "page": row["page"], "source_urls": row["source_urls"],
+            "location": row["location"], "online_url": row["online_url"],
+            "publisher": row["publisher"], "relevance": row["relevance"],
+            "source_links": [{"url": link["url"], "rect": link["rect"]} for link in source_links],
+            "source_document_sha256": document["source"]["sha256"], "content_sha256": _sha256(row_text),
+            "page_sha256": _sha256(page["text"]), "source_region": source_region,
+        })
+    return items
 
 
 def recover_calendar_fields(raw_pdf: bytes, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -832,7 +941,39 @@ def _read_pdf(path: Path, *, raw_pdf: bytes | None = None) -> dict[str, Any]:
         "executive_summary_sha256": _sha256(executive_summary) if executive_summary else None,
         "pages": pages,
     }
-    document["calendar_items"] = recover_calendar_fields(raw, _extract_calendar_items(document))
+    line_items = _extract_calendar_items(document)
+    calendar_page_numbers = tuple(page["page"] for page in _calendar_pages(pages))
+    geometry_items = _calendar_geometry_items(document, _calendar_table_rows(raw, calendar_page_numbers))
+    if geometry_items:
+        line_items = recover_calendar_fields(raw, line_items)
+        geometry_anchors = {}
+        for item in geometry_items:
+            page = document["pages"][item["page"] - 1]
+            x0, top, x1, bottom = item["source_region"]["bbox"]
+            height = page["page_rect"][3]
+            geometry_anchors.setdefault(item["page"], []).extend(
+                (fragment["source_char_start"], fragment["source_char_end"])
+                for fragment in page.get("_text_fragments", [])
+                if isinstance(fragment.get("source_char_start"), int)
+                and isinstance(fragment.get("source_char_end"), int)
+                and x0 - 1 <= fragment["x"] <= x1 + 1
+                and top - 1 <= height - fragment["y"] <= bottom + 1
+            )
+
+        def is_geometry_row(item: dict[str, Any]) -> bool:
+            page = document["pages"][item["page"] - 1]
+            region = item["source_region"]
+            start, end = region["char_start"], region["char_end"]
+            anchor = next((offset for offset in range(start, min(end, len(page["text"])))
+                if not page["text"][offset].isspace()), None)
+            return anchor is not None and any(fragment_start <= anchor < fragment_end
+                for fragment_start, fragment_end in geometry_anchors.get(item["page"], []))
+
+        document["calendar_items"] = sorted([*geometry_items,
+            *(item for item in line_items if not is_geometry_row(item))],
+            key=lambda item: (item["page"], item.get("source_region", {}).get("char_start", 0)))
+    else:
+        document["calendar_items"] = recover_calendar_fields(raw, line_items)
     return document
 
 

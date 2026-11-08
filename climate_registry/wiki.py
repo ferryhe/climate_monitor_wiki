@@ -67,10 +67,11 @@ def _citation(occurrence: dict) -> str:
     page = occurrence.get("page", "unknown")
     url = occurrence.get("raw_url") or occurrence.get("original_source_url", "")
     checked_url = _reviewed_checked_source_url(occurrence)
-    link = ("" if checked_url and checked_url == url else
-        f"; [checked source]({checked_url}); original PDF/source link (provenance): "
-        f"{_source_provenance_value(url, checked_url)}" if checked_url else
-        f"; [original link]({url})" if url else "")
+    if checked_url:
+        link = (f"; [checked source]({checked_url})" + (f"; original PDF/source link (provenance): "
+            f"{_source_provenance_value(url, checked_url)}" if url else "") if checked_url != url else "")
+    else:
+        link = f"; [original link]({url})" if url else ""
     return f"PDF: {filename}; SHA-256: {sha256}; page {page}{link}"
 
 
