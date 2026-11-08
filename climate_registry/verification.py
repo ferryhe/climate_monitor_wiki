@@ -79,15 +79,21 @@ def _supported_fields(target, packet):
     return bool(required) and all((packet.get("comparisons") or {}).get(key, {}).get("status") == "supported" for key in required)
 
 
-def review_context(connection):
+def review_context(connection, *, candidate_sha256=None):
     """Small immutable receipts, read in the same transaction as candidate evidence."""
     values = {}
-    for row in connection.execute("SELECT review_id,candidate_sha256,status,receipt_json FROM registry_reviews WHERE status='pass'"):
+    review_query = "SELECT review_id,candidate_sha256,status,receipt_json FROM registry_reviews WHERE status='pass'"
+    review_parameters = ()
+    if candidate_sha256 is not None:
+        review_query += " AND candidate_sha256=?"
+        review_parameters = (candidate_sha256,)
+    for row in connection.execute(review_query, review_parameters):
         item = dict(row) if hasattr(row, "keys") else dict(zip(("review_id", "candidate_sha256", "status", "receipt_json"), row))
         values.setdefault(item["candidate_sha256"], []).append(item)
     from .enrichment_contract import approval_context
-    for row in connection.execute("SELECT candidate_sha256,snapshot_json FROM registry_candidates WHERE json_extract(snapshot_json,'$.enrichment_scope.operation_scope') IS NOT NULL"):
-        if row[0] in values:
+    for sha in values:
+        row = connection.execute("SELECT candidate_sha256,snapshot_json FROM registry_candidates WHERE candidate_sha256=? AND json_extract(snapshot_json,'$.enrichment_scope.operation_scope') IS NOT NULL", (sha,)).fetchone()
+        if row and row[0] in values:
             values[row[0]] = approval_context(connection, json.loads(row[1]), values[row[0]])
     return values
 

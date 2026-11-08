@@ -53,7 +53,7 @@ def _reference(connection, kind, identity, *, allow_pending=False):
     baseline = row[1] or row[0]
     if digest(base) != baseline:
         raise ValueError("identity baseline hash differs")
-    reviews = review_context(connection).get(baseline, [])
+    reviews = review_context(connection, candidate_sha256=baseline).get(baseline, [])
     if not reviews:
         # Imported legacy approvals are retained, but cannot substitute for source facts.
         reviews = [dict(zip(("review_id", "candidate_sha256", "status", "receipt_json"), value))
