@@ -1574,23 +1574,26 @@ def test_approved_meeting_lookup_uses_current_projection_and_scoped_chronology(t
 
 
 def test_meeting_evidence_keeps_full_btr2_deadline_exception(tmp_path):
-    raw_date = ("BTR2 and stand-alone NIR due by 31 December 2026. "
+    raw_date = ("Biennial Transparency Report due by 31 December 2026. "
         "Least developed country Parties and small island developing States may submit the information at their discretion.")
-    item = {**meeting("btr2", "Second Biennial Transparency Report (BTR2)", "UNFCCC reporting"),
-        "event_type": "deadline", "raw_date": raw_date, "start_date": None, "end_date": None,
-        "deadline_type": "BTR2 submission", "deadline_date": "2026-12-31",
+    item = {**meeting("btr2", "Second Biennial Transparency Reports", ""),
+        "summary": "", "relevance_reason": "", "raw_text": "", "event_type": "deadline",
+        "raw_date": raw_date, "start_date": None, "end_date": None,
+        "deadline_type": "", "deadline_date": "2026-12-31",
         "source_urls": ["https://unfccc.int/second-biennial-transparency-reports"]}
     chat = owner(tmp_path)
+    chat.responder.client = object()
     chat.reader_factory = lambda: MeetingsReader([item])
-    turn = EvidenceTurn(chat, "When is BTR2 due, and do LDCs and SIDS have discretion?", None, [])
+    turn = EvidenceTurn(chat, "When is the BTR2 deadline, and do LDCs and SIDS have discretion?", None, [])
     turn.now = datetime(2026, 11, 8, 12, tzinfo=timezone.utc)
 
     evidence = turn.search_knowledge(turn.question, target="meetings")
 
     assert len(evidence) == 1
-    assert raw_date in evidence[0]["text"]
-    assert "BTR2 submission: 2026-12-31" in evidence[0]["text"]
-    assert evidence[0]["source"]["source_urls"] == item["source_urls"]
+    details = turn.get_meeting_details("btr2")
+    assert raw_date in details["text"]
+    assert "2026-12-31" in details["text"]
+    assert details["source"]["source_urls"] == item["source_urls"]
 
 
 def meeting(key, name, location):

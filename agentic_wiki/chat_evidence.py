@@ -891,7 +891,7 @@ class EvidenceTurn:
                         scope["topic_terms"] = sorted(terms)
                         ranked = []
                         for item in items:
-                            words = set(_tokens(" ".join(str(item.get(field) or "") for field in ("name", "summary", "relevance_reason", "raw_text"))))
+                            words = set(_tokens(" ".join(str(item.get(field) or "") for field in ("name", "summary", "relevance_reason", "raw_text", "raw_date"))))
                             score = len(terms & words)
                             if score:
                                 ranked.append((score, item))
