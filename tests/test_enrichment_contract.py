@@ -334,6 +334,70 @@ def test_category_content_inheritance_rejects_drift_without_publication(tmp_path
     assert reader.article("good")["summary"] == summary
 
 
+def test_review_context_only_loads_pass_reviewed_candidate_scopes(tmp_path, monkeypatch):
+    from climate_registry.enrichment_contract import bind_existing_content
+    from climate_registry.publication import snapshot_entity, stage_snapshot
+    from climate_registry.verification import review_context
+
+    database, origin, _ = _published_initial_g3(tmp_path, monkeypatch)
+    with sqlite3.connect(database) as db:
+        snapshot = snapshot_entity(db, "article", "good")
+        assert bind_existing_content(db, snapshot, operation_scope="native_source_fields")
+        reviewed_sha = stage_snapshot(db, snapshot)
+        _approve(db, reviewed_sha, {"basis": "fixture pass for inherited content"}, status="pass")
+
+    private_sha = "f" * 64
+    with sqlite3.connect(database) as db:
+        expected = review_context(db)
+        legacy = {}
+        for row in db.execute("SELECT review_id,candidate_sha256,status,receipt_json FROM registry_reviews WHERE status='pass'"):
+            item = dict(zip(("review_id", "candidate_sha256", "status", "receipt_json"), row))
+            legacy.setdefault(item["candidate_sha256"], []).append(item)
+        from climate_registry.enrichment_contract import approval_context
+        for sha, encoded in db.execute("SELECT candidate_sha256,snapshot_json FROM registry_candidates WHERE json_extract(snapshot_json,'$.enrichment_scope.operation_scope') IS NOT NULL"):
+            if sha in legacy:
+                legacy[sha] = approval_context(db, json.loads(encoded), legacy[sha])
+        assert expected == legacy
+        inherited = expected[reviewed_sha][0]["_approval_context"][origin]
+        assert inherited["snapshot"]["enrichment_scope"]["scope"]
+        assert inherited["reviews"]
+        private = json.dumps({"enrichment_scope": {"operation_scope": "private-unreviewed"}, "history": "x" * 500_000})
+        db.execute("INSERT INTO registry_candidates VALUES(?,?,?,?,?,?)",
+            (private_sha, "article", "private", private, "2026-11-08T00:00:00Z", "pending"))
+        statements = []
+        db.set_trace_callback(statements.append)
+        actual = review_context(db)
+        default_reads = [sql for sql in statements if sql.startswith("SELECT candidate_sha256,snapshot_json FROM registry_candidates")]
+        statements.clear()
+        scoped = review_context(db, candidate_sha256=reviewed_sha)
+        scoped_reads = [sql for sql in statements if sql.startswith("SELECT candidate_sha256,snapshot_json FROM registry_candidates")]
+        scoped_parent_reads = [sql for sql in statements if sql.startswith("SELECT snapshot_json FROM registry_candidates")]
+        scoped_review_reads = [sql for sql in statements if sql.startswith("SELECT review_id,candidate_sha256,status,receipt_json FROM registry_reviews")]
+        db.set_trace_callback(None)
+
+    assert actual == expected
+    with sqlite3.connect(database) as db:
+        pass_ids = {row[0] for row in db.execute("SELECT DISTINCT candidate_sha256 FROM registry_reviews WHERE status='pass'")}
+    assert scoped == {reviewed_sha: expected[reviewed_sha]}
+    assert len(default_reads) == len(pass_ids)
+    assert all(any("candidate_sha256='" + sha + "'" in sql for sql in default_reads) for sha in pass_ids)
+    assert len(scoped_reads) == 1 and "candidate_sha256='" + reviewed_sha + "'" in scoped_reads[0]
+    assert len(scoped_review_reads) == 2
+    assert all("candidate_sha256='" + sha + "'" in " ".join(scoped_review_reads) for sha in (reviewed_sha, origin))
+    assert any("candidate_sha256='" + origin + "'" in sql for sql in scoped_parent_reads)
+    assert all(private_sha not in sql for sql in default_reads + scoped_reads + scoped_parent_reads)
+
+    receipt = {"basis": "later immutable review fixture"}
+    review_id = digest([reviewed_sha, "pass", receipt])
+    with sqlite3.connect(database) as db:
+        _approve(db, reviewed_sha, receipt, status="pass")
+        refreshed_full = review_context(db)
+        refreshed_scoped = review_context(db, candidate_sha256=reviewed_sha)
+    assert refreshed_scoped == {reviewed_sha: refreshed_full[reviewed_sha]}
+    assert any(row["review_id"] == review_id and row["receipt_json"] == json.dumps(receipt, sort_keys=True)
+        for row in refreshed_scoped[reviewed_sha])
+
+
 def _published_g3_kind(tmp_path, monkeypatch, kind):
     if kind == "initial":
         return _published_initial_g3(tmp_path, monkeypatch)
