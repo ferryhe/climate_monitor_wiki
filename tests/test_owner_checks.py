@@ -444,6 +444,99 @@ def test_owner_meeting_does_not_publish_original_extra_facts_and_keeps_report_me
     check(RegistryReader.from_public_export(root))
 
 
+def _source_less_pdf_meeting_manifest(database, tmp_path, *, pdf_name="IAIS Annual Conference 2027",
+        public_name="IAIS Annual Conference 2027"):
+    _pdf_pair(database, target_extra={"source_urls": [], "name": pdf_name})
+    with sqlite3.connect(database) as db:
+        stage_entities(db)
+    fields = {"name": public_name, "raw_date": "10–12 June 2027",
+        "start_date": "2027-06-10", "end_date": "2027-06-12", "date_precision": "day"}
+    manifest = _manifest(database, kind="pdf_meeting", identity="target", occurrence="target-occ",
+        fields=fields, body=pdf_name + "\n10–12 June 2027\nOfficial event listing\n" + public_name)
+    entry = manifest["observations"][0]
+    entry["capture"]["requested_url"] = "https://example.org/official-dates"
+    entry["capture"]["final_url"] = "https://example.org/official-dates"
+    target = entry["target"]
+    entry["source_identity"] = {"occurrence_id": target["occurrence_id"],
+        "source_document_sha256": target["source_binding"]["source_document_sha256"],
+        "excerpt": public_name + " appears in this official listing.",
+        "reason": "This is the official source for the same event edition."}
+    body = entry["capture"]["text"] + "\n" + entry["source_identity"]["excerpt"]
+    entry["capture"].update(text=body, bytes_base64=base64.b64encode(body.encode()).decode(),
+        sha256=hashlib.sha256(body.encode()).hexdigest())
+    return manifest
+
+
+def test_source_less_pdf_meeting_uses_frozen_identity_and_reviewed_capture_url(tmp_path):
+    from climate_registry.publication import public_wiki_pages
+    from agentic_wiki.chat_evidence import source_urls
+    database = _database(tmp_path)
+    manifest = _source_less_pdf_meeting_manifest(database, tmp_path)
+    result = _ingest(database, tmp_path, manifest)
+    approve_owner_check(database, _review(database, tmp_path, result["candidate_sha256"]),
+        lifecycle_root=tmp_path / "runs", queue_dir=tmp_path/"queue", backup_dir=tmp_path/"backups", apply=True)
+    reader = _reader(database, tmp_path)
+    meeting = reader.meetings_all(base_date="2026-10-15")[0]
+    assert meeting["checked_source_url"] == "https://example.org/official-dates"
+    assert meeting["source_urls"] == ["https://example.org/official-dates"]
+    assert source_urls(meeting) == ["https://example.org/official-dates"]
+    markdown = public_wiki_pages(database)["registry-meetings.md"]
+    assert "[checked source](https://example.org/official-dates)" in markdown
+    assert "[]()" not in markdown and "Original PDF/source link (provenance): []()" not in markdown
+    root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
+    export_public_snapshot(database, root/"wiki/public-registry.json")
+    from_static = RegistryReader.from_public_export(root)
+    assert from_static.meetings_all(base_date="2026-10-15")[0]["checked_source_url"] == meeting["checked_source_url"]
+
+
+@pytest.mark.parametrize("change", ["occurrence", "sha", "binding_sha", "excerpt", "name", "public_name", "reason", "missing"])
+def test_source_less_pdf_meeting_identity_tampering_is_rejected_before_write(tmp_path, change):
+    from climate_registry.owner_checks import validate_observation
+    database = _database(tmp_path)
+    manifest = _source_less_pdf_meeting_manifest(database, tmp_path)
+    entry = manifest["observations"][0]
+    identity = entry["source_identity"]
+    if change == "occurrence": identity["occurrence_id"] = "other-occurrence"
+    if change == "sha": identity["source_document_sha256"] = "0" * 64
+    if change == "binding_sha": entry["target"]["source_binding"]["source_document_sha256"] = "0" * 64
+    if change == "excerpt": identity["excerpt"] = "not captured"
+    if change == "name": identity["excerpt"] = "Official listing for another event"
+    if change == "public_name": entry["public_fields"]["name"] = "Another Conference"
+    if change == "reason": identity["reason"] = "Reviewed a date"
+    if change == "missing": entry.pop("source_identity")
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+    with pytest.raises(ValueError):
+        validate_observation(entry["target"], entry)
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+
+
+def test_source_less_pdf_meeting_accepts_literal_official_name_when_pdf_name_is_abbreviated(tmp_path):
+    from climate_registry.owner_checks import validate_observation
+    database = _database(tmp_path)
+    manifest = _source_less_pdf_meeting_manifest(database,
+        tmp_path,
+        pdf_name="CBD COP17, Yerevan, Armenia",
+        public_name="Seventeenth meeting of the Conference of the Parties to the Convention on Biological Diversity (COP 17)")
+    entry = manifest["observations"][0]
+    outcome = validate_observation(entry["target"], entry)
+    assert outcome["verification_status"] == "verified"
+    assert "name" in outcome["excluded_fields"]
+    assert entry["source_identity"]["excerpt"] in entry["capture"]["text"]
+
+
+def test_linked_pdf_meeting_still_rejects_a_different_capture_url(tmp_path):
+    from climate_registry.owner_checks import validate_observation
+    database = _database(tmp_path)
+    _pdf_pair(database)
+    manifest = _manifest(database, kind="pdf_meeting", identity="target", occurrence="target-occ",
+        fields={"name": "IAIS Annual Conference 2027", "raw_date": "10–12 June 2027",
+            "start_date": "2027-06-10", "end_date": "2027-06-12", "date_precision": "day"})
+    entry = manifest["observations"][0]
+    entry["capture"]["requested_url"] = "https://example.org/other-source"
+    with pytest.raises(ValueError, match="capture requested URL differs"):
+        validate_observation(entry["target"], entry)
+
+
 def test_owner_reviewed_final_url_is_public_meeting_link_and_keeps_requested_url(tmp_path):
     from climate_registry.publication import public_wiki_pages
     database = _database(tmp_path)
@@ -695,6 +788,25 @@ def test_owner_repeated_month_evidence_refuses_missing_year_invalid_and_reversed
         _ingest(database, tmp_path, manifest)
     assert hashlib.sha256(database.read_bytes()).hexdigest() == original
     assert not list((tmp_path/"backups").glob("*"))
+
+
+@pytest.mark.parametrize(("excerpt", "start", "end"), [
+    ("1 December 2027–31 January 2028", "2027-12-01", "2028-01-31"),
+    ("27 October 2026 – 28 October 2026", "2026-10-27", "2026-10-28"),
+])
+def test_owner_full_date_range_preserves_both_explicit_years(excerpt, start, end):
+    from climate_registry.owner_checks import _dates
+    assert _dates(excerpt) == {"start_date": start, "end_date": end, "date_precision": "day"}
+
+
+@pytest.mark.parametrize("excerpt", [
+    "31 February 2028–1 March 2028",
+    "2 January 2028–1 January 2028",
+])
+def test_owner_full_date_range_rejects_invalid_or_reversed_bounds(excerpt):
+    from climate_registry.owner_checks import _dates
+    with pytest.raises(ValueError, match="invalid or reversed owner date interval"):
+        _dates(excerpt)
 
 
 def test_owner_explicit_to_range_and_no_year_or_end_inference(tmp_path):

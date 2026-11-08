@@ -71,6 +71,186 @@ def _report_pdf(path, calendar_date="4–5 Sep 2026", *, include_article=False):
     path.write_bytes(output.getvalue())
 
 
+def _borderless_dates_pdf(path):
+    output = BytesIO()
+    canvas = Canvas(output, pagesize=(595.92, 842.88))
+    pages = [
+        [("4–5 Sep 2026", "EVENT", "Climate risk conference", "Host Alpha", "Relevant to insurers"),
+         ("October 2026", "DEADLINE", "Consultation deadline", "Host Beta", "Relevant to regulators")],
+        [("7–8 Nov", "2026", "WEBINAR", "Regional webinar", "Host Gamma", "Relevant to actuaries")],
+    ]
+    for page_number, rows in enumerate(pages):
+        canvas.setFont("Helvetica-Bold", 10)
+        if page_number == 0:
+            for x, text in ((48, "D A T E ( S )"), (122, "E V E N T"),
+                    (262, "H O S T"), (346, "R E L E V A N C E")):
+                canvas.drawString(x, 790, text)
+        else:
+            canvas.drawString(122, 790, "E V E N T   H O S T   R E L E V A N C E")
+        canvas.setFont("Helvetica", 9)
+        y = 760
+        for row in rows:
+            for x, width in ((50, 72), (122, 140), (262, 84), (346, 202)):
+                canvas.rect(x, y, width, .75, fill=1, stroke=0)
+            if row[0] == "7–8 Nov":
+                date_lines, kind, name, host, relevance = [row[0], row[1]], *row[2:]
+            else:
+                date_lines, kind, name, host, relevance = [row[0]], row[1], *row[2:]
+            for offset, line in enumerate(date_lines):
+                canvas.drawString(50, y - 15 - offset * 12, line)
+            canvas.drawString(50, y - 15 - len(date_lines) * 12, kind)
+            canvas.drawString(124, y - 15, name)
+            canvas.drawString(264, y - 15, host)
+            canvas.drawString(348, y - 15, relevance)
+            y -= 64
+        for x, width in ((50, 72), (122, 140), (262, 84), (346, 202)):
+            canvas.rect(x, y, width, .75, fill=1, stroke=0)
+        canvas.drawString(48, 16, f"Page {page_number + 1} of 2")
+        canvas.showPage()
+    canvas.save()
+    path.write_bytes(output.getvalue())
+
+
+def _same_page_hybrid_dates_pdf(path):
+    output = BytesIO()
+    canvas = Canvas(output, pagesize=(595.92, 842.88))
+    canvas.setFont("Helvetica", 10)
+    for y, text in ((810, "Key Dates"), (790, "DATE(S) EVENT HOST RELEVANCE"),
+        (770, "2 Aug 2026"), (754, "EVENT"), (738, "Legacy opening briefing"),
+        (722, "Host Legacy"), (706, "Relevant to insurers")):
+        canvas.drawString(50, y, text)
+    canvas.setFont("Helvetica-Bold", 10)
+    for x, text in ((50, "D A T E ( S )"), (122, "E V E N T"),
+            (262, "H O S T"), (346, "R E L E V A N C E")):
+        canvas.drawString(x, 675, text)
+    canvas.setFont("Helvetica", 9)
+    rows = [
+        (["  4–5 Sep", "   2026"], "EVENT", "Climate risk conference", "Host Alpha", "Relevant to insurers"),
+        ("October 2026", "DEADLINE", "Consultation deadline", "Host Beta", "Relevant to regulators"),
+    ]
+    y = 645
+    for date, kind, name, host, relevance in rows:
+        for x, width in ((50, 72), (122, 140), (262, 84), (346, 202)):
+            canvas.rect(x, y, width, .75, fill=1, stroke=0)
+        date_lines = date if isinstance(date, list) else [date]
+        for line_index, line in enumerate(date_lines):
+            canvas.drawString(50, y - 15 - line_index * 12, line)
+        canvas.drawString(50, y - 15 - len(date_lines) * 12, kind)
+        for x, text in ((124, name), (264, host), (348, relevance)):
+            canvas.drawString(x, y - 15, text)
+        y -= 65
+    for x, width in ((50, 72), (122, 140), (262, 84), (346, 202)):
+        canvas.rect(x, y, width, .75, fill=1, stroke=0)
+    canvas.showPage()
+    canvas.save()
+    path.write_bytes(output.getvalue())
+
+
+def test_pdf_borderless_spaced_dates_table_extracts_rows_across_continuation_pages(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    path = tmp_path / "borderless-calendar.pdf"
+    _borderless_dates_pdf(path)
+    bundle = import_pdf_reports([path])
+    rows = bundle["calendar_items"]
+    assert len(rows) == 3
+    assert [(item["page"], item["raw_date"], item["kind"], item["name"], item["publisher"], item["relevance"])
+        for item in rows] == [
+            (1, "4–5 Sep 2026", "event", "Climate risk conference", "Host Alpha", "Relevant to insurers"),
+            (1, "October 2026", "deadline", "Consultation deadline", "Host Beta", "Relevant to regulators"),
+            (2, "7–8 Nov 2026", "webinar", "Regional webinar", "Host Gamma", "Relevant to actuaries"),
+        ]
+    for item in rows:
+        assert item["source_document_sha256"] == bundle["documents"][0]["source"]["sha256"]
+        assert item["source_region"]["bbox"][2] == 548
+        assert item["source_region"]["char_start"] < item["source_region"]["char_end"]
+        assert item["content_sha256"] == hashlib.sha256(item["raw_text"].encode()).hexdigest()
+    assert (rows[0]["start_date"], rows[0]["end_date"]) == ("2026-09-04", "2026-09-05")
+
+
+def test_pdf_mixed_calendar_layouts_keep_legacy_page_rows_when_later_pages_use_geometry(tmp_path):
+    from pypdf import PdfReader, PdfWriter
+    legacy_path = tmp_path / "legacy-calendar.pdf"
+    geometry_path = tmp_path / "borderless-calendar.pdf"
+    mixed_path = tmp_path / "mixed-calendar.pdf"
+    _report_pdf(legacy_path)
+    _borderless_dates_pdf(geometry_path)
+    writer = PdfWriter()
+    writer.add_page(PdfReader(str(legacy_path)).pages[2])
+    for page in PdfReader(str(geometry_path)).pages:
+        writer.add_page(page)
+    with mixed_path.open("wb") as output:
+        writer.write(output)
+
+    rows = import_pdf_reports([mixed_path])["calendar_items"]
+    assert [(item["page"], item["name"]) for item in rows] == [
+        (1, "Climate risk conference"), (2, "Climate risk conference"),
+        (2, "Consultation deadline"), (3, "Regional webinar"),
+    ]
+
+
+def test_pdf_same_page_hybrid_calendar_keeps_nonoverlapping_line_item(tmp_path):
+    path = tmp_path / "same-page-hybrid.pdf"
+    _same_page_hybrid_dates_pdf(path)
+    document = import_pdf_reports([path])["documents"][0]
+    line_items = _extract_calendar_items(document)
+    rows = document["calendar_items"]
+    assert len(line_items) == 3
+    assert line_items[1]["raw_date"] == "2026"
+    assert [(item["page"], item["name"]) for item in rows] == [
+        (1, "Legacy opening briefing"), (1, "Climate risk conference"), (1, "Consultation deadline"),
+    ]
+
+
+def test_fragment_right_caches_unknown_font_and_uses_later_registration(monkeypatch):
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.rl_config import defaultEncoding
+    from climate_monitor.pdf_intake import _UNREGISTERED_REPORTLAB_FONTS, _fragment_right
+    font_name = "CodexUnknownFontCacheTest"
+    _UNREGISTERED_REPORTLAB_FONTS.discard(font_name)
+    fragment = {"font_name": font_name, "text": "abc", "font_size": 10, "x": 10, "right": 27}
+    attempts = []
+    real_width = pdfmetrics.stringWidth
+
+    def missing_font(name):
+        attempts.append(name)
+        raise KeyError(name)
+
+    monkeypatch.setattr(pdfmetrics, "findFontAndRegister", missing_font)
+    try:
+        assert _fragment_right(fragment) == 27
+        assert _fragment_right(fragment) == 27
+        assert attempts == [font_name]
+
+        pdfmetrics.registerFont(pdfmetrics.Font(font_name, "Helvetica", defaultEncoding))
+        expected = 10 + real_width("abc", font_name, 10)
+        assert _fragment_right(fragment) == expected
+        assert attempts == [font_name]
+    finally:
+        pdfmetrics._fonts.pop(font_name, None)
+        _UNREGISTERED_REPORTLAB_FONTS.discard(font_name)
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="PDF Registry writers require POSIX transaction locks")
+def test_borderless_calendar_reimport_is_append_only_and_idempotent(tmp_path, monkeypatch):
+    from climate_registry.pdf_intake import persist_pdf_intake
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    path = tmp_path / "borderless-calendar.pdf"
+    _borderless_dates_pdf(path)
+    database = tmp_path / "registry.sqlite3"
+    initialize_registry(database)
+    first = persist_pdf_intake(database, tmp_path / "backups", import_pdf_reports([path]))
+    with sqlite3.connect(database) as connection:
+        before = connection.execute(
+            "SELECT occurrence_id, item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall()
+    retry = persist_pdf_intake(database, tmp_path / "backups", import_pdf_reports([path]))
+    with sqlite3.connect(database) as connection:
+        after = connection.execute(
+            "SELECT occurrence_id, item_json FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall()
+    assert first["added"]["calendar_items"] == 3
+    assert retry["added"]["calendar_items"] == 0
+    assert len(after) == 3 and after == before
+
+
 def _report_pdf_with_two_articles(path):
     output = BytesIO()
     canvas = Canvas(output, pagesize=letter)

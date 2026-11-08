@@ -156,6 +156,17 @@ def _dates(text):
         return {"start_date": value, "end_date": None, "date_precision": "month"}
     if re.fullmatch(r"\d{1,2}-[A-Za-z]+-\d{4}", value):
         value = value.replace("-", " ")
+    full_day_range = re.fullmatch(
+        r"(\d{1,2})\s+([A-Za-z]+)\s+(20\d{2})\s*[-–—]\s*(\d{1,2})\s+([A-Za-z]+)\s+(20\d{2})",
+        value,
+    )
+    if full_day_range:
+        start = _parse_calendar_date(" ".join(full_day_range.groups()[:3]))
+        end = _parse_calendar_date(" ".join(full_day_range.groups()[3:]))
+        if (start["date_precision"] != "day" or end["date_precision"] != "day"
+                or start["start_date"] > end["start_date"]):
+            raise ValueError("invalid or reversed owner date interval")
+        return {"start_date": start["start_date"], "end_date": end["start_date"], "date_precision": "day"}
     interval = re.fullmatch(r"([A-Za-z]+)\s+(\d{1,2})\s*[-–—]\s*([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})", value)
     if interval:
         first_month, first_day, last_month, last_day, year = interval.groups()
@@ -191,7 +202,10 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
         if not _nonempty(capture.get(key)):
             raise ValueError("source capture is incomplete: " + key)
     date_only = publication_date_only or date_fields_only or activity_dates_only
-    if capture["requested_url"] != target["source_url"] and not date_only:
+    source_less_pdf_meeting = (target.get("entity_kind") == "pdf_meeting"
+        and target.get("check_kind") == "meetings" and target.get("source_url") == ""
+        and not target["fields"].get("source_urls"))
+    if capture["requested_url"] != target["source_url"] and not date_only and not source_less_pdf_meeting:
         raise ValueError("capture requested URL differs from observation")
     _url(capture["requested_url"]); _url(capture["final_url"])
     timestamp(capture["captured_at"])
@@ -199,6 +213,26 @@ def validate_observation(target, entry, *, publication_date_only=False, date_fie
     text = raw.decode("utf-8")
     if text != capture["text"] or hashlib.sha256(raw).hexdigest() != capture["sha256"]:
         raise ValueError("captured bytes, text or SHA differ")
+    if source_less_pdf_meeting:
+        identity = entry.get("source_identity")
+        public_name = entry.get("public_fields", {}).get("name") if isinstance(entry.get("public_fields"), dict) else None
+        source_binding = target.get("source_binding")
+        source_binding = source_binding if isinstance(source_binding, dict) else {}
+        source_sha = source_binding.get("source_document_sha256")
+        reason = identity.get("reason", "").casefold() if isinstance(identity, dict) and isinstance(identity.get("reason"), str) else ""
+        if (not isinstance(identity, dict)
+                or set(identity) != {"occurrence_id", "source_document_sha256", "excerpt", "reason"}
+                or identity["occurrence_id"] != target.get("occurrence_id")
+                or source_binding.get("occurrence_id") != target.get("occurrence_id")
+                or not _nonempty(source_sha) or identity["source_document_sha256"] != source_sha
+                or target["fields"].get("source_document_sha256") != source_sha
+                or not _nonempty(identity["excerpt"]) or identity["excerpt"] not in text
+                or not _nonempty(public_name)
+                or public_name.casefold() not in identity["excerpt"].casefold()
+                or not _nonempty(identity["reason"])
+                or not ("same edition" in reason or "same event edition" in reason
+                    or "official source" in reason and ("event" in reason or "edition" in reason))):
+            raise ValueError("source-less PDF meeting needs literal same-edition source identity for independent review")
     if date_only:
         identity = entry.get("source_identity")
         if (not isinstance(identity, dict) or set(identity) != {"article_url", "excerpt", "reason"}

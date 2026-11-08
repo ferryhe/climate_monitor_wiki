@@ -179,6 +179,18 @@ The capture retains its real requested/final URL and bytes/hash. Include
 URL; the independent reviewer must verify that its identity text and date refer
 to this exact article. Never relabel a directory capture as a fetched article page.
 
+For a source-less PDF meeting only (`source_url` and frozen `source_urls` are empty),
+the capture may be an official HTTP(S) page. Bind it with exactly
+`source_identity: {"occurrence_id": TARGET_OCCURRENCE_ID,
+"source_document_sha256": TARGET_DOCUMENT_SHA256, "excerpt": LITERAL_EVENT_TEXT,
+"reason": SAME_EDITION_EXPLANATION}`. The excerpt must occur verbatim in the
+captured bytes and include the proposed public event name. The document hash and
+occurrence bind to the frozen PDF source; an independently reviewed name correction
+may differ from its abbreviated PDF label when `original_comparisons` records that
+disposition. Linked PDF meetings keep exact requested-URL
+matching. The checked page becomes the cited source only after independent review;
+an empty original PDF URL is not rendered as a link.
+
 The independent `owner-agent-publication-date-review.v1` receipt binds the new
 candidate, date evidence, approved baseline and non-date scope. Approval rechecks
 live publication/latest/visibility and source state, verifies frozen inherited

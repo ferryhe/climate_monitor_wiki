@@ -1,4 +1,6 @@
 """G4 exact semantic identity, source retention and approved-only relations."""
+import base64
+import hashlib
 import json
 import sqlite3
 from copy import deepcopy
@@ -1114,6 +1116,89 @@ def test_approved_dates_alias_merges_current_identity_and_retains_source_occurre
     with sqlite3.connect(database) as db:
         assert list(published_snapshots(db, ("pdf_meeting",))) == [("pdf_meeting", "target")]
         assert db.execute("SELECT * FROM pdf_intake_calendar_items ORDER BY occurrence_id").fetchall() == originals
+
+
+def test_hidden_source_less_pdf_date_alias_keeps_one_visible_event_and_both_observations(tmp_path, monkeypatch):
+    from test_owner_checks import _manifest as owner_manifest, _review
+    from climate_registry.publication import set_visibility, stage_entities
+    from climate_registry.read_api import RegistryReader
+
+    database = _seed(tmp_path)
+    candidate = {"name": "IAIS Annual Conference 2027", "event_type": "conference", "organizer": None,
+        "status": "scheduled", "date_precision": "day", "start_date": "2027-06-10", "end_date": "2027-06-12",
+        "raw_time_text": None, "timezone": None, "location": None, "online_url": None,
+        "deadline_type": None, "deadline_date": None, "date_evidence": "June 10–12, 2027",
+        "deadline_evidence": None, "status_evidence": None, "relevance_reason": None}
+    def append_observation(event, occurrence, document, page, source_urls):
+        item = {"event_id": event, "occurrence_id": occurrence, "name": candidate["name"], "kind": "event",
+            "raw_date": "June 10–12, 2027", "date_precision": "day", "start_date": "2027-06-10",
+            "end_date": "2027-06-12", "summary": "Same conference edition", "page": page,
+            "source_document_sha256": document, "source_urls": source_urls}
+        with sqlite3.connect(database) as db:
+            db.execute("INSERT INTO pdf_intake_documents(document_sha256,source_path,filename,media_type,size_bytes,extracted_text_sha256,document_json,imported_at,date_of_run) VALUES(?,?,?,'application/pdf',1,?,'{}','2026-09-28','2026-09-28')",
+                (document, "/evidence/" + event + ".pdf", event + ".pdf", "b" * 64))
+            db.execute("INSERT INTO pdf_intake_calendar_items VALUES(?,?,?,?,?,'event',?,'day',?,?,?, ?,NULL,?)",
+                (occurrence, event, document, page, item["name"], item["raw_date"], item["start_date"],
+                    item["end_date"], item["summary"], "c" * 64, json.dumps(item)))
+    append_observation("source", "source-occ", "a" * 64, 12, ["https://example.org/source"])
+    _check(database, tmp_path, kind="meetings", ids={"source-occ"}, candidate=candidate)
+    _approve_all(database)
+    append_observation("target", "target-occ", "d" * 64, 9, [])
+    with sqlite3.connect(database) as db:
+        stage_entities(db)
+    set_visibility(database, "pdf_meeting", "target", False)
+
+    fields = {"name": "IAIS Annual Conference 2027", "raw_date": "10–12 June 2027",
+        "start_date": "2027-06-10", "end_date": "2027-06-12", "date_precision": "day"}
+    manifest = owner_manifest(database, kind="pdf_meeting", identity="target", occurrence="target-occ",
+        fields=fields, body="IAIS Annual Conference 2027\n10–12 June 2027\nOfficial listing")
+    entry = manifest["observations"][0]
+    entry["capture"]["requested_url"] = "https://example.org/official-dates"
+    entry["capture"]["final_url"] = "https://example.org/official-dates"
+    excerpt = "IAIS Annual Conference 2027 appears in this official listing."
+    entry["source_identity"] = {"occurrence_id": "target-occ",
+        "source_document_sha256": entry["target"]["source_binding"]["source_document_sha256"],
+        "excerpt": excerpt, "reason": "This is the official source for the same event edition."}
+    body = entry["capture"]["text"] + "\n" + excerpt
+    entry["capture"].update(text=body, bytes_base64=base64.b64encode(body.encode()).decode(),
+        sha256=hashlib.sha256(body.encode()).hexdigest())
+    staged = _ingest(database, tmp_path, manifest)
+    receipt = _review(database, tmp_path, staged["candidate_sha256"])
+    receipt["reviewed_at"] = "2026-10-25T18:01:00Z"
+    approve_owner_check(database, receipt, lifecycle_root=tmp_path/"runs", queue_dir=tmp_path/"queue",
+        backup_dir=tmp_path/"backups", apply=True)
+    assert [item["event_id"] for item in _reader(database, tmp_path).meetings_all(base_date="1900-01-01")] == ["source"]
+
+    identity = plan_owner_check(database, "pdf_meeting", "source", identity_correction=True,
+        identity_participants=[("pdf_meeting", "target")])
+    identity.update(actor={"id": "identity-author", "task_id": "dates-identity-task"},
+        authorization_reference="actual owner same-edition correction", audit_reference="retained audit/identity",
+        checked_at="2026-10-25T18:02:00Z")
+    participant = identity["plan"]["participants"][1]
+    identity["evidence"] = [{"id": "same-edition", "source": _scope(participant),
+        "text": "IAIS Annual Conference 2027", "excerpt": "2027",
+        "reason": "Both retained PDF observations identify this same event edition."}]
+    identity["aliases"] = [{"source": _scope(participant), "same_object": True,
+        "evidence_ids": ["same-edition"]}]
+    merged = _ingest(database, tmp_path, identity)
+    receipt = _review(database, tmp_path, merged["candidate_sha256"])
+    receipt["reviewed_at"] = "2026-10-25T18:03:00Z"
+    approve_owner_check(database, receipt, lifecycle_root=tmp_path/"runs", queue_dir=tmp_path/"queue",
+        backup_dir=tmp_path/"backups", apply=True)
+
+    def check(reader):
+        items = reader.meetings_all(base_date="1900-01-01")
+        assert len(items) == 1 and items[0]["event_id"] == "source"
+        assert {row["occurrence_id"] for row in items[0]["pdf_observations"]} == {"source-occ", "target-occ"}
+        assert len(reader.pdf_calendar_items_all()) == 2
+
+    reader = RegistryReader(database, repository_root=tmp_path/"app")
+    for direct in (True, False):
+        with reader.public_snapshot(direct=direct):
+            check(reader)
+    root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
+    export_public_snapshot(database, root/"wiki/public-registry.json")
+    check(RegistryReader.from_public_export(root))
 
 
 @pytest.mark.parametrize("same_report", [False, True])
