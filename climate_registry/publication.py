@@ -72,27 +72,41 @@ def _load_snapshot_json(encoded, strings):
 
 
 def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=None, candidate_sha_out=None,
-    packet_cache=None, apply_policy=True, include_hidden=False):
+    packet_cache=None, apply_policy=True, include_hidden=False, selected_publication_scope=False):
     """Return permitted projections bound to exact visible approved snapshots."""
     kinds = tuple(sorted(set(kinds)))
     if apply_policy and not include_hidden and kinds and next(iter(connection.execute("""SELECT 1 FROM registry_publication p JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256
             WHERE json_type(c.snapshot_json,'$.identity_correction')='object' OR json_type(c.snapshot_json,'$.approved_identity_history')='array' LIMIT 1""")), None):
         # Approved ownership survives hiding; visibility cannot revive old aliases.
-        if entity_ids is None:
+        if entity_ids is not None and selected_publication_scope:
+            identity_families = ({"article", "pdf_article"}, {"meeting", "pdf_meeting"})
+            identity_kinds = tuple(sorted(set().union(*(family for family in identity_families
+                if set(kinds) & family))))
+            all_views = published_snapshots(connection, identity_kinds, entity_ids=entity_ids,
+                candidate_cache=candidate_cache, candidate_sha_out=candidate_sha_out,
+                packet_cache=packet_cache, include_hidden=True)
+        elif entity_ids is None:
             all_views = published_snapshots(connection, tuple(ENTITY_TABLES), candidate_cache=candidate_cache,
                 candidate_sha_out=candidate_sha_out, packet_cache=packet_cache, include_hidden=True)
         else:
             # Resolve the approved identity graph first, then load only the requested
-            # entities and their exact alias closure. Do not expand unrelated history.
+            # entities and their exact alias family. Article and meeting identities
+            # cannot alias across families, so unrelated families need no validation.
+            identity_families = ({"article", "pdf_article"}, {"meeting", "pdf_meeting"})
+            identity_kinds = tuple(sorted(set().union(*(family for family in identity_families
+                if set(kinds) & family))))
             identity_ids = {}
-            for kind, identity in connection.execute("""SELECT p.entity_kind,p.entity_id
-                    FROM registry_publication p JOIN registry_candidates c
-                    ON c.candidate_sha256=p.published_candidate_sha256
-                    WHERE json_type(c.snapshot_json,'$.identity_correction')='object'
-                        OR json_type(c.snapshot_json,'$.approved_identity_history')='array'"""):
-                identity_ids.setdefault(kind, set()).add(identity)
+            if identity_kinds:
+                query = ("SELECT p.entity_kind,p.entity_id FROM registry_publication p "
+                    "JOIN registry_candidates c ON c.candidate_sha256=p.published_candidate_sha256 "
+                    "WHERE p.entity_kind IN (" + ",".join("?" for _ in identity_kinds) + ") "
+                    "AND (json_type(c.snapshot_json,'$.identity_correction')='object' "
+                    "OR json_type(c.snapshot_json,'$.approved_identity_history')='array')")
+                rows = connection.execute(query, identity_kinds)
+                for kind, identity in rows:
+                    identity_ids.setdefault(kind, set()).add(identity)
             from .identity import selected_entities
-            identity_views = published_snapshots(connection, tuple(ENTITY_TABLES), entity_ids=identity_ids,
+            identity_views = published_snapshots(connection, identity_kinds, entity_ids=identity_ids,
                 candidate_cache=candidate_cache, candidate_sha_out=candidate_sha_out, packet_cache=packet_cache,
                 include_hidden=True)
             selected = {(kind, identity) for kind in kinds for identity in
@@ -101,7 +115,7 @@ def published_snapshots(connection, kinds, entity_ids=None, *, candidate_cache=N
             selected_ids = {}
             for kind, identity in selected:
                 selected_ids.setdefault(kind, set()).add(identity)
-            all_views = published_snapshots(connection, tuple(ENTITY_TABLES), entity_ids=selected_ids,
+            all_views = published_snapshots(connection, identity_kinds, entity_ids=selected_ids,
                 candidate_cache=candidate_cache, candidate_sha_out=candidate_sha_out, packet_cache=packet_cache,
                 include_hidden=True)
         visible = {(row[0], row[1]) for row in connection.execute("SELECT entity_kind,entity_id FROM registry_publication WHERE is_visible=1")}

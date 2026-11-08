@@ -134,8 +134,8 @@ def test_scoped_published_reads_keep_approved_aliases_without_global_expansion(t
     assert calls[0] == (("meeting", "pdf_meeting"), {
         "meeting": {"known-event"}, "pdf_meeting": {"known-event"}}, False)
     assert all(entity_ids is not None for _, entity_ids, _ in calls)
-    assert any(include_hidden and entity_ids == {"article": {"good"}}
-        for _, entity_ids, include_hidden in calls)
+    assert any(include_hidden and entity_ids == {}
+        for kinds, entity_ids, include_hidden in calls if kinds == ("meeting", "pdf_meeting"))
 
     with sqlite3.connect(database) as db:
         visible = original(db, ("article",), entity_ids={"article": {"unchecked"}})
@@ -1360,6 +1360,13 @@ def test_native_dates_mapping_consumes_exact_pdf_occurrence_across_modes(tmp_pat
     reader = _reader(database, tmp_path)
     for direct in (True, False):
         with reader.public_snapshot(direct=direct): check(reader)
+    with sqlite3.connect(database) as db:
+        full = published_snapshots(db, ("meeting", "pdf_meeting"))
+        selected = published_snapshots(db, ("meeting", "pdf_meeting"),
+            entity_ids={"meeting": {native}, "pdf_meeting": {"target"}}, selected_publication_scope=True)
+        alias_only = published_snapshots(db, ("meeting", "pdf_meeting"),
+            entity_ids={"pdf_meeting": {"target"}})
+        assert selected == full == alias_only == {("meeting", native): full[("meeting", native)]}
     root = tmp_path/"static"; (root/"wiki").mkdir(parents=True)
     export_public_snapshot(database, root/"wiki/public-registry.json")
     artifact = json.loads((root/"wiki/public-registry.json").read_text())

@@ -687,19 +687,25 @@ class RegistryReader:
             self._snapshot_pdf_occurrence_owners = _materialized_pdf_occurrence_owners(connection)
         return self._snapshot_pdf_occurrence_owners
 
-    def _public_candidates(self, *kinds: str, entity_ids=None) -> dict[tuple[str, str], dict[str, Any]]:
+    def _public_candidates(self, *kinds: str, entity_ids=None, selected_publication_scope=False) -> dict[tuple[str, str], dict[str, Any]]:
         if not getattr(self, "_snapshot_direct", False):
             return {}
         kinds_key = tuple(sorted(set(kinds)))
         ids_key = tuple(sorted((kind, tuple(sorted(set(values)))) for kind, values in entity_ids.items())) if isinstance(entity_ids, dict) else tuple(sorted(set(entity_ids))) if entity_ids is not None else None
-        key = (kinds_key, ids_key)
+        key = (kinds_key, ids_key, bool(selected_publication_scope))
         cached = self._approved_snapshot_cache.setdefault(key, None)
         if cached is None:
             requested_ids = ({(kind, identity) for kind, values in entity_ids.items() for identity in set(values)}
                 if isinstance(entity_ids, dict) else {(kind, identity) for kind in kinds_key for identity in set(entity_ids)}
                 if entity_ids is not None else None)
-            for (available_kinds, available_ids), available in self._approved_snapshot_cache.items():
+            for cached_key, available in self._approved_snapshot_cache.items():
+                if len(cached_key) == 2:
+                    available_kinds, available_ids = cached_key
+                else:
+                    available_kinds, available_ids, _ = cached_key
                 if available is None or not set(kinds_key) <= set(available_kinds):
+                    continue
+                if bool(selected_publication_scope) and (len(cached_key) == 2 or not cached_key[2]):
                     continue
                 if available_ids is not None:
                     if requested_ids is None:
@@ -724,7 +730,8 @@ class RegistryReader:
                 cached = published_snapshots(self._snapshot_connection, kinds_key, entity_ids=entity_ids,
                     candidate_cache=self._approved_candidate_cache,
                     candidate_sha_out=self._approved_candidate_sha_by_entity,
-                    packet_cache=self._pdf_check_packet_cache)
+                    packet_cache=self._pdf_check_packet_cache,
+                    selected_publication_scope=selected_publication_scope)
             except (ValueError, KeyError, TypeError) as exc:
                 raise RegistryContractError("invalid published Registry candidate") from exc
             self._approved_snapshot_cache[key] = cached
@@ -2774,7 +2781,7 @@ class RegistryReader:
         return result
 
     @_direct_public_read
-    def knowledge_chronology(self, *, entity_ids=None) -> dict[str, dict[str, Any]]:
+    def knowledge_chronology(self, *, entity_ids=None, selected_publication_scope=False) -> dict[str, dict[str, Any]]:
         """Only the chronology frozen in the approved public projection."""
         if self.static_snapshot is not None:
             values = dict(self.static_snapshot.get("knowledge_chronology", {}))
@@ -2785,7 +2792,8 @@ class RegistryReader:
         with self.connect() as connection:
             if self.public and getattr(self, "_snapshot_direct", False) and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
                 kinds = ("article", "pdf_article", "meeting", "pdf_meeting") if entity_ids is None else ("meeting", "pdf_meeting")
-                candidates = self._public_candidates(*kinds, entity_ids=entity_ids)
+                candidates = self._public_candidates(*kinds, entity_ids=entity_ids,
+                    selected_publication_scope=selected_publication_scope)
                 values = {}
                 for (kind, identity), snapshot in candidates.items():
                     for row in snapshot.get("tables", {}).get("knowledge_versions", []):

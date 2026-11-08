@@ -399,6 +399,10 @@ class EvidenceTurn:
         self.recent_scanned = False
         self.final_checked = False
         self.seen = set()
+        self._meeting_items_by_snapshot = {}
+        self._meeting_chronology_by_snapshot = {}
+        self._meeting_chronology_scope_by_snapshot = {}
+        self._last_meeting_snapshot_key = None
         self.clarification = self.model_used = False
         self.source_only = not bool(owner.client)
         self.runtime_dir = None
@@ -626,10 +630,55 @@ class EvidenceTurn:
             return RegistryReader.from_public_export(self.owner.responder.kb.wiki_dir.parent)
         return RegistryReader(path, repository_root=Path(__file__).resolve().parents[1])
 
-    def meetings(self, base):
+    def _approved_meeting_snapshot_key(self, reader):
+        from climate_registry.read_api import RegistryReader
+        approved_snapshot = self.owner.responder.kb.approved_registry_snapshot
+        if not isinstance(reader, RegistryReader) or not approved_snapshot or reader.database is None:
+            return None
+        try:
+            path = Path(approved_snapshot).resolve(strict=True)
+            if Path(reader.database).resolve(strict=True) != path:
+                return None
+            stamp = path.stat()
+        except (OSError, RuntimeError):
+            return None
+        return (str(path), stamp.st_dev, stamp.st_ino, stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns)
+
+    def _cached_meeting_item(self, snapshot_key, event_id):
+        if snapshot_key is None:
+            return None
+        item = self._meeting_items_by_snapshot.get(snapshot_key, {}).get(event_id)
+        return copy.deepcopy(item) if item is not None else None
+
+    def _meeting_chronology_for(self, items, *, snapshot_key=None):
+        reader = self.reader()
+        from climate_registry.read_api import RegistryReader, RegistryUnavailableError
+        current_key = self._approved_meeting_snapshot_key(reader)
+        if snapshot_key is not None and current_key != snapshot_key:
+            raise RegistryUnavailableError("approved meeting snapshot changed during this turn")
+        if current_key is not None:
+            scope = _meeting_chronology_scope(items)
+            selected = {f"{kind}:{identity}" for kind, identities in scope.items() for identity in identities}
+            covered = self._meeting_chronology_scope_by_snapshot.setdefault(current_key, set())
+            chronology = self._meeting_chronology_by_snapshot.setdefault(current_key, {})
+            if selected <= covered:
+                return {key: copy.deepcopy(chronology[key]) for key in selected if key in chronology}
+            with reader.public_snapshot(direct=True):
+                values = reader.knowledge_chronology(entity_ids=scope, selected_publication_scope=True)
+            if self._approved_meeting_snapshot_key(reader) != current_key:
+                raise RegistryUnavailableError("approved meeting snapshot changed during this turn")
+            chronology.update(copy.deepcopy(values))
+            covered.update(selected)
+            return values
+        with reader.public_snapshot(direct=True):
+            return reader.knowledge_chronology()
+
+    def meetings(self, base, *, defer_chronology=False):
         items, page = [], 1
         reader = self.reader()
         from climate_registry.read_api import RegistryContractError, RegistryReader
+        snapshot_key = self._approved_meeting_snapshot_key(reader)
+        self._last_meeting_snapshot_key = None
         with reader.public_snapshot(direct=True):
             stored = None
             approved_snapshot = self.owner.responder.kb.approved_registry_snapshot
@@ -673,9 +722,24 @@ class EvidenceTurn:
                     items.extend(records[(page - 1) * 100:page * 100])
                 if pages > 10:
                     self.notes.append("Meeting scan budget reached; coverage is incomplete.")
-            chronology = (reader.knowledge_chronology(entity_ids=_meeting_chronology_scope(items))
-                if isinstance(reader, RegistryReader) else reader.knowledge_chronology())
+            approved_projection = stored is not None or snapshot_key is not None and self.owner.meeting_view is None
+            if approved_projection and defer_chronology:
+                chronology = None
+            elif approved_projection:
+                chronology = reader.knowledge_chronology(entity_ids=_meeting_chronology_scope(items),
+                    selected_publication_scope=True)
+            else:
+                chronology = reader.knowledge_chronology()
         self.notes.append("Meeting coverage: " + json.dumps(payload.get("coverage", {}), ensure_ascii=False))
+        if approved_projection and snapshot_key is not None and self._approved_meeting_snapshot_key(reader) == snapshot_key:
+            current = self._meeting_items_by_snapshot.setdefault(snapshot_key, {})
+            current.update({identity(item): copy.deepcopy(item) for item in items if identity(item)})
+            self._last_meeting_snapshot_key = snapshot_key
+            if chronology is not None:
+                saved = self._meeting_chronology_by_snapshot.setdefault(snapshot_key, {})
+                saved.update(copy.deepcopy(chronology))
+                self._meeting_chronology_scope_by_snapshot.setdefault(snapshot_key, set()).update(
+                    f"{kind}:{identity}" for kind, identities in _meeting_chronology_scope(items).items() for identity in identities)
         return items, chronology
 
     def meeting_text(self, item, chronology):
@@ -759,7 +823,7 @@ class EvidenceTurn:
                 lower = "1900-01-01" if knowledge_range or not upcoming and not explicit else start.date().isoformat() if explicit else (
                     today - timedelta(days=1)).isoformat()
                 scope = {"business_date_lower": lower}
-                items, chronology = self.meetings(lower)
+                items, chronology = self.meetings(lower, defer_chronology=True)
                 all_items = items
                 explicit_filters = {}
                 for field, pattern in (("organizer", r"\borganized\s+by\s+(.+?)(?=\s+(?:in|at|whose|with|online|from|between)\b|\s+从|[?.!,;]|$)"),
@@ -844,6 +908,8 @@ class EvidenceTurn:
                     if uncertain:
                         self.notes.append(f"Upcoming timing is uncertain for {len(uncertain)} meeting(s) because approved exact end time or event timezone is missing.")
                 if knowledge_range:
+                    if chronology is None:
+                        chronology = self._meeting_chronology_for(items, snapshot_key=self._last_meeting_snapshot_key)
                     scope["knowledge_window"] = {"start": start.isoformat(), "end": end.isoformat()}
                     selected, unknown = [], 0
                     for item in items:
@@ -879,6 +945,8 @@ class EvidenceTurn:
                                 self.notes.append("An unsupported date precision prevents confirming a meeting-window match.")
                         return False
                     items = [item for item in items if overlaps(item)]
+                if chronology is None and items:
+                    chronology = self._meeting_chronology_for(items[:12], snapshot_key=self._last_meeting_snapshot_key)
                 self.notes.append("Meeting query scope: " + json.dumps(scope, ensure_ascii=False) +
                     ("; topic matches locate events, not current webpage facts." if not self.source_only else "; general topic words are not matched.") +
                     " Calendar results are auxiliary identity/summary evidence, not a substitute for topic findings.")
@@ -1037,10 +1105,17 @@ class EvidenceTurn:
         return result
 
     def get_meeting_details(self, event_id):
-        items, chronology = self.meetings("1900-01-01")
-        item = next((item for item in items if identity(item) == event_id), None)
+        reader = self.reader()
+        snapshot_key = self._approved_meeting_snapshot_key(reader)
+        item = self._cached_meeting_item(snapshot_key, event_id)
+        chronology = None
+        if item is None:
+            items, chronology = self.meetings("1900-01-01", defer_chronology=True)
+            item = next((item for item in items if identity(item) == event_id), None)
         if not item:
             return {"status": "unavailable", "reason": "Meeting is no longer in the effective public view; do not reuse cached fields."}
+        if chronology is None:
+            chronology = self._meeting_chronology_for([item], snapshot_key=self._last_meeting_snapshot_key or snapshot_key)
         facts = chronology.get("meeting:" + str(event_id), {})
         if event_id not in self.candidates:
             self.focus = event_id
@@ -1152,7 +1227,7 @@ class EvidenceTurn:
                     return
             if re.search(r"\bfor\s+\w|\b(meetings?|conferences?|events?)\b", self.question, re.I) and not (link_request or page_reference or ordinal):
                 try:
-                    items, _ = self.meetings("1900-01-01")
+                    items, _ = self.meetings("1900-01-01", defer_chronology=True)
                     named = [item for item in items if item.get("name") and identity(item) and re.search(
                         r"(?<!\w)" + re.escape(item["name"]) + r"(?!\w)", self.question, re.I)]
                     if len(named) == 1:
@@ -1172,7 +1247,7 @@ class EvidenceTurn:
             if MEETINGS.search(last_question):
                 # Legacy text supplies identity hints only; resolve them against the approved meeting view.
                 try:
-                    items, _ = self.meetings("1900-01-01")
+                    items, _ = self.meetings("1900-01-01", defer_chronology=True)
                     matches = [item for item in items if item.get("name") and re.search(
                         r"(?<!\w)" + re.escape(item["name"]) + r"(?!\w)", last_answer, re.I)]
                 except Exception as exc:

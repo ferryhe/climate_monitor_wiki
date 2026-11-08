@@ -1519,6 +1519,8 @@ def test_approved_meeting_lookup_uses_current_projection_and_scoped_chronology(t
 
     frozen = tmp_path / "approved-snapshot.sqlite3"
     snapshot_registry(database, frozen)
+    with sqlite3.connect(frozen) as db:
+        refresh_display(db, force=True)
     reader = _reader(frozen, tmp_path)
     full_chronology = reader.knowledge_chronology()
     calls = []
@@ -1526,13 +1528,14 @@ def test_approved_meeting_lookup_uses_current_projection_and_scoped_chronology(t
     candidate_calls = []
     original_candidates = reader._public_candidates
 
-    def record_scope(*, entity_ids=None):
+    def record_scope(*, entity_ids=None, selected_publication_scope=False):
         calls.append(entity_ids)
-        return original_chronology(entity_ids=entity_ids)
+        return original_chronology(entity_ids=entity_ids, selected_publication_scope=selected_publication_scope)
 
-    def record_candidate_scope(*kinds, entity_ids=None):
+    def record_candidate_scope(*kinds, entity_ids=None, selected_publication_scope=False):
         candidate_calls.append((kinds, entity_ids))
-        return original_candidates(*kinds, entity_ids=entity_ids)
+        return original_candidates(*kinds, entity_ids=entity_ids,
+            selected_publication_scope=selected_publication_scope)
 
     reader.knowledge_chronology = record_scope
     reader._public_candidates = record_candidate_scope
@@ -1554,6 +1557,18 @@ def test_approved_meeting_lookup_uses_current_projection_and_scoped_chronology(t
     assert "First added: " + chronology[f"meeting:{event_id}"]["first_ingested_at"] in evidence[0]["text"]
     assert "Material update: " + chronology[f"meeting:{event_id}"]["substantive_updated_at"] in evidence[0]["text"]
     assert any('"business_date_lower": "1900-01-01"' in note for note in turn.notes)
+    details = turn.get_meeting_details(event_id)
+    assert details["source"]["evidence_id"] == event_id
+    assert len(calls) == 1
+    import shutil
+    new_generation = tmp_path / "approved-snapshot-new-generation.sqlite3"
+    shutil.copyfile(frozen, new_generation)
+    with sqlite3.connect(new_generation) as db:
+        db.execute("UPDATE registry_publication SET is_visible=0 WHERE entity_kind='meeting' AND entity_id=?", (event_id,))
+        refresh_display(db, force=True)
+    chat.responder.kb.approved_registry_snapshot = new_generation
+    chat.reader_factory = None
+    assert turn.get_meeting_details(event_id)["status"] == "unavailable"
     assert turn.search_knowledge("List upcoming meetings", target="meetings") == []
     assert turn.search_knowledge("Meetings from 2026-09-30 to 2026-10-02 added to the knowledge base", target="meetings") == []
 
