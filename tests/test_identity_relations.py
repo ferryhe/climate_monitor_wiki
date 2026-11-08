@@ -1833,6 +1833,88 @@ def test_git_install_builds_one_canonical_target_group_for_all_articles(tmp_path
     assert [row["article_id"] for row in reader.articles()["items"]] == ["good"]
 
 
+def test_staging_and_owner_plan_reuse_fresh_approved_alias_graph(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+    import climate_registry.owner_checks as owner_checks
+    from climate_registry.owner_checks import _plan
+    from climate_registry.acquisition_review import digest
+
+    database = _seed(tmp_path)
+    _merge_identity(database, tmp_path, [("article", "unchecked")])
+    real_aliases = publication._identity_aliases
+    calls = []
+
+    def counted(connection):
+        aliases = real_aliases(connection)
+        calls.append(aliases)
+        return aliases
+
+    monkeypatch.setattr(publication, "_identity_aliases", counted)
+    monkeypatch.setattr(owner_checks, "_identity_aliases", counted)
+    with sqlite3.connect(database) as db:
+        first = publication.stage_entities(db, annotations={})
+        assert len(calls) == 1
+        assert calls[-1] == {("article", "unchecked"): ("article", "good")}
+        second = publication.stage_entities(db, annotations={})
+        assert len(calls) == 2
+        assert calls[-1] == {("article", "unchecked"): ("article", "good")}
+        assert first == second
+        snapshot = publication.snapshot_entity(db, "article", "good", identity_aliases=calls[-1])
+        plan = _plan(db, database, "article", "unchecked")
+        assert len(calls) == 3
+        assert calls[-1] == {("article", "unchecked"): ("article", "good")}
+        assert plan["entity_id"] == "good"
+        assert plan["source_snapshot_sha256"] == digest(snapshot)
+
+    alias = next(alias for alias in _reader(database, tmp_path).article("good")["identity_mapping"]["aliases"]
+        if alias["source"]["entity_id"] == "unchecked")
+    revoke = _manifest(database, [("article", "unchecked")])
+    revoke["alias_operations"] = [{"action": "revoke", "alias_sha256": digest(alias), "evidence_ids": ["semantic-proof"]}]
+    _approve(database, tmp_path, _ingest(database, tmp_path, revoke))
+    calls.clear()
+    with sqlite3.connect(database) as db:
+        publication.stage_entities(db, annotations={})
+        assert calls == [{}]
+        plan = _plan(db, database, "article", "unchecked")
+        assert calls == [{}, {}]
+        assert plan["entity_id"] == "unchecked"
+
+
+def test_staging_store_reuses_alias_graph_for_already_staged_linked_pdf(tmp_path, monkeypatch):
+    import climate_registry.publication as publication
+
+    database = _seed(tmp_path)
+    _identity_pdf_sources(database)
+    with sqlite3.connect(database) as db:
+        for sha in publication.stage_entities(db):
+            publication._approve(db, sha, {"basis": "explicit prior PDF and core fixture approval"}, status="accepted_legacy")
+    _merge_identity(database, tmp_path, [("article", "unchecked"), ("pdf_article", "pdf-first")])
+    publication.set_visibility(database, "pdf_article", "pdf-first", False)
+
+    real_aliases = publication._identity_aliases
+    calls = []
+
+    def counted(connection):
+        aliases = real_aliases(connection)
+        calls.append(aliases)
+        return aliases
+
+    monkeypatch.setattr(publication, "_identity_aliases", counted)
+    with sqlite3.connect(database) as db:
+        staged = publication.stage_entities(db)
+        assert calls == [{("article", "unchecked"): ("article", "good"),
+            ("pdf_article", "pdf-first"): ("article", "good")}]
+        assert staged
+        assert db.execute("SELECT is_visible FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()[0] == 0
+        assert db.execute("SELECT is_visible FROM registry_publication WHERE entity_kind='pdf_article' AND entity_id='pdf-first'").fetchone()[0] == 0
+
+    calls.clear()
+    publication.set_visibility(database, "article", "good", True)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT is_visible FROM registry_publication WHERE entity_kind='article' AND entity_id='good'").fetchone()[0] == 1
+        assert db.execute("SELECT is_visible FROM registry_publication WHERE entity_kind='pdf_article' AND entity_id='pdf-first'").fetchone()[0] == 1
+
+
 def test_audit_build_reuses_one_exact_information_group_for_all_articles(tmp_path, monkeypatch):
     import climate_registry.publication as publication
     from climate_registry.audit import build_audit_registry

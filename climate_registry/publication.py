@@ -388,11 +388,23 @@ def snapshot_entity(connection, kind, entity_id, *, include_pending=True, annota
         if not ids:
             continue
         from .information_checks import attempt_identity
-        attempts = [row for row in _rows(connection,prefix+"_check_attempts","1=1",()) if attempt_identity(row,prefix) in ids]
+        identity_values = sorted(ids)
+        attempts = _rows(connection, prefix+"_check_attempts", "occurrence_id IN (" + ",".join("?" for _ in ids) + ")", identity_values)
+        if connection.execute("PRAGMA user_version").fetchone()[0] >= 22:
+            column = "core_article_id" if prefix == "article" else "event_source_id"
+            predicate = "('core:' || " + column + ") IN (" + ",".join("?" for _ in ids) + ")" if prefix == "article" else column + " IN (" + ",".join("?" for _ in ids) + ")"
+            attempts.extend(_rows(connection, prefix+"_check_attempts", "occurrence_id IS NULL AND " + predicate, identity_values))
+            attempts.sort(key=lambda row: json.dumps(row, sort_keys=True))
+        attempts = [row for row in attempts if attempt_identity(row,prefix) in ids]
         tables[prefix+"_check_attempts"] = list({row["attempt_id"]:row for row in tables.get(prefix+"_check_attempts",[])+attempts}.values())
         run_ids = {row["run_id"] for row in tables[prefix+"_check_attempts"]}
-        dependencies[prefix+"_check_runs"] = [row for row in _rows(connection,prefix+"_check_runs","1=1",())
-            if row["run_id"] in run_ids or any(target.get("occurrence_id") in ids for target in json.loads(row["input_json"]).get("targets",[]))]
+        run_predicates = ["EXISTS (SELECT 1 FROM json_each(" + prefix + "_check_runs.input_json,'$.targets') target "
+            "WHERE json_extract(target.value,'$.occurrence_id') IN (" + ",".join("?" for _ in ids) + "))"]
+        run_values = list(sorted(ids))
+        if run_ids:
+            run_predicates.insert(0, "run_id IN (" + ",".join("?" for _ in run_ids) + ")")
+            run_values = list(sorted(run_ids)) + run_values
+        dependencies[prefix+"_check_runs"] = _rows(connection, prefix+"_check_runs", "(" + " OR ".join(run_predicates) + ")", run_values)
     # Supplements and category-correction audit records are not business content.
     tables["knowledge_versions"] = [row for row in tables["knowledge_versions"]
         if not row["source_ref"].startswith(("registry-supplement:", "pdf-classification:", "category-correction:"))]
@@ -512,11 +524,11 @@ def _category_correction_inputs(snapshot):
     return inputs
 
 
-def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, enrichment_scope=None):
+def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, enrichment_scope=None, identity_aliases=None):
     from .identity import OVERLAY as IDENTITY, is_identity_scope, _frozen
     if is_identity_scope(snapshot):
         _frozen(snapshot)
-        return _store_snapshot(connection, snapshot, basis, created_at)
+        return _store_snapshot(connection, snapshot, basis, created_at, identity_aliases=identity_aliases)
     from .identity import retain_approved_identity
     if "publication_date_only" not in snapshot:
         retain_approved_identity(connection, snapshot)
@@ -614,10 +626,10 @@ def stage_snapshot(connection, snapshot, *, basis="pending", created_at=None, en
     validate_content_update(snapshot)
     from .enrichment_contract import bind_content_scope
     bind_content_scope(connection, snapshot)
-    return _store_snapshot(connection, snapshot, basis, created_at)
+    return _store_snapshot(connection, snapshot, basis, created_at, identity_aliases=identity_aliases)
 
 
-def _store_snapshot(connection, snapshot, basis, created_at):
+def _store_snapshot(connection, snapshot, basis, created_at, *, identity_aliases=None):
     sha = digest(snapshot)
     connection.execute("INSERT OR IGNORE INTO registry_candidates VALUES(?,?,?,?,?,?)",
         (sha, snapshot["entity_kind"], snapshot["entity_id"], json.dumps(snapshot, sort_keys=True, ensure_ascii=False),
@@ -631,13 +643,13 @@ def _store_snapshot(connection, snapshot, basis, created_at):
             JOIN pdf_intake_articles pdf ON pdf.article_id=p.entity_id JOIN articles a
             ON pdf.core_article_id=a.article_id
             WHERE p.entity_kind='pdf_article' AND a.article_id=?""",(identity[1],)).fetchall()
-        aliases=[row for row in linked if canonical_entity(connection,row[0],row[1])==identity]
+        aliases=[row for row in linked if canonical_entity(connection,row[0],row[1],identity_aliases=identity_aliases)==identity]
     elif identity[0]=="meeting":
         linked=connection.execute("""SELECT DISTINCT p.entity_kind,p.entity_id,p.is_visible FROM registry_publication p
             JOIN pdf_intake_calendar_items c ON c.event_id=p.entity_id
             JOIN meeting_check_attempts check_row ON check_row.occurrence_id=c.occurrence_id
             WHERE p.entity_kind='pdf_meeting' AND json_extract(check_row.packet_json,'$.canonical_event_id')=?""",(identity[1],)).fetchall()
-        aliases=[row for row in linked if canonical_entity(connection,row[0],row[1])==identity]
+        aliases=[row for row in linked if canonical_entity(connection,row[0],row[1],identity_aliases=identity_aliases)==identity]
     visible=min(([current] if current is not None else [])+[flag for _,_,flag in aliases],default=1)
     connection.execute("""INSERT INTO registry_publication(entity_kind,entity_id,latest_candidate_sha256,is_visible)
         VALUES(?,?,?,?) ON CONFLICT(entity_kind,entity_id) DO UPDATE SET latest_candidate_sha256=excluded.latest_candidate_sha256,is_visible=excluded.is_visible""",
@@ -647,12 +659,12 @@ def _store_snapshot(connection, snapshot, basis, created_at):
     return sha
 
 
-def _entity_ids(connection, *, article_ids=None, pdf_article_ids=None, entities=None):
+def _entity_ids(connection, *, article_ids=None, pdf_article_ids=None, entities=None, identity_aliases=None):
     for kind, table, column in (("article", "articles", "article_id"),
         ("pdf_article", "pdf_intake_articles", "article_id"), ("meeting", "climate_events", "event_id"),
         ("pdf_meeting", "pdf_intake_calendar_items", "event_id")):
         for (entity_id,) in connection.execute(f"SELECT DISTINCT {column} FROM {table} ORDER BY {column}").fetchall():
-            if canonical_entity(connection, kind, entity_id) != (kind, entity_id):
+            if canonical_entity(connection, kind, entity_id, identity_aliases=identity_aliases) != (kind, entity_id):
                 continue
             if entities is not None and (kind, entity_id) not in entities:
                 continue
@@ -673,12 +685,13 @@ def stage_entities(connection, *, article_ids=None, pdf_article_ids=None, annota
         return []
     staged = []
     report_cache = {}
-    information_groups = _information_groups(connection)
+    identity_aliases = _identity_aliases(connection)
+    information_groups = _information_groups(connection, identity_aliases=identity_aliases)
     from .annotations import load_article_annotations
     if annotations is None:
         annotations = load_article_annotations(Path(os.getenv("ARTICLE_METADATA_DIR") or Path(__file__).resolve().parents[1] / "article_metadata"))
-    for kind, entity_id in _entity_ids(connection, article_ids=article_ids, pdf_article_ids=pdf_article_ids, entities=entities):
-        staged.append(stage_snapshot(connection, snapshot_entity(connection, kind, entity_id, annotations=annotations,source_dir=source_dir,report_cache=report_cache,information_groups=information_groups)))
+    for kind, entity_id in _entity_ids(connection, article_ids=article_ids, pdf_article_ids=pdf_article_ids, entities=entities, identity_aliases=identity_aliases):
+        staged.append(stage_snapshot(connection, snapshot_entity(connection, kind, entity_id, annotations=annotations,source_dir=source_dir,report_cache=report_cache,information_groups=information_groups,identity_aliases=identity_aliases), identity_aliases=identity_aliases))
     return staged
 
 
@@ -690,12 +703,13 @@ def _prepare_entities(connection, root):
     if not enabled(connection):
         return {"ready": [], "held": [], "invalid": [], "staged": []}
     annotations = load_article_annotations(Path(os.getenv("ARTICLE_METADATA_DIR") or Path(__file__).resolve().parents[1] / "article_metadata"))
-    groups, cache, staged, invalid = _information_groups(connection), {}, [], []
-    for kind, identity in _entity_ids(connection):
+    identity_aliases = _identity_aliases(connection)
+    groups, cache, staged, invalid = _information_groups(connection, identity_aliases=identity_aliases), {}, [], []
+    for kind, identity in _entity_ids(connection, identity_aliases=identity_aliases):
         connection.execute("SAVEPOINT prepare_item")
         try:
-            snapshot = snapshot_entity(connection, kind, identity, annotations=annotations, report_cache=cache, information_groups=groups)
-            staged.append(stage_snapshot(connection, snapshot))
+            snapshot = snapshot_entity(connection, kind, identity, annotations=annotations, report_cache=cache, information_groups=groups, identity_aliases=identity_aliases)
+            staged.append(stage_snapshot(connection, snapshot, identity_aliases=identity_aliases))
         except (ValueError, KeyError, TypeError, sqlite3.IntegrityError, RegistryInputError) as exc:
             connection.execute("ROLLBACK TO prepare_item")
             invalid.append({"entity_kind": kind, "entity_id": identity, "classification": "invalid", "reason": str(exc)})

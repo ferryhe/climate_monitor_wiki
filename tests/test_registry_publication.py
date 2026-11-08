@@ -89,6 +89,48 @@ def test_visibility_reuses_approved_graph_for_two_entities(tmp_path, monkeypatch
         assert db.execute("SELECT entity_kind,entity_id,is_visible FROM registry_publication ORDER BY entity_kind,entity_id").fetchall() == before
 
 
+def test_entity_snapshot_filters_attempt_payloads_by_native_and_pdf_targets(tmp_path):
+    from climate_registry.information_checks import _sha
+
+    database = _database(tmp_path, verified=False)
+    with sqlite3.connect(database) as db:
+        _pdf(db, identity="pdf-one", occurrence_id="pdf-occ")
+        stage_entities(db)
+        native_input = json.dumps({"targets": [{"occurrence_id": "core:a"}]}, sort_keys=True)
+        pdf_input = json.dumps({"targets": [{"occurrence_id": "pdf-occ"}]}, sort_keys=True)
+        unrelated_input = json.dumps({"targets": [{"occurrence_id": "core:b"}]}, sort_keys=True)
+        no_target_input = json.dumps({"targets": []}, sort_keys=True)
+        runs = (("native-run", native_input), ("pdf-run", pdf_input),
+            ("pdf-no-attempt", pdf_input), ("unrelated-run", unrelated_input), ("empty-run", no_target_input))
+        for run_id, encoded in runs:
+            db.execute("INSERT INTO article_check_runs VALUES(?,?,?,?,?,?,?,?,?)",
+                (run_id, encoded, hashlib.sha256(encoded.encode()).hexdigest(), "2026-11-01T00:00:00Z",
+                 None, "pending", 1, 0, None))
+        packet = json.dumps({"fixture": True}, sort_keys=True)
+        attempts = (
+            ("native-attempt", "native-run", None, "https://example.org/a", "a"),
+            ("pdf-attempt", "pdf-run", "pdf-occ", "https://example.org/pdf-one", None),
+            ("unrelated-attempt", "unrelated-run", None, "https://example.org/b", "b"),
+        )
+        for attempt_id, run_id, occurrence_id, url, core_id in attempts:
+            db.execute("""INSERT INTO article_check_attempts(attempt_id,run_id,occurrence_id,source_url,
+                source_revision_sha256,checked_at,access_status,verification_status,packet_json,packet_sha256,core_article_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (attempt_id, run_id, occurrence_id, url, "a" * 64,
+                "2026-11-01T00:00:00Z", "failed", "unchecked", packet, _sha({"fixture": True}), core_id))
+
+        article = snapshot_entity(db, "article", "a")
+        assert {row["attempt_id"] for row in article["tables"]["article_check_attempts"]} == {"native-attempt"}
+        assert {row["run_id"] for row in article["dependencies"]["article_check_runs"]} == {"native-run"}
+
+        pdf_article = snapshot_entity(db, "pdf_article", "pdf-one")
+        original_pdf_attempts = {row[0] for row in db.execute(
+            "SELECT attempt_id FROM article_check_attempts WHERE occurrence_id='pdf-occ'")}
+        original_pdf_runs = {row[0] for row in db.execute(
+            "SELECT DISTINCT run_id FROM article_check_attempts WHERE occurrence_id='pdf-occ'")}
+        assert {row["attempt_id"] for row in pdf_article["tables"]["article_check_attempts"]} == original_pdf_attempts | {"pdf-attempt"}
+        assert {row["run_id"] for row in pdf_article["dependencies"]["article_check_runs"]} == original_pdf_runs | {"pdf-run", "pdf-no-attempt"}
+
+
 def test_public_snapshot_reuses_alias_map_for_metadata_and_article_reads(tmp_path, monkeypatch):
     import climate_registry.publication as publication
 

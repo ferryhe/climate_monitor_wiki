@@ -20,7 +20,7 @@ from .acquisition_review import digest, timestamp
 from .errors import RegistryInputError
 from .information_checks import KINDS, _json, _sha
 from .persistent import _backup_connection, _backup_name, _exclusive_database_lock
-from .publication import canonical_entity, require_publication_migration, resolve_database, snapshot_entity, stage_snapshot
+from .publication import _identity_aliases, canonical_entity, require_publication_migration, resolve_database, snapshot_entity, stage_snapshot
 
 CHECK_VERSION = "owner-agent-information-check.v1"
 EDITORIAL_CHECK_VERSION = "owner-agent-information-check.v2"
@@ -46,8 +46,9 @@ def _url(value):
 
 
 def _plan(connection, database, kind, identity):
-    kind, identity = canonical_entity(connection, kind, identity)
-    snapshot = snapshot_entity(connection, kind, identity)
+    identity_aliases = _identity_aliases(connection)
+    kind, identity = canonical_entity(connection, kind, identity, identity_aliases=identity_aliases)
+    snapshot = snapshot_entity(connection, kind, identity, identity_aliases=identity_aliases)
     if not snapshot["information_targets"]:
         raise ValueError("entity has no current source observations")
     row = connection.execute("SELECT latest_candidate_sha256,published_candidate_sha256,is_visible FROM registry_publication WHERE entity_kind=? AND entity_id=?", (kind, identity)).fetchone()
