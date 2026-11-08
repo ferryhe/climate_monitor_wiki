@@ -104,6 +104,20 @@ def identity(item):
     return item.get("canonical_event_id") or item.get("event_id") or item.get("occurrence_id")
 
 
+def _meeting_chronology_scope(items):
+    values = {"meeting": set(), "pdf_meeting": set()}
+    for item in items:
+        for record in (item, *(item.get("pdf_observations") or [])):
+            reference = record.get("record_reference") or {}
+            if reference.get("entity_kind") in values and reference.get("entity_id"):
+                values[reference["entity_kind"]].add(reference["entity_id"])
+            for key in ("event_id", "canonical_event_id", "occurrence_id", "canonical_pdf_event_id"):
+                if record.get(key):
+                    for identities in values.values():
+                        identities.add(record[key])
+    return values
+
+
 def meeting_end(item):
     """Return a known event end instant from approved fields."""
     from datetime import date
@@ -615,9 +629,29 @@ class EvidenceTurn:
     def meetings(self, base):
         items, page = [], 1
         reader = self.reader()
+        from climate_registry.read_api import RegistryContractError, RegistryReader
         with reader.public_snapshot(direct=True):
-            chronology = reader.knowledge_chronology()
-            if self.owner.meeting_view:
+            stored = None
+            approved_snapshot = self.owner.responder.kb.approved_registry_snapshot
+            if isinstance(reader, RegistryReader) and approved_snapshot and reader.database is not None \
+                    and Path(reader.database).resolve() == Path(approved_snapshot).resolve():
+                from climate_registry.display import DisplayReader
+                with reader.connect() as connection:
+                    if connection.execute("PRAGMA user_version").fetchone()[0] >= 24:
+                        try:
+                            stored = DisplayReader(connection)
+                        except RegistryContractError:
+                            pass  # Fall back when this frozen file has a stale display cookie.
+            if stored is not None:
+                while True:
+                    payload = stored.meetings(page=page, page_size=100, base_date=base, include_unknown=True)
+                    items.extend(payload["items"])
+                    if page >= payload["pagination"]["pages"] or page >= 10 or not self.research_remaining():
+                        if page < payload["pagination"]["pages"]:
+                            self.notes.append("Meeting scan budget reached; coverage is incomplete.")
+                        break
+                    page += 1
+            elif self.owner.meeting_view:
                 while True:
                     payload = self.owner.meeting_view(reader, page=page, base_date=base)
                     items.extend(payload["items"])
@@ -639,6 +673,8 @@ class EvidenceTurn:
                     items.extend(records[(page - 1) * 100:page * 100])
                 if pages > 10:
                     self.notes.append("Meeting scan budget reached; coverage is incomplete.")
+            chronology = (reader.knowledge_chronology(entity_ids=_meeting_chronology_scope(items))
+                if isinstance(reader, RegistryReader) else reader.knowledge_chronology())
         self.notes.append("Meeting coverage: " + json.dumps(payload.get("coverage", {}), ensure_ascii=False))
         return items, chronology
 
@@ -720,8 +756,8 @@ class EvidenceTurn:
                     return result
                 upcoming = bool(re.search(r"\bupcoming\b", query, re.I))
                 today = self.now.astimezone(ZONE).date()
-                lower = "1900-01-01" if knowledge_range else start.date().isoformat() if explicit else (
-                    (today - timedelta(days=1)).isoformat() if upcoming else today.isoformat())
+                lower = "1900-01-01" if knowledge_range or not upcoming and not explicit else start.date().isoformat() if explicit else (
+                    today - timedelta(days=1)).isoformat()
                 scope = {"business_date_lower": lower}
                 items, chronology = self.meetings(lower)
                 all_items = items

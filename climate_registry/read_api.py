@@ -2774,13 +2774,18 @@ class RegistryReader:
         return result
 
     @_direct_public_read
-    def knowledge_chronology(self) -> dict[str, dict[str, Any]]:
+    def knowledge_chronology(self, *, entity_ids=None) -> dict[str, dict[str, Any]]:
         """Only the chronology frozen in the approved public projection."""
         if self.static_snapshot is not None:
-            return dict(self.static_snapshot.get("knowledge_chronology", {}))
+            values = dict(self.static_snapshot.get("knowledge_chronology", {}))
+            if entity_ids is not None:
+                selected = {f"{kind}:{identity}" for kind, identities in entity_ids.items() for identity in identities}
+                values = {key: value for key, value in values.items() if key in selected}
+            return values
         with self.connect() as connection:
             if self.public and getattr(self, "_snapshot_direct", False) and connection.execute("PRAGMA user_version").fetchone()[0] >= 21:
-                candidates = self._public_candidates("article", "pdf_article", "meeting", "pdf_meeting")
+                kinds = ("article", "pdf_article", "meeting", "pdf_meeting") if entity_ids is None else ("meeting", "pdf_meeting")
+                candidates = self._public_candidates(*kinds, entity_ids=entity_ids)
                 values = {}
                 for (kind, identity), snapshot in candidates.items():
                     for row in snapshot.get("tables", {}).get("knowledge_versions", []):
@@ -2792,9 +2797,20 @@ class RegistryReader:
                     for key, rows in values.items() for row in [sorted(rows, key=lambda item: item.get("rowid", 0))[-1]]}
             if not self.public or connection.execute("PRAGMA user_version").fetchone()[0] < 21:
                 return {}
-            rows = connection.execute("""SELECT entity_kind,entity_id,knowledge_id,
-                material_sha256,first_ingested_at,substantive_updated_at,time_basis
-                FROM knowledge_versions ORDER BY rowid""").fetchall()
+            query = """SELECT entity_kind,entity_id,knowledge_id,material_sha256,
+                first_ingested_at,substantive_updated_at,time_basis FROM knowledge_versions"""
+            parameters = ()
+            if entity_ids is not None:
+                filters = []
+                for kind, identities in entity_ids.items():
+                    identities = tuple(sorted(set(identities)))
+                    if identities:
+                        filters.append("(entity_kind=? AND entity_id IN (" + ",".join("?" for _ in identities) + "))")
+                        parameters += (kind, *identities)
+                if not filters:
+                    return {}
+                query += " WHERE " + " OR ".join(filters)
+            rows = connection.execute(query + " ORDER BY rowid", parameters).fetchall()
         return {f"{row['entity_kind']}:{row['entity_id']}": {
             key: row[key] for key in ("knowledge_id", "material_sha256", "first_ingested_at",
                 "substantive_updated_at", "time_basis")} for row in rows}
