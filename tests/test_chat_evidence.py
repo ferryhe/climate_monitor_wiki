@@ -1490,6 +1490,112 @@ class MeetingsReader:
         return []
 
 
+def test_approved_meeting_lookup_uses_current_projection_and_scoped_chronology(tmp_path):
+    from climate_monitor.meetings import process_batch
+    from climate_registry.display import refresh_display
+    from climate_registry.wiki import snapshot_registry
+    from test_issue136_meetings import _candidate, _database as meeting_database
+
+    database = meeting_database(tmp_path, [
+        "World Climate Summit 2027 meets June 10–12, 2027 in New York. Registration deadline May 1, 2027. Register https://example.com/register."
+    ], target_version=27)
+    processed = process_batch(database, "batch", prompt_text="source evidence", prompt_version="v1",
+        provider="test", model="test", extractor=lambda request: {"events": [_candidate()]})
+    assert processed["status"] == "succeeded", json.dumps(processed, indent=2)
+    with sqlite3.connect(database) as db:
+        event_id = db.execute("SELECT event_id FROM climate_events").fetchone()[0]
+        record_knowledge(db, kind="meeting", entity_id=event_id, source_kind="information_check",
+            source_ref="approved-current", fields={"name": "World Climate Summit 2027"}, evidence={},
+            recorded_at="2026-09-01T12:00:00Z")
+        from verified_fixtures import seed_verified_native_meetings
+        seed_verified_native_meetings(db)
+        for sha in stage_entities(db):
+            _approve(db, sha, {"basis": "approved meeting fixture"}, status="accepted_legacy")
+        record_knowledge(db, kind="meeting", entity_id=event_id, source_kind="information_check",
+            source_ref="pending-change", fields={"name": "Pending revised meeting"}, evidence={},
+            recorded_at="2026-10-01T12:00:00Z")
+        stage_entities(db)
+        refresh_display(db, force=True)
+
+    frozen = tmp_path / "approved-snapshot.sqlite3"
+    snapshot_registry(database, frozen)
+    with sqlite3.connect(frozen) as db:
+        refresh_display(db, force=True)
+    reader = _reader(frozen, tmp_path)
+    full_chronology = reader.knowledge_chronology()
+    calls = []
+    original_chronology = reader.knowledge_chronology
+    candidate_calls = []
+    original_candidates = reader._public_candidates
+
+    def record_scope(*, entity_ids=None, selected_publication_scope=False):
+        calls.append(entity_ids)
+        return original_chronology(entity_ids=entity_ids, selected_publication_scope=selected_publication_scope)
+
+    def record_candidate_scope(*kinds, entity_ids=None, selected_publication_scope=False):
+        candidate_calls.append((kinds, entity_ids))
+        return original_candidates(*kinds, entity_ids=entity_ids,
+            selected_publication_scope=selected_publication_scope)
+
+    reader.knowledge_chronology = record_scope
+    reader._public_candidates = record_candidate_scope
+    chat = owner(tmp_path)
+    chat.responder.kb.approved_registry_snapshot = frozen
+    chat.reader_factory = lambda: reader
+    turn = EvidenceTurn(chat, "When and where is the World Climate Summit 2027 meeting?", None, [])
+    items, chronology = turn.meetings("2027-06-10")
+
+    assert [item["name"] for item in items] == ["World Climate Summit 2027"]
+    assert calls == [{"meeting": {event_id}, "pdf_meeting": {event_id}}]
+    assert candidate_calls[-1] == (("meeting", "pdf_meeting"), calls[0])
+    assert chronology == {key: value for key, value in full_chronology.items() if key == f"meeting:{event_id}"}
+    assert chronology[f"meeting:{event_id}"]["first_ingested_at"] != "2026-10-01T12:00:00Z"
+    assert "2026-10-01T12:00:00Z" not in json.dumps(chronology)
+    turn.now = datetime(2027, 10, 2, 12, tzinfo=timezone.utc)
+    evidence = turn.search_knowledge(turn.question, target="meetings")
+    assert len(evidence) == 1 and evidence[0]["source"]["evidence_id"] == event_id
+    assert "First added: " + chronology[f"meeting:{event_id}"]["first_ingested_at"] in evidence[0]["text"]
+    assert "Material update: " + chronology[f"meeting:{event_id}"]["substantive_updated_at"] in evidence[0]["text"]
+    assert any('"business_date_lower": "1900-01-01"' in note for note in turn.notes)
+    details = turn.get_meeting_details(event_id)
+    assert details["source"]["evidence_id"] == event_id
+    assert len(calls) == 1
+    import shutil
+    new_generation = tmp_path / "approved-snapshot-new-generation.sqlite3"
+    shutil.copyfile(frozen, new_generation)
+    with sqlite3.connect(new_generation) as db:
+        db.execute("UPDATE registry_publication SET is_visible=0 WHERE entity_kind='meeting' AND entity_id=?", (event_id,))
+        refresh_display(db, force=True)
+    chat.responder.kb.approved_registry_snapshot = new_generation
+    chat.reader_factory = None
+    assert turn.get_meeting_details(event_id)["status"] == "unavailable"
+    assert turn.search_knowledge("List upcoming meetings", target="meetings") == []
+    assert turn.search_knowledge("Meetings from 2026-09-30 to 2026-10-02 added to the knowledge base", target="meetings") == []
+
+
+def test_meeting_evidence_keeps_full_btr2_deadline_exception(tmp_path):
+    raw_date = ("Biennial Transparency Report due by 31 December 2026. "
+        "Least developed country Parties and small island developing States may submit the information at their discretion.")
+    item = {**meeting("btr2", "Second Biennial Transparency Reports", ""),
+        "summary": "", "relevance_reason": "", "raw_text": "", "event_type": "deadline",
+        "raw_date": raw_date, "start_date": None, "end_date": None,
+        "deadline_type": "", "deadline_date": "2026-12-31",
+        "source_urls": ["https://unfccc.int/second-biennial-transparency-reports"]}
+    chat = owner(tmp_path)
+    chat.responder.client = object()
+    chat.reader_factory = lambda: MeetingsReader([item])
+    turn = EvidenceTurn(chat, "When is the BTR2 deadline, and do LDCs and SIDS have discretion?", None, [])
+    turn.now = datetime(2026, 11, 8, 12, tzinfo=timezone.utc)
+
+    evidence = turn.search_knowledge(turn.question, target="meetings")
+
+    assert len(evidence) == 1
+    details = turn.get_meeting_details("btr2")
+    assert raw_date in details["text"]
+    assert "2026-12-31" in details["text"]
+    assert details["source"]["source_urls"] == item["source_urls"]
+
+
 def meeting(key, name, location):
     return {"event_id": key, "name": name, "start_date": "2027-06-10", "organizer": "Publisher",
         "raw_time_text": "10:00 EDT", "event_timezone": "America/New_York", "location": location,
